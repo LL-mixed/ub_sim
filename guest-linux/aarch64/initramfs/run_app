@@ -1149,6 +1149,106 @@ mem_service_object_share_allocation_pressure() (
   echo "mem_service allocation-pressure: phase=complete"
 )
 
+mem_service_object_share_reference_ops() (
+  node="$1"; size="$2"; round="$3"; seed="$4"; generation="$5"; version="$6"
+  key="obj-ref-$round"
+  ready="ref-ready-$round"
+  done="ref-done-$round"
+  if [ "$node" = "0" ]; then
+    echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
+    echo "op=acquire key=$key idempotency_key=ref-acquire-$round expected_generation=$generation"
+    echo "op=begin_reference key=$key idempotency_key=ref-begin-$round generation=$generation version=$version"
+    echo "op=stats"
+    echo "op=map key=$key flags=readwrite"
+    echo "op=stats"
+    echo "op=write key=$key offset=128 len=512 seed=$seed"
+    echo "op=write key=$key offset=4224 len=512 seed=$((seed + 1))"
+    echo "op=read key=$key offset=128 len=512 seed=$seed"
+    echo "op=read key=$key offset=4224 len=512 seed=$((seed + 1))"
+    echo "op=publish_reference key=$key/a idempotency_key=ref-stage-a-$round offset=128 len=512 kind=5 owner=0 producer=0"
+    echo "op=publish_reference key=$key/b idempotency_key=ref-stage-b-$round offset=4224 len=512 kind=5 owner=0 producer=0"
+    echo "op=write key=$key offset=128 len=1 seed=99 expect_status=unsupported"
+    echo "op=unmap key=$key"
+    echo "op=stats"
+    echo "op=seal_reference key=$key idempotency_key=ref-seal-$round generation=$generation version=$((version + 1))"
+    echo "op=release key=$key idempotency_key=ref-release-$round expected_generation=$generation"
+    echo "op=allocate key=$ready idempotency_key=ref-ready-$round size_bytes=65536 capabilities=map"
+    echo "op=wait_state key=$done state=active timeout_ms=60000 poll_ms=50"
+    for retired in "$key" "$ready" "$done"; do
+      echo "op=retire key=$retired idempotency_key=retire-$retired"
+      echo "op=wait_state key=$retired state=retired timeout_ms=60000 poll_ms=50"
+    done
+    echo "op=stats"
+  else
+    echo "op=wait_state key=$ready state=active timeout_ms=60000 poll_ms=50"
+    echo "op=stats"
+    for view in a b; do
+      echo "op=acquire_reference key=$key/$view idempotency_key=ref-reader-$round-$view"
+      echo "op=map_reference key=$key"
+      echo "op=stats"
+      echo "op=wait_visible key=$key offset=0 len=512 seed=$seed"
+      echo "op=read key=$key offset=0 len=512 seed=$seed"
+      echo "op=probe_readonly key=$key"
+      echo "op=read key=$key offset=512 len=1 seed=$seed expect_status=capacity_exceeded"
+      echo "op=unmap key=$key"
+      echo "op=stats"
+      echo "op=release key=$key idempotency_key=ref-reader-release-$round-$view"
+      seed=$((seed + 1))
+    done
+    echo "op=allocate key=$done idempotency_key=ref-done-$round size_bytes=65536 capabilities=map"
+    echo "op=wait_state key=$done state=retired timeout_ms=60000 poll_ms=50"
+    echo "op=stats"
+  fi
+)
+
+mem_service_object_share_reference() (
+  node="$1"; size="$2"; iterations="$3"; seed="$4"; incarnation="$5"; connect="$6"
+  # Both infrastructure registrations must exist before preallocating. The
+  # subsequent two SDK endpoints still perform their own peer canary.
+  read -r uptime ignored </proc/uptime
+  deadline=$((${uptime%%.*} + 60))
+  while true; do
+    directory="$(/bin/linqu_mem_service provider-directory-status --connect "$connect" \
+      --timeout-ms 1000 --max-attempts 1)" || exit 1
+    # This control-plane process has no local payload provider. Its remote
+    # worker registrations are reported by the directory readiness field.
+    if printf '%s\n' "$directory" | /bin/busybox grep -qx 'provider_directory_ready=1'; then break; fi
+    read -r uptime ignored </proc/uptime
+    [ "${uptime%%.*}" -lt "$deadline" ] || exit 1
+    sleep 0.05
+  done
+  round=1
+  while [ "$round" -le "$iterations" ]; do
+    generation=0; version=0
+    if [ "$node" = "0" ]; then
+      receipt="/tmp/reference-allocation-$round.receipt"
+      /bin/linqu_mem_service allocate-object --connect "$connect" \
+        --key "obj-ref-$round" --idempotency-key "ref-allocation-$round" \
+        --session-id client-0 --size-bytes "$size" --capabilities 1 >"$receipt" || exit 1
+      generation="$(/bin/busybox sed -n 's/^generation=//p' "$receipt")" || exit 1
+      version="$(/bin/busybox sed -n 's/^version=//p' "$receipt")" || exit 1
+      for value in "$generation" "$version"; do
+        case "$value" in ''|0*|*[!0-9]*) exit 1 ;; esac
+      done
+      echo "mem_service reference-allocation: key=obj-ref-$round generation=$generation version=$version"
+    fi
+    config="/tmp/reference-session-$round.conf"
+    {
+      echo "session_id=client-$node"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "provider=obmm"
+      echo "provider_node_id=$node"
+      echo "provider_node_count=2"
+      echo "provider_generation=$((incarnation + round))"
+      echo "provider_import_region_bytes=2097152"
+      mem_service_object_share_reference_ops "$node" "$size" "$round" "$seed" "$generation" "$version"
+    } >"$config"
+    /bin/linqu_mem_service object-session --config "$config" || exit 1
+    round=$((round + 1))
+  done
+)
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -1232,6 +1332,10 @@ mem_service_object_share_managed() (
   /bin/linqu_mem_service_provider_obmm serve-allocations \
     --config /tmp/managed-share.worker.conf &
   worker_pid=$!
+  if [ "$access" = "cpu-reference" ]; then
+    mem_service_object_share_reference "$node" "$size" "$iterations" "$seed" \
+      "$incarnation" "$connect" || exit 1
+  fi
   if [ "$access" = "cpu-pto" ]; then
     {
       echo "connect=$connect"
@@ -1423,11 +1527,17 @@ run_mem_service_object_share() {
   descriptor_hex="$(cmdline_value mem_service_object_share_descriptor_hex '')"
   connect="tcp:10.0.0.1:$port"
 
-  if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ]; } ||
+  if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ] && [ "$access" != "cpu-reference" ]; } ||
       { [ "$access" = "cpu-pto" ] &&
         { [ "$backend" != "obmm" ] ||
           [ "$iterations" != "1" ] || [ "$fault" != "none" ]; }; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=access_config"
+    return 2
+  fi
+  if [ "$access" = "cpu-reference" ] &&
+      { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] || [ "$fault" != "none" ] ||
+        { [ "$iterations" != "1" ] && [ "$iterations" != "2" ]; }; }; then
+    log "mem_service object-share: status=fail node=$node_idx reason=reference_config"
     return 2
   fi
   if [ "$access" = "cpu-pto" ]; then

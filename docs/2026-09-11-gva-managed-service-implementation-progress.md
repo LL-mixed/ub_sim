@@ -3096,5 +3096,38 @@ ownership 检查退出 128，尚未编译；补齐该明确目录的临时信任
 在指定远端限制 8 CPU，最长 1,800 秒。观察到原生算子实际执行日志，整轮终态
 尚待取得，不预先记为通过；后续继续观察原作业 `gva-rust-workspace-r241`。
 
-本批代码继续保持未提交，等待完整 Rust 结果。AM2、V2 CPU/PTO 联合绑定、
-W5、故障矩阵和完整总目标仍未完成。
+在 r240 结束时，本批代码保持未提交，等待完整 Rust 结果；后续终态见下节。
+
+### r241 完整 Rust 回归与 guest 接入提交门禁
+
+原作业 `gva-rust-workspace-r241` 于 09:39:24 UTC 开始、09:48:21 UTC 结束，
+容器 exit 0、无 OOM。完整 Cargo workspace 的 43 个 harness（含 doc-tests）
+汇总为 963 通过、0 失败、16 ignored、0 filtered out。逐 Cargo target 仅取
+该 harness 的最终汇总，排除内部隔离子进程打印的重复单测试结果；各 target
+汇总保存在 `rust-results-r241.json`，完整日志 SHA-256 为
+`524f01e726a9567d3adfc0d7fdf0d93e048a21d3d215c9337ed2d4200b0dda66`。
+先前 3 个失败 target 在完整执行中通过，未通过跳过用例来消除失败。
+
+16 个 ignored 保持源码原有标注：11 项需要外部官方 checkpoint、DS4 GGUF/
+相关 oracle 或指定模型运行环境；5 项要求专用预构建 Simpler manifest。
+这些用例没有执行，不能视为本计划模型矩阵通过。r241 的原生算子测试使用
+其自身测试输入，不能冒充指定真实 DeepSeek 权重的 W5 运行证据。
+
+r237-r241 的成功/失败日志及结构化结果共 14 文件形成一个证据包，不含模型、
+密钥或网络审计日志。归档名 `root-regression-evidence-r237-r241.tar.gz`，大小
+162,475 bytes，SHA-256：
+`a756f5898fd4cb8da319e4dc82aca12ce02ba8d9d384a2eed0bc6162e05c1553`；
+逐文件 manifest SHA-256：
+`dd2a2d2431e9fdb00e55ff133977db15b496e70ed1f404112197b314c87c09ec`。
+归档已取回本地 `out/`，15 个 regular members（含 manifest）无重复，14 项
+文件长度和 SHA 与清单逐一核对通过，Rust 结构化结果与上述汇总一致。
+本批八个代码/测试文件与 r240 受测 overlay 逐字节相同；r241 使用同一 overlay。
+对应 r235/r236 实际 guest 的四个运行/验收文件也保持不变。提交仅纳入这些
+已验证文件和本计划/记录，不纳入其他工作树修改，不推送父仓库。
+
+V2/PTO 后续接入检查修正了一项早期推断：managed SDK 的 binding 已返回逻辑
+视图，owner/PTO 的相等比较本身不会拒绝非零 allocation offset；driver 也已
+处理页内偏移。无需据该推断新增底层 API。当前 managed PTO CLI 的 map_object
+仍调用 raw acquire/map，需要接通 V2 发布、resolve/acquire/map 流程后，以
+实际 PTO 数据、身份、权限和原 completion 验证现有 owner/provider 路径。
+完整 AM2、V2 CPU/PTO 联合绑定、W5、故障矩阵和总目标仍未完成。

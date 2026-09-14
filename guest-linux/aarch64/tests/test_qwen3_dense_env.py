@@ -901,7 +901,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('disown "$qemu_pid"', launcher_text)
         self.assertIn("SIM_QWEN3_GUEST_ENGRAM_POOL", runner_text)
         self.assertIn("SIM_W5_MEMORY_REGISTRY_DIR", runner_text)
-        self.assertIn("target/debug/sim-cli", runner_text)
+        self.assertIn("--message-format=json-render-diagnostics", runner_text)
         self.assertIn("cargo build -p sim-cli", runner_text)
         self.assertIn("unset SIM_CLI_BIN so the runner builds", runner_text)
         self.assertIn("--memory-runtime-boundary-lookup", runner_text)

@@ -1516,8 +1516,15 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert '"mem_service object-share: status=ok node=0"' in apps_runner
     assert '"mem_service object-share: status=ok node=1"' in apps_runner
     assert "validate_mem_service_object_share_log" in apps_runner
-    assert run_app.count('echo "op=probe_readonly key=$key"') == 2
-    assert run_app.count('echo "op=probe_guard key=$key"') == 2
+    managed = run_app.split("mem_service_object_share_managed() (", 1)[1].split(
+        "\nrun_mem_service_object_share()", 1)[0]
+    reference = run_app.split("mem_service_object_share_reference_ops() (", 1)[1].split(
+        "\nmem_service_object_share_reference()", 1)[0]
+    assert managed.count('echo "op=probe_readonly key=$key"') == 2
+    assert managed.count('echo "op=probe_guard key=$key"') == 2
+    assert reference.count('echo "op=probe_readonly key=$key"') == 1
+    assert "op=map_reference key=$key" in reference
+    assert "--qemu-b \"$nodeb_qemu_log\"" in apps_runner
     assert "cpu_fault_probe=probe_readonly offset=0 signal=(7|11)" in apps_runner
     assert "cpu_fault_probe=probe_guard offset=[0-9]+ signal=(7|11)" in apps_runner
 
@@ -1947,7 +1954,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^admin_output_format=text-kv$$" in app_makefile
     assert "^admin_metric_prefix=lingqu_mem_service_$$" in app_makefile
     assert "^upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt$$" in app_makefile
-    assert "^package_manifest_checksum=0x0095ab54$$" in app_makefile
+    assert "^package_manifest_checksum=0xc9d62b4e$$" in app_makefile
     assert "./linqu_mem_service_host retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host checkpoint-retention-fixtures" in app_makefile
     assert "./linqu_mem_service_host payload-gc-fixtures" in app_makefile
@@ -1984,7 +1991,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
         in app_makefile
     )
     assert "^package_gate=package-fixtures$$" in app_makefile
-    assert "^upgrade_rollback_policy_checksum=0xf4139152$$" in app_makefile
+    assert "^upgrade_rollback_policy_checksum=0x24ef05c9$$" in app_makefile
     assert "^upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures$$" in app_makefile
     assert "^compat_runtime_gate=compat-runtime-fixtures$$" in app_makefile
     assert "^serving_fail_closed_matrix=certified$$" in app_makefile
@@ -2036,11 +2043,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "^client_abi_version=1$$" in app_makefile
     assert "^client_record_abi_size=808$$" in app_makefile
     assert "^compat_matrix=share/lingqu/mem_service/compat-matrix.txt$$" in app_makefile
-    assert "^compat_matrix_checksum=0x5b574449$$" in app_makefile
+    assert "^compat_matrix_checksum=0x2d099155$$" in app_makefile
     assert "^compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt$$" in app_makefile
-    assert "^compat_baseline_checksum=0xe74ef98a$$" in app_makefile
+    assert "^compat_baseline_checksum=0xb8341883$$" in app_makefile
     assert "^compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt$$" in app_makefile
-    assert "^compat_old_new_matrix_checksum=0x38956796$$" in app_makefile
+    assert "^compat_old_new_matrix_checksum=0x4d81a45d$$" in app_makefile
     assert "^host_daemon_binary=libexec/lingqu/mem_service/linqu_mem_service_host$$" in app_makefile
     assert "^host_daemon_artifact_smoke=host-artifact-smoke$$" in app_makefile
     assert "^host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service$$" in app_makefile
@@ -2165,11 +2172,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "collector_metric_value_at_least" in app_source
     assert "run_deployment_fixture_check" in app_source
     assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_LEN 1979U" in app_source
-    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x5b574449U" in app_source
+    assert "MEM_SERVICE_COMPAT_MATRIX_EXPECTED_CHECKSUM 0x2d099155U" in app_source
     assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_LEN 1252U" in app_source
-    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xe74ef98aU" in app_source
+    assert "MEM_SERVICE_COMPAT_BASELINE_V1_EXPECTED_CHECKSUM 0xb8341883U" in app_source
     assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_LEN 1734U" in app_source
-    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x38956796U" in app_source
+    assert "MEM_SERVICE_COMPAT_OLD_NEW_MATRIX_EXPECTED_CHECKSUM 0x4d81a45dU" in app_source
     assert 'strcmp(argv[1], "compat-runtime-fixtures")' in app_source
     assert "mem_service_run_compat_runtime_fixture_check" in app_source
     assert 'strcmp(argv[1], "serving-fail-closed-fixtures")' in app_source
@@ -2190,8 +2197,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "mem_service_run_tcp_payload_fixture_source" in app_source
     assert "run_wire_schema_manifest" in app_source
     assert "run_wire_schema_fixture_check" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 16300U" in app_source
-    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0x5905d107U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_LEN 17289U" in app_source
+    assert "MEM_SERVICE_WIRE_SCHEMA_MANIFEST_EXPECTED_CHECKSUM 0xe07a9225U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_LEN 1025U" in app_source
     assert "MEM_SERVICE_API_ABI_POLICY_EXPECTED_CHECKSUM 0x5e460a87U" in app_source
     assert "MEM_SERVICE_ADMIN_OUTPUT_SCHEMA_EXPECTED_LEN 7411U" in app_source
@@ -2199,7 +2206,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "render_admin_output_schema" in app_source
     assert "run_admin_output_fixture_check" in app_source
     assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_LEN 2144U" in app_source
-    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0xf4139152U" in app_source
+    assert "MEM_SERVICE_UPGRADE_ROLLBACK_POLICY_EXPECTED_CHECKSUM 0x24ef05c9U" in app_source
     assert "render_upgrade_rollback_policy" in app_source
     assert "run_upgrade_rollback_fixture_check" in app_source
     assert "mem_service_run_upgrade_rollback_runtime_fixture_check" in app_source
@@ -2222,8 +2229,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "run_alert_fixture_check" in app_source
     assert "run_alert_integration_fixture_check" in app_source
     assert "MEM_SERVICE_RELEASE_VERSION \"0.1.0\"" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9703U" in app_source
-    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0x0095ab54U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_LEN 9814U" in app_source
+    assert "MEM_SERVICE_PACKAGE_MANIFEST_EXPECTED_CHECKSUM 0xc9d62b4eU" in app_source
     assert 'strcmp(argv[1], "release-readiness")' in app_source
     assert 'strcmp(argv[1], "release-readiness-fixtures")' in app_source
     assert "render_release_readiness" in app_source
@@ -2301,7 +2308,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "package_format=installed-layout-v1" in release_manifest
     assert "package_manifest=share/lingqu/mem_service/package-manifest.txt" in release_manifest
     assert "service_version=0.1.0" in release_manifest
-    assert "package_manifest_checksum=0x0095ab54" in release_manifest
+    assert "package_manifest_checksum=0xc9d62b4e" in release_manifest
     assert "binary_version_command=version" in release_manifest
     assert "binary_version_contract=text-kv" in release_manifest
     assert "binary_version_gate=version-fixtures" in release_manifest
@@ -2437,7 +2444,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "admin_output_format=text-kv" in release_manifest
     assert "admin_metric_prefix=lingqu_mem_service_" in release_manifest
     assert "upgrade_rollback_policy=share/lingqu/mem_service/upgrade-rollback-policy.txt" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0xf4139152" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0x24ef05c9" in release_manifest
     assert "upgrade_rollback_runtime_gate=upgrade-rollback-runtime-fixtures" in release_manifest
     assert "compat_runtime_gate=compat-runtime-fixtures" in release_manifest
     assert "serving_fail_closed_matrix=certified" in release_manifest
@@ -2461,11 +2468,11 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "client_abi_version=1" in release_manifest
     assert "client_record_abi_size=808" in release_manifest
     assert "compat_matrix=share/lingqu/mem_service/compat-matrix.txt" in release_manifest
-    assert "compat_matrix_checksum=0x5b574449" in release_manifest
+    assert "compat_matrix_checksum=0x2d099155" in release_manifest
     assert "compat_baseline=share/lingqu/mem_service/compat-baseline-v1.txt" in release_manifest
-    assert "compat_baseline_checksum=0xe74ef98a" in release_manifest
+    assert "compat_baseline_checksum=0xb8341883" in release_manifest
     assert "compat_old_new_matrix=share/lingqu/mem_service/compat-old-new-matrix.txt" in release_manifest
-    assert "compat_old_new_matrix_checksum=0x38956796" in release_manifest
+    assert "compat_old_new_matrix_checksum=0x4d81a45d" in release_manifest
     assert "deployment_smoke=deployment-fixtures" in release_manifest
     assert "host_deployment_manifest=share/lingqu/mem_service/deploy/linqu_mem_service.host.service" in release_manifest
     assert "systemd_unit=lib/systemd/system/linqu_mem_service.service" in release_manifest
@@ -2500,7 +2507,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     )
     assert "mem_service_compat_matrix_version=1" in compat_matrix
     assert "wire_version_current=1" in compat_matrix
-    assert "wire_schema_manifest_checksum=0x5905d107" in compat_matrix
+    assert "wire_schema_manifest_checksum=0xe07a9225" in compat_matrix
     assert "idempotency_conflict_status=version_conflict" in compat_matrix
     assert "idempotency_persistence=store-journal-and-full-snapshot" in compat_matrix
     assert "audit_log_persistence=store-journal-and-full-snapshot" in compat_matrix
@@ -2518,14 +2525,14 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "case=current-client-current-server:compat-runtime-fixtures" in compat_old_new
     assert "evidence=compat-runtime-fixtures" in compat_old_new
     assert "certification_limit=none" in compat_old_new
-    assert "wire_schema_manifest_len=16300" in release_manifest
-    assert "wire_schema_manifest_checksum=0x5905d107" in release_manifest
+    assert "wire_schema_manifest_len=17289" in release_manifest
+    assert "wire_schema_manifest_checksum=0xe07a9225" in release_manifest
     assert "admin_output_schema_len=7411" in release_manifest
     assert "admin_output_schema_checksum=0x5272af77" in release_manifest
     assert "upgrade_rollback_policy_len=2144" in release_manifest
-    assert "upgrade_rollback_policy_checksum=0xf4139152" in release_manifest
-    assert "package_manifest_len=9703" in release_manifest
-    assert "package_manifest_checksum=0x0095ab54" in release_manifest
+    assert "upgrade_rollback_policy_checksum=0x24ef05c9" in release_manifest
+    assert "package_manifest_len=9814" in release_manifest
+    assert "package_manifest_checksum=0xc9d62b4e" in release_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in release_manifest
     assert (
         "release_script=share/lingqu/mem_service/scripts/"
@@ -2669,7 +2676,9 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "operation=query_training_artifact:97" in release_manifest
     assert "status=internal:10" in release_manifest
     assert "mem_service_wire_schema_manifest_version=1" in wire_schema_manifest
-    assert "operation_count=37" in wire_schema_manifest
+    assert "operation_count=39" in wire_schema_manifest
+    assert "operation=mapping_transition:125" in wire_schema_manifest
+    assert "operation=reference_transition:126" in wire_schema_manifest
     assert "operation=metrics:5" in wire_schema_manifest
     assert "operation=audit_log:10" in wire_schema_manifest
     assert "operation=export_snapshot:6" in wire_schema_manifest
@@ -2677,7 +2686,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "operation=restore_snapshot:8" in wire_schema_manifest
     assert "operation=restore_snapshot_page:9" in wire_schema_manifest
     assert "operation=inspect_object:18" in wire_schema_manifest
-    assert "field_count=210" in wire_schema_manifest
+    assert "field_count=224" in wire_schema_manifest
     assert "field=resolve_runtime_handoff.expected_owner type=u32 required=0" in wire_schema_manifest
     assert "field=query_execution_artifact.expected_owner type=u32 required=0" in wire_schema_manifest
     assert "field=query_training_artifact.expected_owner type=u32 required=0" in wire_schema_manifest
@@ -2729,7 +2738,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "rpm_package_payload=rpm-cpio+metadata" in package_manifest
     assert "rpm_package_gate=package-rpm-smoke" in package_manifest
     assert "rpm_package_runtime=requires-linux-rpm-toolchain" in package_manifest
-    assert "installed_file_count=52" in package_manifest
+    assert "installed_file_count=57" in package_manifest
     assert "pkgconfig=lib/pkgconfig/lingqu-mem-service.pc" in package_manifest
     assert "pkgconfig_name=lingqu-mem-service" in package_manifest
     assert "pkgconfig_cflags=-I${includedir}" in package_manifest
@@ -2748,7 +2757,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
         "pkgconfig_payload_provider_roce_libs=-lrdmacm -libverbs"
         in package_manifest
     )
-    assert "file_class=public_headers count=11" in package_manifest
+    assert "file_class=public_headers count=15" in package_manifest
+    assert "file_class=client_sources count=4" in package_manifest
     assert "file_class=provider_sources count=2" in package_manifest
     assert "release_script_root=share/lingqu/mem_service/scripts" in package_manifest
     assert "release_certification_ci=scripts/run_mem_service_release_certification_ci.sh" in package_manifest
@@ -2832,7 +2842,7 @@ def test_mem_service_has_component_and_cli_entrypoints():
     assert "remote_payload_production_network_transport=not-certified" in package_manifest
     assert (
         "contract=upgrade-rollback-policy path=share/lingqu/mem_service/"
-        "upgrade-rollback-policy.txt checksum=0xf4139152"
+        "upgrade-rollback-policy.txt checksum=0x24ef05c9"
     ) in package_manifest
     assert "required_gate=package-fixtures" in package_manifest
     assert "required_gate=upgrade-rollback-runtime-fixtures" in package_manifest

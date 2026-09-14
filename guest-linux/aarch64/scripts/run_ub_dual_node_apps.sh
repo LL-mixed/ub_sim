@@ -1081,9 +1081,20 @@ SERIAL_ENV_FILE="$OUT_DIR/dual_node_serial_env.${RUN_ID}.sh"
 
 apply_app_selection "$APP_SELECTION"
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu" &&
+      "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-reference" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-pto" ]]; then
   echo "unsupported Memory Service access mode: $MEM_SERVICE_OBJECT_SHARE_ACCESS" >&2
   exit 2
+fi
+if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-reference" ]]; then
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
+        "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ||
+        ( "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" &&
+          "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "2" ) ]]; then
+    echo "cpu-reference requires OBMM, 65536 bytes, one or two rounds and no fault" >&2
+    exit 2
+  fi
 fi
 if managed_pto_selected; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
@@ -3861,6 +3872,14 @@ run_iteration() {
         --concurrent-requests "$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS" \
         "${recovery_args[@]}" \
         --output "${nodea_guest_log:h}/managed-pto-validation.json" || return 1
+    elif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-reference" ]]; then
+      python3 "${SCRIPT_DIR}/validate_mem_service_reference_guest.py" \
+        --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
+        --qemu-b "$nodeb_qemu_log" \
+        --iterations "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" \
+        --seed "$MEM_SERVICE_OBJECT_SHARE_SEED" \
+        --incarnation "$MEM_SERVICE_OBJECT_SHARE_INCARNATION" \
+        --output "${nodea_guest_log:h}/managed-reference-validation.json" || return 1
     else
     validate_mem_service_object_share_log \
       "nodeA" "$nodea_guest_log" || return 1

@@ -313,12 +313,29 @@ fi
 
 if (( memory_runtime_lookup || memory_decision_reuse || explicit_engram_state_ref )); then
   if [[ -z "${SIM_CLI_BIN:-}" ]]; then
-    SIM_CLI_BIN="$REPO_DIR/target/debug/sim-cli"
+    echo "[w5_inference_cluster] build sim-cli for current workspace" >&2
+    SIM_CLI_BIN="$(
+      cd "$REPO_DIR"
+      cargo build -p sim-cli --message-format=json-render-diagnostics |
+        python3 -c '
+import json
+import sys
+
+executables = set()
+for line in sys.stdin:
+    message = json.loads(line)
+    if (message.get("reason") == "compiler-artifact"
+            and message.get("target", {}).get("name") == "sim-cli"
+            and "bin" in message.get("target", {}).get("kind", [])
+            and message.get("executable")):
+        executables.add(message["executable"])
+if len(executables) != 1:
+    sys.exit("Cargo must report exactly one sim-cli executable")
+print(executables.pop())
+'
+    )"
     export SIM_CLI_BIN
-    echo "[w5_inference_cluster] build sim-cli for current workspace: $SIM_CLI_BIN" >&2
-    pushd "$REPO_DIR" >/dev/null
-    cargo build -p sim-cli
-    popd >/dev/null
+    echo "[w5_inference_cluster] sim-cli artifact: $SIM_CLI_BIN" >&2
   fi
   if [[ ! -x "$SIM_CLI_BIN" ]]; then
     echo "W5 sim-cli orchestration path requires sim-cli: $SIM_CLI_BIN" >&2
