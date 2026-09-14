@@ -41,7 +41,7 @@ int mem_service_mapping_owner_acquire(struct mem_service_mapping_owner *owner,
     return owner->acquire_rc;
 }
 
-static void exercise(bool readonly, bool pending, unsigned failure)
+static void exercise(unsigned home, bool readonly, bool pending, unsigned failure)
 {
     struct managed_state *input = calloc(1, sizeof(*input));
     struct managed_state *output = calloc(1, sizeof(*output));
@@ -57,12 +57,18 @@ static void exercise(bool readonly, bool pending, unsigned failure)
         owners[i].stats.in_flight_pins = owners[i].stats.compute_pins;
     }
     input->owner = &owners[0];
-    input->config = (struct managed_config) {.node = 1, .generation = 135,
+    input->config = (struct managed_config) {.node = 1 - home, .home_node = home, .generation = 135,
         .readonly_inputs = readonly, .geometry = managed_geometries[0]};
     output->config = input->config;
     output->owner = &owners[1];
     output->is_output = true;
     if (readonly) input->output = output;
+    assert(mapping_access(input) == (readonly ? MEM_SERVICE_CLIENT_MAP_READ :
+        (MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE)));
+    assert(mapping_access(output) == (MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE));
+    input->config.node = home;
+    assert(mapping_access(input) == (MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE));
+    input->config.node = 1 - home;
     assert(pthread_mutex_init(&input->workers_lock, NULL) == 0);
     assert(pthread_cond_init(&input->workers_condition, NULL) == 0);
     int expected = 0;
@@ -86,9 +92,12 @@ static void exercise(bool readonly, bool pending, unsigned failure)
 
 int main(void)
 {
-    for (unsigned pending = 0; pending < 2; ++pending) {
-        exercise(false, pending, 0);
-        for (unsigned failure = 0; failure <= 6; ++failure) exercise(true, pending, failure);
+    for (unsigned home = 0; home < 2; ++home) {
+        for (unsigned pending = 0; pending < 2; ++pending) {
+            exercise(home, false, pending, 0);
+            for (unsigned failure = 0; failure <= 6; ++failure)
+                exercise(home, true, pending, failure);
+        }
     }
     puts("managed PTO owner guards: pass");
     return 0;

@@ -133,6 +133,20 @@ class ManagedPtoCliTest(unittest.TestCase):
             self.assertEqual(self.run_config({**CONFIG, "readonly_inputs": "1",
                                              "key": "k" * length}).returncode, expected)
 
+    def test_home_selection_preserves_actual_node_and_rejects_invalid_values(self):
+        self.assertIn("home_node=0", self.run_config().stdout)
+        for home in (0, 1):
+            for node in (0, 1):
+                result = self.run_config({**CONFIG, "node_id": str(node),
+                    "home_node": str(home), "readonly_inputs": "1"})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"status=ok node={node} nodes=2", result.stdout)
+                self.assertIn(f"home_node={home}", result.stdout)
+                self.assertIn("network_operations=0", result.stdout)
+        for invalid in ("2", "-1", "1x", "18446744073709551615", ""):
+            self.assertEqual(self.run_config({**CONFIG, "home_node": invalid}).returncode, 2)
+        self.assertEqual(self.run_config(extra="home_node=0\nhome_node=1\n").returncode, 2)
+
     def test_layout_profiles_derive_bounded_geometry_before_any_connection(self):
         profiles = (("cross-page", 64, 65536), ("nd", 16384, 262144),
                     ("tail", 16256, 262144))
@@ -194,6 +208,69 @@ class ManagedPtoOwnerGuardTest(unittest.TestCase):
 
 
 class ManagedPtoContractTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("cc"), "C compiler required for boot parameter boundary")
+    def test_home_option_does_not_consume_kernel_init_environment_slot(self):
+        runner = (ROOT / "guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh").read_text()
+        option = next(line.split('"')[1].split("=", 1)[0] for line in runner.splitlines()
+                      if "append_cmdline_if_missing" in line and "PTO_HOME_NODE" in line)
+        self.assertEqual(option, "lingqu_shmem_pto.home_node")
+        guest = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        helper = "cmdline_value() {" + guest.split("cmdline_value() {", 1)[1].split("\n}", 1)[0] + "\n}\n"
+        for value in ("0", "1"):
+            script = "read_cmdline() { :; }\n" + helper + (
+                f"cmdline='other=1 {option}={value} trailing=2'\ncmdline_value {option} 0\n")
+            result = subprocess.run(["sh", "-c", script], capture_output=True, text=True, timeout=5)
+            self.assertEqual((result.returncode, result.stdout.strip()), (0, value))
+        kernel = (ROOT / "guest-linux/kernel_ub/init/main.c").read_text()
+        function = "static int __init unknown_bootoption" + kernel.split(
+            "static int __init unknown_bootoption", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        # Compile the actual kernel admission function with isolated dependencies.
+        fixture = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#define __init
+#define MAX_INIT_ENVS 32
+#define MAX_INIT_ARGS 32
+static const char *envp_init[34], *argv_init[34], *panic_later, *panic_param;
+static int sysctl_is_alias(const char *p) { (void)p; return 0; }
+static void repair_env_string(char *p, char *v) { (void)p; (void)v; }
+static int obsolete_checksetup(char *p) { (void)p; return 0; }
+static int strstarts(const char *s, const char *p) { return !strncmp(s, p, strlen(p)); }
+static const char *strnchr(const char *s, size_t n, int c) { return memchr(s, c, n); }
+''' + function + r'''
+int main(int argc, char **argv) {
+    char fields[32][64];
+    assert(argc == 2);
+    envp_init[0] = "HOME=/"; envp_init[1] = "TERM=linux";
+    for (int i = 0; i < 30; ++i) {
+        snprintf(fields[i], sizeof(fields[i]), "field%d", i);
+        unknown_bootoption(fields[i], "1", NULL, NULL);
+    }
+    unknown_bootoption(argv[1], "1", NULL, NULL);
+    snprintf(fields[30], sizeof(fields[30]), "linqu_node_idx");
+    unknown_bootoption(fields[30], "0", NULL, NULL);
+    if (panic_later) {
+        assert(!strcmp(panic_later, "env") && !strcmp(panic_param, "linqu_node_idx"));
+        return 1;
+    }
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            source, binary = pathlib.Path(directory) / "boot.c", pathlib.Path(directory) / "boot"
+            source.write_text(fixture)
+            # The kernel callback ABI includes intentionally unused arguments.
+            built = subprocess.run(["cc", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror",
+                                    "-Wno-unused-parameter", str(source), "-o", str(binary)],
+                                   capture_output=True, text=True, timeout=30)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            for key, expected in ((option, 0), ("lingqu_shmem_pto_home_node", 1)):
+                checked = subprocess.run([str(binary), key], capture_output=True, text=True, timeout=5)
+                self.assertEqual(checked.returncode, expected, checked.stdout + checked.stderr)
+
     def test_guest_preflight_accepts_exact_large_profiles_before_opening_service(self):
         source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
         body = source.split("run_mem_service_object_share() {", 1)[1].split(
@@ -205,6 +282,9 @@ class ManagedPtoContractTest(unittest.TestCase):
             values = {**defaults, "lingqu_shmem_pto_layout": layout,
                       "lingqu_shmem_pto_elements": elements, "mem_service_object_share_size": size}
             for change, expected in (({}, 0), ({"mem_service_object_share_size": "4096"}, 2),
+                    ({"lingqu_shmem_pto.home_node": "1"}, 0),
+                    ({"lingqu_shmem_pto.home_node": "2"}, 2),
+                    ({"lingqu_shmem_pto.home_node": "-1"}, 2),
                     ({"lingqu_shmem_pto_elements": "65"}, 2), ({"lingqu_shmem_pto_layout": "dn"}, 2),
                     ({"mem_service_object_share_backend": "loopback"}, 2),
                     ({"mem_service_object_share_iterations": "2"}, 2),
@@ -290,6 +370,10 @@ class ManagedPtoContractTest(unittest.TestCase):
         self.assertIn("--require-readonly-inputs", runner)
         self.assertIn('--layout "$LINGQU_SHMEM_PTO_LAYOUT"', runner)
         self.assertIn('echo "size_bytes=$size"', run_app)
+        self.assertIn('echo "home_node=$home_node"', run_app)
+        self.assertIn('echo "allocation_home_provider=guest-node-$home_node"', run_app)
+        self.assertIn('--home-node "$LINGQU_SHMEM_PTO_HOME_NODE"', runner)
+        self.assertIn('--qemu-a "$nodea_qemu_log" --qemu-b "$nodeb_qemu_log"', runner)
         self.assertIn("export UBC_TRACE_DATA_PATH=1", runner)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")

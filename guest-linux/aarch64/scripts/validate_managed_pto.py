@@ -75,15 +75,42 @@ def validate_backing_identities(bound, mappings):
     require(set(identities) == expected, "missing object backing identity")
 
 
+def validate_home_exports(text, mappings, qemu):
+    # Worker startup/work notices contain prose; only export events carry this contract.
+    export_events = "\n".join(line for line in text.splitlines()
+                              if "phase=exported" in line.split())
+    exports = records(export_events, "obmm-worker")
+    bindings = records(qemu, "QEMU_UB_GM_GSVA_BIND")
+    for mapping in mappings:
+        owned = [row for row in exports if row["generation"] == mapping["generation"]]
+        require(len(owned) == 1 and number(owned[0], "segment") > 0 and
+                number(owned[0], "export") > 0, "selected home has no unique exported allocation")
+        backed = [row for row in bindings if number(row, "home_va") == number(mapping, "cpu_base")]
+        require(backed and all(number(row, "segment") == number(owned[0], "segment") for row in backed),
+                "compute binding does not reference the selected home export")
+
+
 def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
-             require_negative_checks=False, require_readonly_inputs=False, layout="cross-page"):
+             require_negative_checks=False, require_readonly_inputs=False, layout="cross-page",
+             home_node=None):
+    require(home_node in (None, 0, 1), "unsupported home node")
+    home = 0 if home_node is None else home_node
+    consumer = 1 - home
+    require(len(guests) == 2, "expected two actual guest logs")
     require(layout in GEOMETRIES, "unsupported managed geometry")
     elements, object_bytes, offsets = GEOMETRIES[layout]
     tensor_bytes = elements * 4
     # Serial logs use CRLF; normalize only parsing, never the evidence bytes.
     guests = [text.replace("\r\n", "\n") for text in guests]
+    guests = [guests[home], guests[consumer]]
     maps, output_maps, dispatches = [], [], []
-    for node, text in enumerate(guests):
+    for role, text in enumerate(guests):
+        node = (home, consumer)[role]
+        for prefix in ("MANAGED_PTO", "MANAGED_PTO_RESULT", "MANAGED_PTO_CONFIG",
+                       "MANAGED_PTO_WAIT", "MANAGED_PTO_NEGATIVE", "MANAGED_PTO_NEGATIVE_DATA",
+                       "MANAGED_PTO_READONLY", "MANAGED_OWNER", "MANAGED_OWNER_PAIR"):
+            require(all(number(row, "node") == node for row in records(text, prefix)),
+                    "actual node identity differs from its guest log")
         require("status=fail" not in text and "resources_retained=1" not in text,
                 f"node {node}: guest failure")
         rows = records(text, "MANAGED_PTO")
@@ -100,7 +127,11 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
                     number(record, "logical_bytes") == object_bytes and
                     number(record, "generation") > 0 and number(record, "mapping_id") > 0,
                     f"node {node}: invalid managed identity")
-            expected_access = 1 if require_readonly_inputs and node == 1 and index == 0 else 3
+            if home_node is not None:
+                require(number(record, "home_node") == home and
+                        record["home_provider"] == f"guest-node-{home}",
+                        "managed mapping has the wrong home provider")
+            expected_access = 1 if require_readonly_inputs and role == 1 and index == 0 else 3
             require(int(record.get("access", "3"), 0) == expected_access,
                     f"node {node}: incorrect mapping permissions")
         if require_readonly_inputs:
@@ -121,7 +152,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
                 done[0].get("readonly_inputs", "0") == ("1" if require_readonly_inputs else "0"),
                 "missing or unexpected read-only object mode")
         verified = [r for r in rows if "cpu_verify" in r]
-        expected_vectors = [2, 3] if node == 0 else [0, 1, 2, 3]
+        expected_vectors = [2, 3] if role == 0 else [0, 1, 2, 3]
         require([number(r, "vector") for r in verified] == expected_vectors,
                 f"node {node}: missing or repeated CPU checks")
         for row, vector in zip(verified, expected_vectors):
@@ -136,7 +167,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             require(re.findall(rf"^{metric}=([0-9]+)$", text, re.M) == ["0"],
                     f"node {node}: unexpected control-plane data operation")
         validate_kernel_regions(text)
-        if node == 1:
+        if role == 1:
             dispatches = [r for r in rows if "retained_leases" in r]
             completions = [r for r in rows if "completion_op" in r]
             require([number(r, "dispatch") for r in dispatches] == [1, 2] and
@@ -169,7 +200,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             "missing or unexpected timeout recovery evidence")
     for index, row in enumerate(waits):
         request = requests[index // 2]
-        require(row["node"] == "1" and number(row, "dispatch") == index // 2 + 1 and
+        require(number(row, "node") == consumer and number(row, "dispatch") == index // 2 + 1 and
                 row["op_id"] == request, "timeout recovery operation mismatch")
         if index % 2 == 0:
             require(row["state"] == "timeout" and row["retained_leases"] == "3" and
@@ -200,6 +231,16 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
     geometry = GEOMETRIES[layout]
     filtered = validate_negatives(guests, qemu, maps[1], requests, require_negative_checks, output, geometry)
     validate_callbacks(filtered, maps[0], requests, output, geometry)
+    if home_node is not None:
+        validate_home_exports(guests[0], [maps[0], output_maps[0]] if require_readonly_inputs else
+                              [maps[0]], qemu)
+        requester = number(maps[1], "requester_cna")
+        require(requester > 0 and number(output_maps[1], "requester_cna") == requester,
+                "inconsistent compute-node requester identity")
+        for prefix in ("SIM_QEMU_UB_GM_BIND_REGISTER", "QEMU_UB_GM_INPUT_AUTHORIZE",
+                       "QEMU_UB_GM_OUTPUT_AUTHORIZE"):
+            require(all(number(row, "requester_cna") == requester for row in records(qemu, prefix)),
+                    "QEMU evidence belongs to another compute requester")
     validate_readonly_inputs(guests, maps, output_maps, requests, require_readonly_inputs, geometry)
     transport = validate_transport_chunks(qemu, requests, geometry) if layout != "cross-page" else None
     if access_threads is not None:
@@ -223,11 +264,14 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             "timeout_recoveries": len(waits) // 2,
             "layout": layout, "elements": elements, "tensor_bytes": tensor_bytes,
             "object_bytes": object_bytes, "transport_chunks": transport,
-            "am2_complete": False}
+            "am2_complete": False,
+            **({"home_node": home, "compute_node": consumer, "home_export_verified": True}
+               if home_node is not None else {})}
 
 
 def validate_negatives(guests, qemu, mapping, requests, required, output_mapping=None,
                        geometry=GEOMETRIES["cross-page"]):
+    consumer = mapping["node"]
     elements, _, offsets = geometry
     tensor_bytes = elements * 4
     prefixes = ("MANAGED_PTO_NEGATIVE", "MANAGED_PTO_NEGATIVE_DATA")
@@ -247,7 +291,7 @@ def validate_negatives(guests, qemu, mapping, requests, required, output_mapping
     for index, (name, operation, error) in enumerate(zip(names, operations, errors)):
         submitted, rejected = probes[2*index:2*index+2]
         require(submitted["state"] == "submitted" and rejected["state"] == "rejected" and
-                all(row["case"] == name and row["op_id"] == operation and row["node"] == "1"
+                all(row["case"] == name and row["op_id"] == operation and row["node"] == consumer
                     for row in (submitted, rejected)), "negative probe identity/order mismatch")
         require(submitted["mapping_id"] == mapping["mapping_id"] and
                 submitted["retained_leases"] == "3" and submitted["expected"] == error and
@@ -259,7 +303,7 @@ def validate_negatives(guests, qemu, mapping, requests, required, output_mapping
         for vector, row in enumerate(data[4*index:4*index+4]):
             expected = oracle_checksum(vector, elements) if vector < 2 else checksum64(
                 struct.pack(f"<{elements}I", *([0x7fc00001] * elements)))
-            require(row["node"] == "1" and row["case"] == name and row["op_id"] == operation and
+            require(row["node"] == consumer and row["case"] == name and row["op_id"] == operation and
                     number(row, "vector") == vector and row["checksum"] == expected and
                     number(row, "bytes") == tensor_bytes and row["unchanged"] == "pass",
                     "negative probe changed original payload")
@@ -277,7 +321,7 @@ def validate_negatives(guests, qemu, mapping, requests, required, output_mapping
                 events.append((row["case"], row.get("state", row.get("vector")), row["op_id"]))
                 positions.append(position)
     first_positive = next(i for i, line in enumerate(lines)
-                          if line.startswith("MANAGED_PTO node=1 dispatch=1 op_id="))
+                          if line.startswith(f"MANAGED_PTO node={consumer} dispatch=1 op_id="))
     mapping_position = next(i for i, line in enumerate(lines)
                             if line.startswith("MANAGED_PTO ") and "cpu_base=" in line)
     require(events == expected_events and mapping_position < positions[0] and
@@ -371,6 +415,7 @@ def validate_execution_negatives(text, mapping, operations, positive_request, ou
 
 def validate_readonly_inputs(guests, maps, output_maps, requests, required,
                              geometry=GEOMETRIES["cross-page"]):
+    consumer = maps[1]["node"]
     _, object_bytes, offsets = geometry
     probes = [records(text, "MANAGED_PTO_READONLY") for text in guests]
     pairs = [records(text, "MANAGED_OWNER_PAIR") for text in guests]
@@ -380,7 +425,7 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required,
     require(not probes[0] and [row["probe"] for row in probes[1]] ==
             ["sdk-write-denied", "cpu-write-denied", "input-unchanged"],
             "missing or unexpected read-only probes")
-    require(all(row["node"] == "1" and row["object"] == "input" for row in probes[1]),
+    require(all(row["node"] == consumer and row["object"] == "input" for row in probes[1]),
             "read-only probe used the wrong mapping")
     sdk, cpu, unchanged = probes[1]
     require(sdk["cpu_rc"] == sdk["compute_rc"] == "-13" and
@@ -396,9 +441,9 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required,
     probe_positions = [i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO_READONLY ")]
     first_submit = next(i for i, line in enumerate(lines) if
         line.startswith("MANAGED_PTO_NEGATIVE ") or
-        line.startswith("MANAGED_PTO node=1 dispatch=1 op_id="))
+        line.startswith(f"MANAGED_PTO node={consumer} dispatch=1 op_id="))
     last_completion = next(i for i, line in enumerate(lines) if
-        line.startswith("MANAGED_PTO node=1 dispatch=2 completion_op="))
+        line.startswith(f"MANAGED_PTO node={consumer} dispatch=2 completion_op="))
     ready = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO ") and
                  "cpu_verify=" in line and records(line, "MANAGED_PTO")[0]["vector"] == "1")
     drained = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_OWNER ") and
@@ -407,7 +452,7 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required,
             last_completion < probe_positions[2] < drained,
             "read-only checks do not surround the original compute sequence")
     for node, rows in enumerate(pairs):
-        require(len(rows) == 1 and rows[0]["node"] == str(node) and
+        require(len(rows) == 1 and rows[0]["node"] == maps[node]["node"] and
                 rows[0]["shared_domain"] == "1" and
                 rows[0]["input_mapping_id"] == maps[node]["mapping_id"] and
                 rows[0]["output_mapping_id"] == output_maps[node]["mapping_id"],
@@ -433,7 +478,7 @@ def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads)
                 ["adopted", "closing", "workers-drained", "drained"] if label == "input" else
                 ["adopted", "closing", "drained"])
             require([row["state"] for row in selected] == phases and
-                    all(row["node"] == str(node) for row in selected), "owner lifecycle sequence mismatch")
+                    all(row["node"] == mapping["node"] for row in selected), "owner lifecycle sequence mismatch")
             adopted, drained = selected[0], selected[-1]
             require(adopted["generation"] == mapping["generation"] and
                     adopted["mapping_id"] == mapping["mapping_id"] and
@@ -460,12 +505,12 @@ def validate_readonly_owners(guests, maps, outputs, requests, recovery, threads)
                     closing["operation_id"] == (requests[1] if recovery else "0"),
                     "read-only owner close/admission guard mismatch")
             completion = next(i for i, line in enumerate(lines) if
-                line.startswith("MANAGED_PTO node=1 dispatch=2 completion_op="))
+                line.startswith(f"MANAGED_PTO node={mapping['node']} dispatch=2 completion_op="))
             if recovery:
                 submit = next(i for i, line in enumerate(lines) if
-                    line.startswith("MANAGED_PTO node=1 dispatch=2 op_id="))
+                    line.startswith(f"MANAGED_PTO node={mapping['node']} dispatch=2 op_id="))
                 timeout = next(i for i, line in enumerate(lines) if
-                    line.startswith("MANAGED_PTO_WAIT node=1 dispatch=2 ") and "state=timeout" in line)
+                    line.startswith(f"MANAGED_PTO_WAIT node={mapping['node']} dispatch=2 ") and "state=timeout" in line)
                 require(submit < positions[1] < timeout < completion,
                         "owner guard outside the original pending operation")
             else:
@@ -485,7 +530,7 @@ def validate_owners(guests, maps, requests, recovery, threads):
         states = ["adopted", "drained"] if node == 0 else [
             "adopted", "closing", "workers-drained", "drained"]
         require([r["state"] for r in rows] == states and
-                all(number(r, "node") == node for r in rows), "owner lifecycle sequence mismatch")
+                all(r["node"] == maps[node]["node"] for r in rows), "owner lifecycle sequence mismatch")
         adopted, drained = rows[0], rows[-1]
         require(adopted["generation"] == maps[node]["generation"] and
                 adopted["mapping_id"] == maps[node]["mapping_id"] and
@@ -514,13 +559,13 @@ def validate_owners(guests, maps, requests, recovery, threads):
                 number(workers, "checks") >= threads and workers["cpu_verify"] == "pass",
                 "worker CPU verification or post-seal access missing")
         completion_position = next(i for i, line in enumerate(lines)
-                                   if line.startswith("MANAGED_PTO node=1 dispatch=2 completion_op="))
+                                   if line.startswith(f"MANAGED_PTO node={maps[node]['node']} dispatch=2 completion_op="))
         require(completion_position < owner_positions[2], "workers drained before original completion")
         if recovery:
             submit_position = next(i for i, line in enumerate(lines)
-                                   if line.startswith("MANAGED_PTO node=1 dispatch=2 op_id="))
+                                   if line.startswith(f"MANAGED_PTO node={maps[node]['node']} dispatch=2 op_id="))
             timeout_position = next(i for i, line in enumerate(lines)
-                                    if line.startswith("MANAGED_PTO_WAIT node=1 dispatch=2 ") and
+                                    if line.startswith(f"MANAGED_PTO_WAIT node={maps[node]['node']} dispatch=2 ") and
                                     "state=timeout" in line)
             require(submit_position < owner_positions[1] < timeout_position < completion_position,
                     "owner guard outside original pending operation")
@@ -711,7 +756,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--node-a", required=True, type=Path)
     parser.add_argument("--node-b", required=True, type=Path)
-    parser.add_argument("--qemu-b", required=True, type=Path)
+    parser.add_argument("--qemu-a", type=Path)
+    parser.add_argument("--qemu-b", type=Path)
+    parser.add_argument("--home-node", type=int, choices=(0, 1))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--require-timeout-recovery", action="store_true")
     parser.add_argument("--access-threads", type=int, choices=range(9))
@@ -719,13 +766,16 @@ def main():
     parser.add_argument("--require-readonly-inputs", action="store_true")
     parser.add_argument("--layout", choices=GEOMETRIES, default="cross-page")
     args = parser.parse_args()
-    paths = [args.node_a, args.node_b, args.qemu_b]
+    qemu_path = args.qemu_a if args.home_node == 1 else args.qemu_b
+    if qemu_path is None:
+        parser.error("--qemu-a is required for home 1; --qemu-b is required for home 0")
+    paths = [args.node_a, args.node_b, qemu_path]
     try:
         contents = [path.read_bytes() for path in paths]
         text = [data.decode("utf-8", errors="replace") for data in contents]
         result = validate(text[:2], text[2], args.require_timeout_recovery,
                           args.access_threads, args.require_negative_checks,
-                          args.require_readonly_inputs, args.layout)
+                          args.require_readonly_inputs, args.layout, args.home_node)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:

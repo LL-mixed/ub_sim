@@ -293,6 +293,22 @@ guard 返回值失败及修复前后原生回归均保留。此子集不关闭�
 尾片为 144 bytes。r179 默认单对象四线程六负例和 r180 旧 direct 入口回归均
 runner/container exit 0，无 QEMU 遗留。完整 AM2 保持未完成。
 
+两节点 home 互换的接入约定：managed CLI 增加 `home_node=0|1`，默认 0。
+home 节点负责分配、初始化、核对远端写回和退役，另一节点执行 PTO；实际
+node ID、requester CNA 和日志来源保持不变。测试基础设施仍在 node 0 启动
+控制服务，通过现有 `allocation_home_provider` 选择实际 home worker，两个
+worker 保持运行到 runner 收到双方完成。CPU-only 与 legacy direct 不改变。
+CLI 必须核对服务返回的 home provider；验收器分别识别角色与物理节点，选择
+实际计算节点的 QEMU 日志，并核对 home 端导出及远端 backing 身份。不得改写
+原始日志中的节点编号。两方向均须通过数据、权限、原 completion 和资源判据；
+此项不替代同时多 home 协调或多请求并发验收。
+
+guest 启动参数中的 home 选项使用 `lingqu_shmem_pto.home_node` 命名空间，
+由 `run_app` 从 `/proc/cmdline` 读取；host 配置和 managed CLI 字段保持不变。
+带点的应用参数不占用 Linux 未知参数转交 init 时的环境槽位。r186b 诊断
+暴露原下划线写法超出 `CONFIG_INIT_ENV_ARG_LIMIT=32`，在服务启动前 panic；
+修复须覆盖 guest 解析与环境槽位回归，不调整 kernel 限额或放宽验收判据。
+
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
 - 完成 CPU/PTO 双向写读及 PTO/PTO 写读的 publish/acquire，核对真实指令和 backing。
@@ -443,7 +459,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
 | AM1 | 进行中：双节点 CPU/SDK、页保护、SDK/provider 描述符负例、home kernel checked-export 身份负例、资源与容量、并发分配子集已通过；完整阶段未完成 | 下一数据能力推进同对象 CPU/PTO 接入；长期循环、合法格式旧身份及完整矩阵仍须独立完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，r123 的 17 组 kernel 检查、r124 两端各 24 组 provider 检查和 r125 两轮 SDK 实测通过；A01-A06/A09 整项仍未关闭 |
-| AM2 | 进行中：四种读写组合、原 completion 恢复、四线程 shared owner、只读双对象、r176 的 ND 原日志独立复核、r177b 大尺寸六负例及 r178 tail 四线程迟到恢复通过；完整阶段未完成 | home 互换、多请求计算并发及现有全局对象引用绑定 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r176 原 runner 解析失败记录保留；r177b 为 170 个实际分片；r178 为两次恢复、144 次线程检查及 102 个分片；r179/r180 默认与旧入口回归通过，r181b 原日志复验一致；A07-A11 整项仍未关闭 |
+| AM2 | 进行中：四种读写组合、四线程 owner、只读双对象、ND/tail 大尺寸与 cross-page home 互换子集通过；完整阶段未完成 | 多请求计算并发、现有全局对象引用绑定及更大尺寸反向 home | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r176/r177b/r178 的大尺寸数据、负例、恢复和分片证据保留；r186c 反向原日志独立复核，r191/r192 权限矩阵、r193/r194 两方向原 completion 恢复通过；启动及解析失败原记录保留；A07-A11 整项仍未关闭 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
 | AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |
 

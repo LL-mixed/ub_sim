@@ -204,6 +204,20 @@ r178 的 tail 四线程、两次原 completion 恢复及 102 个分片整轮通�
 [实施记录](../../../../docs/2026-09-11-gva-managed-service-implementation-progress.md)。
 范围仍是两节点、单 home、两次顺序正常计算，`am2_complete=false`。
 
+home 互换配置：managed CLI 的 `home_node=0|1` 默认 0，指定实际负责分配、
+初始化及退役的节点，另一节点执行 PTO。host 配置使用
+`LINGQU_SHMEM_PTO_HOME_NODE`；控制服务仍在 node 0，现有 home provider 配置
+随之选择对应 worker。CPU-only 和 legacy direct 的角色保持原约定。
+验收器显式 `--home-node` 时要求真实 home provider、home 导出 segment 及计算
+requester 证据；home 1 使用 `--qemu-a`，home 0 使用 `--qemu-b`。原节点编号和
+原始文件 SHA 均保留。内部启动参数使用 `lingqu_shmem_pto.home_node`，
+避免占用 Linux 未知 boot 参数转交 init 时的环境槽位。
+r186c 的 home 1 只读双对象、四线程及原始 backing 经独立原日志复核通过，
+原 runner 的 worker 提示解析失败保留。r191 的 home 0 单对象四线程六负例、
+r192 的 home 1 只读双对象六负例，以及 r193/r194 的两方向四线程原 completion
+恢复均整轮通过。范围为 cross-page 256-byte 视图及两次顺序正常计算；
+ND/tail 反向 home、多请求计算并发与同时多 home 仍需独立验收。
+
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when
 the mapping provider supports it. Linux device/PFN mappings can return

@@ -2,6 +2,7 @@ import importlib.util
 import hashlib
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -275,7 +276,98 @@ def large_fixture(layout="nd", recovery=False, negative=False, readonly=True):
     return guests, "\n".join(lines)
 
 
+def home_fixture(home, layout="cross-page", recovery=False, negative=False):
+    """Synthetic physical-node/role fixture; never changes a runtime log."""
+    guests, qemu = (readonly_fixture(recovery=recovery, negative=negative) if layout == "cross-page"
+                   else large_fixture(layout=layout, readonly=True, recovery=recovery, negative=negative))
+    if home == 1:
+        qemu = qemu.replace("requester_cna=0xf002", "requester_cna=0xf001")
+        qemu = qemu.replace("peer_cna=0x1", "peer_cna=0x2").replace("dcna=0x1", "dcna=0x2")
+        qemu = qemu.replace("peer=0x1", "peer=0x2").replace("local_cna=0x2", "local_cna=0x1")
+    physical = [None, None]
+    for role, text in enumerate(guests):
+        node = home if role == 0 else 1 - home
+        lines = []
+        for line in text.splitlines():
+            line = re.sub(r"\bnode=[01]\b", f"node={node}", line)
+            if "cpu_base=" in line:
+                line += f" home_node={home} home_provider=guest-node-{home} requester_cna={0xf001+node:#x}"
+                if role == 0:
+                    mapping = validator.records(line, "MANAGED_PTO")[0]
+                    bound = next(row for row in validator.records(qemu, "QEMU_UB_GM_GSVA_BIND")
+                                 if row["home_va"] == mapping["cpu_base"])
+                    lines.append(f"obmm-worker generation={mapping['generation']} phase=exported "
+                                 f"segment={int(bound['segment'], 0)} export=2")
+            lines.append(line)
+        physical[node] = "\n".join(lines)
+    return physical, qemu
+
+
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_home_export_contract_ignores_worker_prose_and_rejects_malformed_exports(self):
+        for home in (0, 1):
+            guests, qemu = home_fixture(home)
+            notices = (
+                f"obmm-worker starting provider refresh node=guest-node-{home}\n"
+                "obmm-worker initial refresh provider_directory_ready=1\n"
+                "obmm-worker work key=fixture generation=1 state=allocating\n"
+                "obmm-worker generation=0 phase=worker-start segment=0 export=0\n"
+            )
+            guests[home] = notices + guests[home]
+            self.assertTrue(validator.validate(guests, qemu, False, 4, False, True,
+                                              home_node=home)["home_export_verified"])
+            for invalid in ("unexpected ", "phase=reserved ", "generation=999 "):
+                changed = list(guests)
+                changed[home] = changed[home].replace("phase=exported ", "phase=exported " + invalid, 1)
+                with self.subTest(home=home, invalid=invalid), self.assertRaises(ValueError):
+                    validator.validate(changed, qemu, False, 4, False, True, home_node=home)
+
+    def test_home_cli_selects_actual_compute_log_and_hashes_original_bytes(self):
+        guests, qemu = home_fixture(1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            paths = [root/name for name in ("nodeA.log", "nodeB.log", "qemuA.log", "qemuB.log")]
+            for path, text in zip(paths, [*guests, qemu, "unrelated home QEMU diagnostic"]):
+                path.write_bytes(text.encode())
+            output = root/"report.json"
+            command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]), "--node-b", str(paths[1]),
+                "--qemu-b", str(paths[3]), "--home-node", "1", "--require-readonly-inputs",
+                "--access-threads", "4", "--output", str(output)]
+            self.assertEqual(subprocess.run(command, capture_output=True).returncode, 2)
+            result = subprocess.run(command+["--qemu-a", str(paths[2])], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+            report = json.loads(output.read_text())
+            self.assertEqual([row["path"] for row in report["sources"]], [str(path) for path in paths[:3]])
+            self.assertEqual(report["sources"][2]["sha256"], hashlib.sha256(qemu.encode()).hexdigest())
+
+    def test_home_roles_preserve_geometry_negatives_and_original_completion(self):
+        for home in (0, 1):
+            for layout in ("cross-page", "nd", "tail"):
+                for recovery, negative in ((False, False), (True, False), (False, True)):
+                    with self.subTest(home=home, layout=layout, recovery=recovery, negative=negative):
+                        guests, qemu = home_fixture(home, layout, recovery, negative)
+                        result = validator.validate(guests, qemu, recovery, 4, negative, True, layout, home)
+                        self.assertEqual(result["home_node"], home)
+                        self.assertEqual(result["compute_node"], 1-home)
+                        self.assertTrue(result["home_export_verified"])
+
+    def test_home_gate_rejects_wrong_node_provider_export_and_compute_requester(self):
+        guests, qemu = home_fixture(1)
+        for changed in (
+            list(reversed(guests)),
+            [text.replace("home_provider=guest-node-1", "home_provider=guest-node-0") for text in guests],
+            [text.replace("home_node=1", "home_node=0") for text in guests],
+            [text.replace("phase=exported", "phase=reserved") for text in guests],
+            [text.replace("export=2", "export=0") for text in guests],
+            [guests[0].replace("MANAGED_PTO node=0 dispatch=1", "MANAGED_PTO node=1 dispatch=1"), guests[1]],
+        ):
+            with self.assertRaises((ValueError, KeyError)):
+                validator.validate(changed, qemu, False, 4, False, True, home_node=1)
+        for changed in (qemu.replace("requester_cna=0xf001", "requester_cna=0xf002"),
+                        qemu.replace("segment=0x6", "segment=0x16")):
+            with self.assertRaises(ValueError):
+                validator.validate(guests, changed, False, 4, False, True, home_node=1)
+
     def test_bulk_parser_does_not_reparse_scalar_io_as_pto_metadata(self):
         _, qemu = large_fixture(negative=True)
         scalar = (

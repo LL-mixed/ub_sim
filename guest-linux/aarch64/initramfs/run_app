@@ -1158,6 +1158,11 @@ mem_service_object_share_managed() (
   incarnation="$6"
   fault="$7"
   access="${8:-cpu}"
+  home_node=0
+  if [ "$access" = "cpu-pto" ]; then
+    home_node="$(cmdline_value lingqu_shmem_pto.home_node 0)"
+    case "$home_node" in 0|1) ;; *) exit 2 ;; esac
+  fi
   connect="tcp:10.0.0.1:$port"
   daemon_pid=""
   worker_pid=""
@@ -1198,7 +1203,7 @@ mem_service_object_share_managed() (
       echo "network_peer=guest-node-1@10.0.0.2"
       echo "required_provider=guest-node-0"
       echo "required_provider=guest-node-1"
-      echo "allocation_home_provider=guest-node-0"
+      echo "allocation_home_provider=guest-node-$home_node"
       echo "provider_lease_ms=30000"
     } >/tmp/managed-share.daemon.conf
     /bin/linqu_mem_service serve --config /tmp/managed-share.daemon.conf &
@@ -1232,6 +1237,7 @@ mem_service_object_share_managed() (
       echo "connect=$connect"
       echo "key=managed-pto-$incarnation"
       echo "node_id=$node"
+      echo "home_node=$home_node"
       echo "generation=$(cmdline_value lingqu_shmem_pto_generation '')"
       echo "requester_cna=$(cmdline_value lingqu_shmem_pto_requester_cna '')"
       echo "artifact_fingerprint=$(cmdline_value lingqu_shmem_pto_artifact_fingerprint '')"
@@ -1377,6 +1383,10 @@ mem_service_object_share_managed() (
   /bin/linqu_gva_manager --dump-obmm-regions || exit 1
   role=provider
   [ "$node" = "0" ] || role=consumer
+  if [ "$access" = "cpu-pto" ]; then
+    role=consumer
+    [ "$node" != "$home_node" ] || role=provider
+  fi
   log "mem_service object-share: status=ok node=$node role=$role backend=obmm"
   # The headless runner owns infrastructure shutdown after both clients pass.
   # Keep home exports and the daemon alive independently of client sessions.
@@ -1420,6 +1430,10 @@ run_mem_service_object_share() {
     return 2
   fi
   if [ "$access" = "cpu-pto" ]; then
+    case "$(cmdline_value lingqu_shmem_pto.home_node 0)" in
+      0|1) ;;
+      *) log "mem_service object-share: status=fail node=$node_idx reason=access_home"; return 2 ;;
+    esac
     case "$(cmdline_value lingqu_shmem_pto_layout cross-page):$(cmdline_value lingqu_shmem_pto_elements 64):$size" in
       cross-page:64:65536|nd:16384:262144|tail:16256:262144) ;;
       *)

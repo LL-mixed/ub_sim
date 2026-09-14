@@ -2279,3 +2279,76 @@ import/export 正常释放。该轮使用同一最终 CLI/rootfs 和重建的普
 
 大尺寸正常、负例及四线程迟到完成的组合已通过。home 互换、多请求计算并发、
 全局对象引用绑定及后续阶段仍待补齐，`am2_complete=false`。
+
+## 2026-09-14 续作：两节点 home 互换与双方向完成恢复
+
+managed CLI 新增 `home_node=0|1`，默认 0；host 配置为
+`LINGQU_SHMEM_PTO_HOME_NODE`。选中的 home 实际执行分配、输入初始化、远端
+输出核对及退役，另一节点执行 PTO。控制服务保持 node 0，通过已有
+`allocation_home_provider` 选择 worker；CPU-only 和 legacy direct 角色不变。
+CLI 在等待分配和 acquire 后核对返回的 home provider。实际 node ID、requester
+CNA 和原始日志编号保持不变，验收器按角色选择原 nodeA/nodeB 文件，显式核对
+home worker 导出、计算节点 GSVA backing segment、requester 及原日志 SHA。
+
+### 实跑发现与修复
+
+- r186 两端 FM/entity 就绪，但串口均为空，600 秒等待后 runner exit 1，迭代
+  exit 31。r186b 用相同 kernel/QEMU/CLI/rootfs 开启 QMP，实际 CPU 寄存器
+  保留 `Too many boot env vars` 和两端 `linqu_node_idx` 文本。对照实际内核
+  `unknown_bootoption()`，新增的下划线 home 参数消耗 init 环境槽位，触及
+  32 项限额，在服务启动前 panic。诊断证据保留后主动停止该容器，exit 137；
+  两轮均确认无 QEMU 遗留，未将诊断退出写成通过。
+- r190 改用内部 `lingqu_shmem_pto.home_node`；带点的应用参数由 `run_app`
+  读取 `/proc/cmdline`，不占未知参数转交 init 的槽位。host/native CLI 字段
+  保持原接口，kernel 限额不变。新增轻量回归直接编译仓库内核参数接纳函数，
+  旧写法在边界触发失败，新写法通过；真实 guest 参数解析覆盖 home 0/1。
+- r186c 恢复正常启动，双方完成数据与资源检查，但原 runner exit 1：校验器
+  将 `obmm-worker starting provider refresh ...` 等普通提示当成结构化行。
+  r190a 仅对 export 事件应用导出合同；格式损坏、重复字段、缺失/重复导出、
+  segment、home 和 requester 错配继续拒绝。新增 mixed-log 回归覆盖两方向。
+  独立断网容器读取未改动的三份原始日志，exit 0；独立报告为
+  `managed-pto-revalidated-r186c-r190a.json`，原失败报告和日志保留。
+
+### 实际运行结果
+
+所有运行均在 n4-910c1 的两 guest 环境，cross-page 每视图 256 bytes，每对象
+逻辑大小 65,536 bytes。两个正常计算的 C/D checksum 为
+`d602274b27b2bb23` / `c90bc7e9a551a6b3`；只读模式的完整输入前后均为
+`d63638b5e3d6ed83`。下表的“线程检查”统计 CPU reader，正常 PTO 仍为两次
+顺序 dispatch，不将其解释为并发计算吞吐。
+
+| 运行 | 实际 home / compute | 模式与结果 | 线程检查 |
+| --- | --- | --- | --- |
+| r186c / r190a 复核 | 1 / 0 | 两对象只读输入、两正常计算，原日志独立复核通过；原 runner 解析失败保留 | 4 线程、3,962 次 |
+| r191 | 0 / 1 | 默认单对象、六拒绝、24 次视图不变、两正常计算；runner/container exit 0 | 4 线程、1,175 次 |
+| r192 | 1 / 0 | 只读双对象、六拒绝、24 次视图不变、两正常计算；runner/container exit 0 | 关闭后台 reader |
+| r193 | 1 / 0 | 只读双对象、两次原 completion 恢复；runner/container exit 0 | 4 线程、4,015 次 |
+| r194 | 0 / 1 | 同版程序的匹配只读双对象恢复；runner/container exit 0 | 4 线程、3,988 次 |
+
+r193 的原 operation 为 `20260914631/20260914632`，r194 为
+`20260914641/20260914642`。初始 5 ms 等待超时后继续等待原操作，无重复提交。
+第二次操作等待期间，输入/输出 owner 分别保留 1/2 个 compute 与 in-flight pin，
+关闭及新借用均拒绝；四线程均在 sealed 后继续检查，然后全部退出。只读输入的
+CPU 写探针得到 signal 11/code 2，SDK CPU/compute 写借用返回 -13。
+正常组合为 4 LOAD、2 STORE、2 fence；六负例组合为 8 LOAD、2 STORE、
+2 fence。两方向实际 export segment 与计算 binding 一致，staging 为 0；
+两端 holder、owner/pin、kernel region 回到基线，无 QEMU 遗留。
+r191-r194 的输入、源码和算子工件后验 SHA 均不变。
+
+r190a 的 Python 定向 96 项为 94 通过、2 环境跳过，16.397 秒；完整根 517 项
+为 498 通过、5 跳过、5 失败、9 错误，61.399 秒。14 个失败 ID 与原基线一致。
+layout 为 72 通过、原 2 失败；Rust 43 个顶层目标为 931 通过、32 失败、
+16 ignored，与重新编译父版本的失败集合一致。完整套件未全绿。修复前 r184、
+r185、r190 的完整回归和失败记录继续保留，未隐藏失败或以 skip 替代。
+
+最终 native CLI SHA 为
+`5a5b066303d4c47876b1677dc3af362e8437dd7d9fb21743831c813205fa529e`，
+rootfs r190 为 `0abb19cdd0a1dee5113d3cee5a0fd2e5675c258d56e27ebe4f37ecf9d55adf09`。
+QEMU r156、kernel r109、driver r138、服务提交
+`6f090162536f0a92235587b13519306f28f3eaec` 及 r175b cross-page 普通/负例
+算子工件保持原 SHA。本轮不修改服务子模块、不 push、不更新父仓库 gitlink/lock。
+完整回归和 guest 运行均在远端，全部网络操作记录到任务审计日志。
+
+该结果推进 A07-A11 的 cross-page home 互换子集，`am2_complete=false`。
+ND/tail 反向 home、多请求计算并发、现有全局对象引用绑定、同时多 home 协调，
+以及 AM1/AM3/AM4 与原总计划剩余出口继续保留，不能由本轮双节点结果替代。

@@ -79,6 +79,7 @@ LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS="${LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS:-0}"
 LINGQU_SHMEM_PTO_ACCESS_THREADS="${LINGQU_SHMEM_PTO_ACCESS_THREADS:-0}"
 LINGQU_SHMEM_PTO_NEGATIVE_CHECKS="${LINGQU_SHMEM_PTO_NEGATIVE_CHECKS:-0}"
 LINGQU_SHMEM_PTO_READONLY_INPUTS="${LINGQU_SHMEM_PTO_READONLY_INPUTS:-0}"
+LINGQU_SHMEM_PTO_HOME_NODE="${LINGQU_SHMEM_PTO_HOME_NODE:-0}"
 LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
 LINGQU_SHMEM_PTO_NODEA_CNA="${LINGQU_SHMEM_PTO_NODEA_CNA:-0xf001}"
 LINGQU_SHMEM_PTO_NODEB_CNA="${LINGQU_SHMEM_PTO_NODEB_CNA:-0xf002}"
@@ -489,6 +490,7 @@ validate_lingqu_shmem_pto_config() {
     "access-threads:$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
     "negative-checks:$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS" \
     "readonly-inputs:$LINGQU_SHMEM_PTO_READONLY_INPUTS" \
+    "home-node:$LINGQU_SHMEM_PTO_HOME_NODE" \
     "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
     "nodeA-cna:$LINGQU_SHMEM_PTO_NODEA_CNA" \
     "nodeB-cna:$LINGQU_SHMEM_PTO_NODEB_CNA" \
@@ -694,6 +696,12 @@ validate_lingqu_shmem_pto_config() {
     "$LINGQU_SHMEM_PTO_LAYOUT" \
     "$LINGQU_SHMEM_PTO_ELEMENTS" "$managed_negative_checks" "$LINGQU_SHMEM_PTO_GENERATION"
 
+  if (( LINGQU_SHMEM_PTO_HOME_NODE > 1 )) ||
+     { (( LINGQU_SHMEM_PTO_HOME_NODE != 0 )) && ! managed_pto_selected; }; then
+    echo "home node requires managed cpu-pto and a value in 0..1" >&2
+    exit 2
+  fi
+  LINGQU_SHMEM_PTO_HOME_NODE=$((LINGQU_SHMEM_PTO_HOME_NODE))
   LINGQU_SHMEM_PTO_ELEMENTS=$((LINGQU_SHMEM_PTO_ELEMENTS))
   LINGQU_SHMEM_PTO_GENERATION=$((LINGQU_SHMEM_PTO_GENERATION))
   LINGQU_SHMEM_PTO_TOKEN_VALUE=$((LINGQU_SHMEM_PTO_TOKEN_VALUE))
@@ -723,6 +731,8 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_access_threads=$LINGQU_SHMEM_PTO_ACCESS_THREADS"
   append_cmdline_if_missing "lingqu_shmem_pto_negative_checks=$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS"
   append_cmdline_if_missing "lingqu_shmem_pto_readonly_inputs=$LINGQU_SHMEM_PTO_READONLY_INPUTS"
+  # This userspace-only option must not consume a kernel init environment slot.
+  append_cmdline_if_missing "lingqu_shmem_pto.home_node=$LINGQU_SHMEM_PTO_HOME_NODE"
   append_cmdline_if_missing "lingqu_shmem_pto_cancel_after_ms=$LINGQU_SHMEM_PTO_CANCEL_AFTER_MS"
   append_cmdline_if_missing "lingqu_shmem_pto_expect=$LINGQU_SHMEM_PTO_EXPECT"
   append_cmdline_if_missing "lingqu_shmem_pto_fault_case=$LINGQU_SHMEM_PTO_FAULT_CASE"
@@ -3833,7 +3843,8 @@ run_iteration() {
       fi
       python3 "${SCRIPT_DIR}/validate_managed_pto.py" \
         --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
-        --qemu-b "$nodeb_qemu_log" \
+        --qemu-a "$nodea_qemu_log" --qemu-b "$nodeb_qemu_log" \
+        --home-node "$LINGQU_SHMEM_PTO_HOME_NODE" \
         --layout "$LINGQU_SHMEM_PTO_LAYOUT" \
         --access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
         "${recovery_args[@]}" \
@@ -3952,6 +3963,7 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
     echo "lingqu_shmem_pto_elements=${LINGQU_SHMEM_PTO_ELEMENTS}"
     echo "lingqu_shmem_pto_generation=${LINGQU_SHMEM_PTO_GENERATION}"
     echo "lingqu_shmem_pto_nodea_cna=${LINGQU_SHMEM_PTO_NODEA_CNA}"
+    echo "lingqu_shmem_pto_home_node=${LINGQU_SHMEM_PTO_HOME_NODE}"
     echo "lingqu_shmem_pto_nodeb_cna=${LINGQU_SHMEM_PTO_NODEB_CNA}"
     echo "lingqu_shmem_pto_authorization_delay_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_DELAY_NS}"
     echo "lingqu_shmem_pto_authorization_timeout_ns=${LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS}"
