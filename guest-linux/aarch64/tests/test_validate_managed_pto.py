@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -204,7 +205,196 @@ def readonly_fixture(recovery=False, negative=False, threads=4):
     return guests, "\n".join(converted)
 
 
+def large_fixture(layout="nd", recovery=False, negative=False, readonly=True):
+    """Synthetic profile/chunk parser fixture; never actual transport evidence."""
+    guests, qemu = (readonly_fixture(recovery, negative) if readonly else
+                    negative_fixture() if negative else owned_fixture(recovery))
+    elements, object_bytes, offsets = validator.GEOMETRIES[layout]
+    tensor_bytes = elements * 4
+    old_offsets = validator.GEOMETRIES["cross-page"][2]
+    for node, text in enumerate(guests):
+        lines = []
+        for line in text.splitlines():
+            if not line.startswith("MANAGED_"):
+                lines.append(line)
+                continue
+            prefix = line.split()[0]
+            row = validator.records(line, prefix)[0]
+            if "logical_bytes" in row:
+                row["logical_bytes"] = str(object_bytes)
+            if "vector" in row:
+                vector = int(row["vector"])
+                row["bytes"] = str(tensor_bytes)
+                row["checksum"] = (validator.checksum64(validator.struct.pack(
+                    f"<{elements}I", *([0x7fc00001] * elements)))
+                    if prefix == "MANAGED_PTO_NEGATIVE_DATA" and vector >= 2 else
+                    validator.oracle_checksum(vector, elements))
+            if "inputs_published" in row or row.get("probe") == "input-unchanged":
+                row["bytes"] = str(object_bytes)
+            if row.get("probe") == "cpu-write-denied":
+                row["address"] = hex(0x700000000000 + offsets[0])
+            if "offsets" in row:
+                views = (0, 1, 2) if row["dispatch"] == "1" else (2, 1, 3)
+                row.update(offsets=",".join(str(offsets[v]) for v in views),
+                           tensor_bytes=str(tensor_bytes))
+            lines.append(prefix + " " + " ".join(f"{k}={v}" for k, v in row.items()))
+        guests[node] = "\n".join(lines)
+    lines, bindings, authorizations, chunk_id = [], {}, {}, 1000
+    for line in qemu.splitlines():
+        prefix = line.split()[0]
+        row = validator.records(line, prefix)[0]
+        views = (2, 1, 3) if row.get("request") == "102" else (0, 1, 2)
+        if "binding" in row:
+            vector = views[int(row["binding"]) - 1]
+            for key in ("local", "addr"):
+                if key in row:
+                    row[key] = hex(int(row[key], 0) - old_offsets[vector] + offsets[vector])
+            if "length" in row:
+                row["length"] = str(tensor_bytes)
+            key = row["request"], row["binding"]
+            if prefix.endswith("_AUTHORIZE"):
+                authorizations[key] = row
+            if prefix == "QEMU_UB_GM_GSVA_BIND":
+                bindings[key] = row
+            if prefix in ("QEMU_UB_GM_LOAD", "QEMU_UB_GM_STORE"):
+                for done in range(0, tensor_bytes, 4055):
+                    chunk_id += 1
+                    size = min(4055, tensor_bytes - done)
+                    backing = bindings[key]
+                    peer = authorizations[key]["peer_cna"]
+                    address = int(backing["home_va"], 0) + offsets[vector] + done
+                    lines += [f"ubc sim_dec read send req={chunk_id} uba={address:#x} "
+                        f"len={size} done={done} dcna={peer} token={backing['backing_token']} local_cna=0x2",
+                        f"ubc sim_dec rx read_resp req={chunk_id} status=0 data_len={size} "
+                        f"wire_len={size} copy_len={size} expect={size} peer={peer}"]
+        if prefix == "QEMU_UB_GM_UNBIND":
+            row["load_bytes"] = str(2 * tensor_bytes)
+            if row["store_bytes"] != "0":
+                row["store_bytes"] = str(tensor_bytes)
+        lines.append(prefix + " " + " ".join(f"{k}={v}" for k, v in row.items()))
+    return guests, "\n".join(lines)
+
+
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_bulk_parser_does_not_reparse_scalar_io_as_pto_metadata(self):
+        _, qemu = large_fixture(negative=True)
+        scalar = (
+            "ubc sim_dec read send req=10 uba=0xffffffe00000 len=4 done=0 "
+            "dcna=0x1 token=96 local_cna=0x2\n"
+            "ubc sim_dec rx read_resp req=10 status=0 data_len=4 wire_len=4 "
+            "copy_len=4 expect=4 peer=0x1\n"
+        )
+        with mock.patch.object(validator, "records", wraps=validator.records) as parse:
+            result = validator.validate_transport_chunks(
+                scalar + "unrelated guest diagnostic\n" + qemu, ["101", "102"],
+                validator.GEOMETRIES["nd"])
+        self.assertEqual(result["load"], 136)
+        self.assertEqual(result["store"], 34)
+        for call in parse.call_args_list:
+            text, prefix = call.args
+            if "\n" not in text and text.startswith("ubc sim_dec "):
+                self.assertFalse(prefix.startswith(("QEMU_UB_GM_", "SIM_QEMU_UB_GM_")))
+
+    def test_large_chunks_distinguish_legacy_bootstrap_from_registered_pto(self):
+        guests, qemu = large_fixture(readonly=True)
+        # Synthetic legacy bootstrap page read; this is not strict PTO I/O.
+        bootstrap = "\n".join((
+            "ubc sim_dec read send req=206 uba=0xffffffe00000 len=4079 done=0 "
+            "dcna=0x1 token=96 local_cna=0x2",
+            "ubc sim_dec rx read_resp req=206 status=0 data_len=4079 wire_len=4079 "
+            "copy_len=4079 expect=4079 peer=0x1",
+            "ubc sim_dec read send req=207 uba=0xffffffe00fef len=17 done=4079 "
+            "dcna=0x1 token=96 local_cna=0x2",
+            "ubc sim_dec rx read_resp req=207 status=0 data_len=17 wire_len=17 "
+            "copy_len=17 expect=17 peer=0x1")) + "\n"
+        result = validator.validate(guests, bootstrap + qemu, False, 4, False, True, "nd")
+        self.assertEqual(result["transport_chunks"]["non_pto_bulk_sends"], 2)
+        self.assertEqual(result["transport_chunks"]["scope"], "registered-pto-dispatches")
+        self.assertEqual(result["transport_chunks"]["load"], 68)
+        marker = "ubc sim_dec read send req=1001"
+        with self.assertRaises(ValueError):
+            validator.validate(guests, qemu.replace(marker, bootstrap + marker, 1),
+                               False, 4, False, True, "nd")
+        with self.assertRaisesRegex(ValueError, "outside a registered PTO dispatch"):
+            validator.validate(guests, bootstrap.replace("token=96", "token=9") + qemu,
+                               False, 4, False, True, "nd")
+
+    def test_large_chunks_require_complete_nonoverlapping_dispatch_windows(self):
+        _, qemu = large_fixture()
+        register = next(line for line in qemu.splitlines()
+                        if line.startswith("SIM_QEMU_UB_GM_BIND_REGISTER"))
+        unbind = next(line for line in qemu.splitlines() if line.startswith("QEMU_UB_GM_UNBIND"))
+        mutations = (qemu.replace(register, "", 1),
+                     qemu.replace(register, register + "\n" + register, 1),
+                     qemu.replace(unbind, "", 1),
+                     qemu.replace(unbind, unbind.replace("request=101", "request=999"), 1))
+        for changed in mutations:
+            with self.assertRaises(ValueError):
+                validator.validate_transport_chunks(changed, ["101", "102"],
+                                                    validator.GEOMETRIES["nd"])
+
+    def test_large_geometry_requires_complete_remote_chunks_and_all_existing_gates(self):
+        for layout in ("nd", "tail"):
+            for recovery, negative, readonly in ((False, False, False), (False, False, True),
+                                                 (True, False, True), (False, True, True)):
+                guests, qemu = large_fixture(layout, recovery, negative, readonly)
+                result = validator.validate(guests, qemu, recovery, 4, negative, readonly, layout)
+                self.assertEqual(result["layout"], layout)
+                chunks = result["transport_chunks"]
+                self.assertEqual(chunks["load"], (8 if negative else 4) * 17)
+                self.assertEqual(chunks["store"], 34)
+                self.assertEqual(chunks["store_bytes"], 2 * result["tensor_bytes"])
+                self.assertTrue(chunks["request_response_verified"])
+                self.assertFalse(result["am2_complete"])
+                with self.assertRaises(ValueError):
+                    validator.validate(guests, qemu, recovery, 4, negative, readonly)
+
+    def test_large_geometry_rejects_missing_replayed_misrouted_and_short_chunks(self):
+        guests, qemu = large_fixture(negative=True)
+        mutations = (("len=4055 done=4055", "len=4055 done=4056"),
+                     ("len=656 done=64880", "len=655 done=64880"),
+                     ("uba=0x700000000000", "uba=0x700000000004"),
+                     ("dcna=0x1 token=9", "dcna=0x2 token=9"),
+                     ("dcna=0x1 token=9", "dcna=0x1 token=10"),
+                     ("status=0 data_len=4055", "status=1 data_len=4055"),
+                     ("wire_len=4055 copy_len=4055", "wire_len=4054 copy_len=4055"),
+                     ("copy_len=4055 expect=4055", "copy_len=4054 expect=4055"),
+                     ("expect=4055 peer=0x1", "expect=4055 peer=0x3"),
+                     ("read_resp req=1001", "read_resp req=9999"),
+                     ("read send req=1002", "read send req=1001"))
+        for before, after in mutations:
+            self.assertIn(before, qemu)
+            with self.subTest(before=before), self.assertRaises(ValueError):
+                validator.validate(guests, qemu.replace(before, after, 1), False, 4, True, True, "nd")
+        lines = qemu.splitlines()
+        for needle in ("read send req=1001", "read_resp req=1001"):
+            line = next(row for row in lines if needle in row)
+            for changed in (qemu.replace(line, "", 1), qemu + "\n" + line):
+                with self.subTest(needle=needle), self.assertRaises(ValueError):
+                    validator.validate(guests, changed, False, 4, True, True, "nd")
+        no_chunks = "\n".join(line for line in lines if not line.startswith("ubc sim_dec "))
+        with self.assertRaisesRegex(ValueError, "transport evidence"):
+            validator.validate(guests, no_chunks, False, 4, True, True, "nd")
+
+    def test_large_cli_requires_profile_and_preserves_original_source_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [pathlib.Path(directory) / name for name in ("a.log", "b.log", "q.log")]
+            guests, qemu = large_fixture("tail", recovery=True)
+            for path, data in zip(paths, guests + [qemu]):
+                path.write_bytes(data.replace("\n", "\r\n").encode())
+            command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]),
+                       "--node-b", str(paths[1]), "--qemu-b", str(paths[2]),
+                       "--require-readonly-inputs", "--require-timeout-recovery", "--access-threads", "4"]
+            self.assertEqual(subprocess.run(command, capture_output=True, timeout=5).returncode, 1)
+            result = subprocess.run(command + ["--layout", "tail"], capture_output=True,
+                                    text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["tensor_bytes"], 65024)
+            self.assertEqual(report["transport_chunks"]["load"], 68)
+            for row, path in zip(report["sources"], paths):
+                self.assertEqual(row["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
+
     def test_readonly_objects_preserve_all_compute_negative_and_recovery_gates(self):
         for recovery, negative, threads in ((False, False, 0), (False, False, 4),
                                             (True, False, 4), (False, True, 4)):

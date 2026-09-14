@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Validate the single-object, two-dispatch managed CPU/PTO acceptance trace."""
+"""Validate managed CPU/PTO geometry, ownership, data and completion traces."""
 import argparse
+import functools
 import hashlib
 import json
 import re
@@ -8,6 +9,13 @@ import struct
 from pathlib import Path
 
 from validate_mem_service_mapping_resources import validate_kernel_regions
+
+
+GEOMETRIES = {
+    "cross-page": (64, 65536, (3968, 8064, 12160, 16256)),
+    "nd": (16384, 262144, (0, 65536, 131072, 196608)),
+    "tail": (16256, 262144, (0, 65024, 130048, 195072)),
+}
 
 
 def require(condition, message):
@@ -41,13 +49,16 @@ def checksum64(data):
     return f"{checksum:016x}"
 
 
-def oracle_checksum(vector):
+@functools.lru_cache(maxsize=12)
+def oracle_checksum(vector, elements=64):
     values = []
-    for i in range(64):
+    for i in range(elements):
         a, b = i % 8 + 1, i % 4 + 1
+        if i >= 64:
+            a, b = i // 8 + 1, i % 8 + 1
         c = (a + b + 1) * (a + b + 2)
         values.append((a, b, c, (c + b + 1) * (c + b + 2))[vector])
-    return checksum64(struct.pack("<64f", *values))
+    return checksum64(struct.pack(f"<{elements}f", *values))
 
 
 def validate_backing_identities(bound, mappings):
@@ -65,7 +76,10 @@ def validate_backing_identities(bound, mappings):
 
 
 def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
-             require_negative_checks=False, require_readonly_inputs=False):
+             require_negative_checks=False, require_readonly_inputs=False, layout="cross-page"):
+    require(layout in GEOMETRIES, "unsupported managed geometry")
+    elements, object_bytes, offsets = GEOMETRIES[layout]
+    tensor_bytes = elements * 4
     # Serial logs use CRLF; normalize only parsing, never the evidence bytes.
     guests = [text.replace("\r\n", "\n") for text in guests]
     maps, output_maps, dispatches = [], [], []
@@ -83,7 +97,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
         for index, record in enumerate(mappings):
             require(number(record, "node") == node and
                     number(record, "cpu_base") == number(record, "address") > 0 and
-                    number(record, "logical_bytes") == 65536 and
+                    number(record, "logical_bytes") == object_bytes and
                     number(record, "generation") > 0 and number(record, "mapping_id") > 0,
                     f"node {node}: invalid managed identity")
             expected_access = 1 if require_readonly_inputs and node == 1 and index == 0 else 3
@@ -111,8 +125,8 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
         require([number(r, "vector") for r in verified] == expected_vectors,
                 f"node {node}: missing or repeated CPU checks")
         for row, vector in zip(verified, expected_vectors):
-            require(row["cpu_verify"] == "pass" and number(row, "bytes") == 256 and
-                    row["checksum"] == oracle_checksum(vector) and
+            require(row["cpu_verify"] == "pass" and number(row, "bytes") == tensor_bytes and
+                    row["checksum"] == oracle_checksum(vector, elements) and
                     number(row, "version") == (1 if vector < 2 else vector),
                     f"node {node}: CPU oracle mismatch")
             if require_readonly_inputs:
@@ -128,12 +142,13 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             require([number(r, "dispatch") for r in dispatches] == [1, 2] and
                     [number(r, "dispatch") for r in completions] == [1, 2],
                     "expected two ordered dispatches and completions")
-            for request, completion, offsets in zip(dispatches, completions,
-                    ("3968,8064,12160", "12160,8064,16256")):
+            for request, completion, views in zip(dispatches, completions,
+                    ((0, 1, 2), (2, 1, 3))):
                 require(request["op_id"] == completion["completion_op"] and
                         request["generation"] == mapping["generation"] and
                         request["mapping_id"] == mapping["mapping_id"] and
-                        request["offsets"] == offsets and request["tensor_bytes"] == "256" and
+                        request["offsets"] == ",".join(str(offsets[v]) for v in views) and
+                        number(request, "tensor_bytes") == tensor_bytes and
                         request["retained_leases"] == "3" and request["release_guard"] == "pass" and
                         completion["status"] == "1" and completion["error"] == "none",
                         "dispatch identity, geometry, lifetime or completion mismatch")
@@ -182,9 +197,11 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
     require(not (require_negative_checks and require_timeout_recovery),
             "negative checks cannot use short-wait recovery")
     output = output_maps[1] if require_readonly_inputs else None
-    filtered = validate_negatives(guests, qemu, maps[1], requests, require_negative_checks, output)
-    validate_callbacks(filtered, maps[0], requests, output)
-    validate_readonly_inputs(guests, maps, output_maps, requests, require_readonly_inputs)
+    geometry = GEOMETRIES[layout]
+    filtered = validate_negatives(guests, qemu, maps[1], requests, require_negative_checks, output, geometry)
+    validate_callbacks(filtered, maps[0], requests, output, geometry)
+    validate_readonly_inputs(guests, maps, output_maps, requests, require_readonly_inputs, geometry)
+    transport = validate_transport_chunks(qemu, requests, geometry) if layout != "cross-page" else None
     if access_threads is not None:
         if require_readonly_inputs:
             validate_readonly_owners(guests, maps, output_maps, requests,
@@ -193,7 +210,7 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             validate_owners(guests, maps, requests, require_timeout_recovery, access_threads)
     require(not require_readonly_inputs or access_threads is not None,
             "read-only inputs require an explicit owner/thread gate")
-    scope = "multi-thread-cross-page" if access_threads else "single-thread-cross-page"
+    scope = ("multi-thread-" if access_threads else "single-thread-") + layout
     return {"status": "pass", "nodes": 2, "objects": 2 if require_readonly_inputs else 1,
             "dispatches": 8 if require_negative_checks else 2, "successful_dispatches": 2,
             "expected_rejections": 6 if require_negative_checks else 0,
@@ -204,10 +221,15 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
             "readonly_inputs_verified": require_readonly_inputs,
             "owner_verified": access_threads is not None, "access_threads": access_threads,
             "timeout_recoveries": len(waits) // 2,
+            "layout": layout, "elements": elements, "tensor_bytes": tensor_bytes,
+            "object_bytes": object_bytes, "transport_chunks": transport,
             "am2_complete": False}
 
 
-def validate_negatives(guests, qemu, mapping, requests, required, output_mapping=None):
+def validate_negatives(guests, qemu, mapping, requests, required, output_mapping=None,
+                       geometry=GEOMETRIES["cross-page"]):
+    elements, _, offsets = geometry
+    tensor_bytes = elements * 4
     prefixes = ("MANAGED_PTO_NEGATIVE", "MANAGED_PTO_NEGATIVE_DATA")
     require(all(not records(guests[0], prefix) for prefix in prefixes),
             "producer cannot submit negative probes")
@@ -235,11 +257,11 @@ def validate_negatives(guests, qemu, mapping, requests, required, output_mapping
                 "negative completion or retained mapping mismatch")
         expected_events += [(name, "submitted", operation), (name, "rejected", operation)]
         for vector, row in enumerate(data[4*index:4*index+4]):
-            expected = oracle_checksum(vector) if vector < 2 else checksum64(
-                struct.pack("<64I", *([0x7fc00001] * 64)))
+            expected = oracle_checksum(vector, elements) if vector < 2 else checksum64(
+                struct.pack(f"<{elements}I", *([0x7fc00001] * elements)))
             require(row["node"] == "1" and row["case"] == name and row["op_id"] == operation and
                     number(row, "vector") == vector and row["checksum"] == expected and
-                    row["bytes"] == "256" and row["unchanged"] == "pass",
+                    number(row, "bytes") == tensor_bytes and row["unchanged"] == "pass",
                     "negative probe changed original payload")
             if output_mapping is not None:
                 require(row.get("object") == ("input" if vector < 2 else "output"),
@@ -269,10 +291,14 @@ def validate_negatives(guests, qemu, mapping, requests, required, output_mapping
                 "QEMU negative completion evidence mismatch")
     filtered = "\n".join(line for line in qemu.splitlines()
                          if not any(line.startswith(prefix + " ") for prefix in failure_prefixes))
-    return validate_execution_negatives(filtered, mapping, operations[4:], requests[0], output_mapping)
+    return validate_execution_negatives(filtered, mapping, operations[4:], requests[0],
+                                        output_mapping, geometry)
 
 
-def validate_execution_negatives(text, mapping, operations, positive_request, output_mapping=None):
+def validate_execution_negatives(text, mapping, operations, positive_request, output_mapping=None,
+                                 geometry=GEOMETRIES["cross-page"]):
+    elements, _, offsets = geometry
+    tensor_bytes = elements * 4
     # Remove only fully validated execution records from this parsing copy.
     # Raw logs stay unchanged; all other callbacks/errors reach the normal gate.
     prefixes = ("QEMU_UB_GM_INPUT_AUTHORIZE", "QEMU_UB_GM_OUTPUT_AUTHORIZE",
@@ -288,12 +314,14 @@ def validate_execution_negatives(text, mapping, operations, positive_request, ou
                        if row["request"] == positive_request]
     require(len(positive_output) == 1, "missing recovery output authorization")
     bases = [number(row, "local") - offset for row, offset in
-             zip(positive + positive_output, (3968, 8064, 12160))]
+             zip(positive + positive_output, offsets[:3])]
     homes = [number(row, "cpu_base") for row in (mapping, mapping, output_mapping or mapping)]
     lines, consumed, ordered_positions = text.splitlines(), set(), []
     for operation in operations:
         selected = []
         for position, line in enumerate(lines):
+            if not line.startswith(prefixes):
+                continue
             for prefix in prefixes:
                 rows = records(line, prefix)
                 if rows and rows[0]["request"] == operation:
@@ -308,9 +336,10 @@ def validate_execution_negatives(text, mapping, operations, positive_request, ou
         require([prefix for prefix, _ in selected] == expected,
                 "negative execution stage or callback sequence mismatch")
         auth = [selected[2*i][1] for i in range(3)]
-        for binding, (row, offset) in enumerate(zip(auth, (3968, 8064, 12160)), 1):
+        for binding, (row, offset) in enumerate(zip(auth, offsets[:3]), 1):
             require(row["op"] == operation and number(row, "binding") == binding and
-                    number(row, "local") == bases[binding-1] + offset and number(row, "length") == 256 and
+                    number(row, "local") == bases[binding-1] + offset and
+                    number(row, "length") == tensor_bytes and
                     row["requester_cna"] == positive[0]["requester_cna"] and
                     number(row, "map") > 0 and number(row, "generation") > 0 and
                     selected[2*binding-1][1]["binding"] == row["binding"] and
@@ -323,11 +352,11 @@ def validate_execution_negatives(text, mapping, operations, positive_request, ou
                 unbound["reason"] == "completion_failure" and
                 (unbound["load_bytes"], unbound["store_bytes"], unbound["fences"],
                  unbound["segment_payload_staging_bytes"]) ==
-                ("512", "0", "0", "0"),
+                (str(2 * tensor_bytes), "0", "0", "0"),
                 "negative execution completion accounting mismatch")
         for binding, (_, row) in enumerate(selected[7:-1], 1):
             authorization = auth[binding-1]
-            require(number(row, "binding") == binding and number(row, "length") == 256 and
+            require(number(row, "binding") == binding and number(row, "length") == tensor_bytes and
                     number(row, "addr") == number(authorization, "local") and
                     all(row[key] == authorization[key] for key in ("map", "generation")),
                     "negative execution input callback mismatch")
@@ -340,7 +369,9 @@ def validate_execution_negatives(text, mapping, operations, positive_request, ou
     return "\n".join(line for position, line in enumerate(lines) if position not in consumed)
 
 
-def validate_readonly_inputs(guests, maps, output_maps, requests, required):
+def validate_readonly_inputs(guests, maps, output_maps, requests, required,
+                             geometry=GEOMETRIES["cross-page"]):
+    _, object_bytes, offsets = geometry
     probes = [records(text, "MANAGED_PTO_READONLY") for text in guests]
     pairs = [records(text, "MANAGED_OWNER_PAIR") for text in guests]
     if not required:
@@ -355,11 +386,11 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required):
     require(sdk["cpu_rc"] == sdk["compute_rc"] == "-13" and
             sdk["cpu_pins"] == "1" and sdk["compute_pins"] == sdk["in_flight_pins"] == "0",
             "read-only SDK admitted a write pin or leaked resources")
-    require(number(cpu, "address") == number(maps[1], "cpu_base") + 3968 and
+    require(number(cpu, "address") == number(maps[1], "cpu_base") + offsets[0] and
             number(cpu, "signal") in (7, 11) and number(cpu, "code") > 0 and
             cpu["unchanged"] == "pass" and re.fullmatch(r"[0-9a-f]{16}", cpu["checksum"]),
             "missing original-process CPU write protection")
-    require(unchanged["bytes"] == "65536" and unchanged["unchanged"] == "pass" and
+    require(number(unchanged, "bytes") == object_bytes and unchanged["unchanged"] == "pass" and
             unchanged["checksum"] == cpu["checksum"], "read-only input object changed during PTO")
     lines = guests[1].splitlines()
     probe_positions = [i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO_READONLY ")]
@@ -383,7 +414,7 @@ def validate_readonly_inputs(guests, maps, output_maps, requests, required):
                 "owners do not share the intended access domain")
     published = [row for row in records(guests[0], "MANAGED_PTO") if "inputs_published" in row]
     require([row.get("object") for row in published] == ["input", "output"] and
-            all(row["inputs_published"] == row["version"] == "1" and row["bytes"] == "65536"
+            all(row["inputs_published"] == row["version"] == "1" and number(row, "bytes") == object_bytes
                 for row in published), "both objects must be initialized and published")
 
 
@@ -497,7 +528,10 @@ def validate_owners(guests, maps, requests, recovery, threads):
             require(completion_position < owner_positions[1], "CPU-only guard before compute completion")
 
 
-def validate_callbacks(text, mapping, requests, output_mapping=None):
+def validate_callbacks(text, mapping, requests, output_mapping=None,
+                       geometry=GEOMETRIES["cross-page"]):
+    elements, _, vector_offsets = geometry
+    tensor_bytes = elements * 4
     require(not re.search(r"QEMU_UB_GM_.*(?: denied |REJECT |FAILURE_COMPLETION |TIMEOUT |METADATA_CRC_FAIL )", text),
             "QEMU rejected a managed dispatch or callback")
     bound = records(text, "QEMU_UB_GM_GSVA_BIND")
@@ -521,8 +555,8 @@ def validate_callbacks(text, mapping, requests, output_mapping=None):
         auth = ins + outs
         require(len({r["binding"] for r in auth}) == 3 and
                 {r["binding"] for r in auth} == {r["binding"] for r in gsva} and
-                all(number(r, "length") == 256 for r in auth), "binding identities differ")
-        offsets = (3968, 8064, 12160) if index == 0 else (12160, 8064, 16256)
+                all(number(r, "length") == tensor_bytes for r in auth), "binding identities differ")
+        offsets = [vector_offsets[v] for v in ((0, 1, 2) if index == 0 else (2, 1, 3))]
         output = output_mapping or mapping
         homes = [number(row, "cpu_base") for row in
                  ((mapping if index == 0 else output), mapping, output)]
@@ -536,7 +570,7 @@ def validate_callbacks(text, mapping, requests, output_mapping=None):
         require([r["binding"] for r in read] == [r["binding"] for r in ins] and
                 len(write) == len(fence) == 1 and
                 write[0]["binding"] == fence[0]["binding"] == outs[0]["binding"] and
-                all(number(r, "length") == 256 for r in read + write + fence),
+                all(number(r, "length") == tensor_bytes for r in read + write + fence),
                 "callback permissions, range or binding mismatch")
         authorizations = {row["binding"]: row for row in auth}
         for row in read + write + fence:
@@ -550,11 +584,127 @@ def validate_callbacks(text, mapping, requests, output_mapping=None):
                 registered["bindings"] == "3" and unbound["bindings"] == "3" and
                 unbound["reason"] == "completion_success" and
                 (unbound["load_bytes"], unbound["store_bytes"], unbound["fences"],
-                 unbound["segment_payload_staging_bytes"]) == ("512", "256", "1", "0"),
+                 unbound["segment_payload_staging_bytes"]) ==
+                (str(2 * tensor_bytes), str(tensor_bytes), "1", "0"),
                 "PTO completion accounting or zero-staging evidence mismatch")
     require(len(set(bases.values())) == len(bases), "distinct objects share a physical view")
     require(number(outputs[0], "local") == number(inputs[2], "local"),
             "TSTORE output is not the next TLOAD input")
+
+
+def validate_transport_chunks(text, requests, geometry):
+    """Match existing strict I/O trace pairs to the following completed callback.
+
+    CPU MMIO traffic is at most eight bytes. Legacy bootstrap page reads also
+    appear in this log. Count strict bulk I/O only inside a registered PTO
+    dispatch; reject out-of-window traffic to any of its known backing routes.
+    Bulk PTO I/O holds the QEMU I/O-thread lock; each callback is logged only
+    after all chunks complete.
+    The existing sender labels both reads and writes 'read send'. Classify
+    direction using the matched LOAD/STORE callback, never that label.
+    """
+    limit = 4055  # 4095-byte payload minus the 40-byte UBCGsvaIoReq header.
+    _, _, offsets = geometry
+    peers = {(row["request"], row["binding"]): number(row, "peer_cna")
+             for role in ("INPUT", "OUTPUT")
+             for row in records(text, "QEMU_UB_GM_" + role + "_AUTHORIZE")}
+    strict_routes = {(number(row, "backing_token"), peers[(row["request"], row["binding"])])
+                     for row in records(text, "QEMU_UB_GM_GSVA_BIND")}
+    auth, backing, observed, seen = {}, {}, [], set()
+    pending, active = None, None
+    non_pto_bulk_sends = 0
+    counts = {"load": 0, "store": 0, "load_bytes": 0, "store_bytes": 0, "callbacks": 0}
+    for line in text.splitlines():
+        io_line = line.startswith("ubc sim_dec ")
+        if not io_line and not line.startswith(("QEMU_UB_GM_", "SIM_QEMU_UB_GM_BIND_REGISTER ")):
+            continue
+        rows = [] if io_line else records(line, "SIM_QEMU_UB_GM_BIND_REGISTER")
+        if rows:
+            require(active is None and pending is None and not observed,
+                    "overlapping PTO transport windows")
+            active = rows[0]["request"]
+        rows = [] if io_line else records(line, "QEMU_UB_GM_UNBIND")
+        if rows:
+            require(active == rows[0]["request"] and pending is None and not observed,
+                    "PTO transport window closed with an incomplete transfer")
+            active = None
+        for prefix in ("QEMU_UB_GM_INPUT_AUTHORIZE", "QEMU_UB_GM_OUTPUT_AUTHORIZE"):
+            rows = [] if io_line else records(line, prefix)
+            if rows:
+                row = rows[0]
+                auth[(row["request"], row["binding"])] = row
+        rows = [] if io_line else records(line, "QEMU_UB_GM_GSVA_BIND")
+        if rows:
+            row = rows[0]
+            backing[(row["request"], row["binding"])] = row
+        rows = records(line, "ubc sim_dec read send")
+        if rows and number(rows[0], "len") <= 8:
+            continue
+        if rows and number(rows[0], "len") > 8:
+            row = rows[0]
+            if active is None:
+                require((number(row, "token"), number(row, "dcna")) not in strict_routes
+                        and row["req"] not in seen,
+                        "strict bulk transfer outside a registered PTO dispatch")
+                non_pto_bulk_sends += 1
+                continue
+            require(pending is None and 8 < number(row, "len") <= limit and
+                    number(row, "done") == sum(number(r, "len") for r in observed),
+                    "transport chunk size, ordering or pending response mismatch")
+            require(number(row, "req") > 0 and row["req"] not in seen and
+                    number(row, "dcna") > 0 and number(row, "local_cna") > 0 and
+                    number(row, "dcna") != number(row, "local_cna"),
+                    "transport chunk is repeated or not remote")
+            seen.add(row["req"])
+            pending = row
+        rows = records(line, "ubc sim_dec rx read_resp")
+        if rows:
+            row = rows[0]
+            if active is None:
+                require(row["req"] not in seen, "replayed PTO transport response")
+                continue
+            if pending is not None and row["req"] == pending["req"]:
+                require(number(row, "status") == 0 and
+                        all(number(row, key) == number(pending, "len") for key in
+                            ("data_len", "wire_len", "copy_len", "expect")) and
+                        number(row, "peer") == number(pending, "dcna"),
+                        "transport response failed or returned an inexact range")
+                observed.append(pending)
+                pending = None
+            else:
+                require(number(row, "data_len") <= 8, "unmatched bulk transport response")
+        if io_line:
+            continue
+        for kind in ("LOAD", "STORE"):
+            rows = records(line, "QEMU_UB_GM_" + kind)
+            if not rows:
+                continue
+            row = rows[0]
+            key = row["request"], row["binding"]
+            require(active == row["request"] and key in auth and key in backing and
+                    pending is None and len(observed) > 1,
+                    "multi-chunk callback has no complete transport evidence")
+            length = number(row, "length")
+            expected = [min(limit, length - done) for done in range(0, length, limit)]
+            require([number(r, "len") for r in observed] == expected,
+                    "callback transport chunks have gaps, duplication or truncation")
+            views = (2, 1, 3) if row["request"] == requests[1] else (0, 1, 2)
+            offset = offsets[views[number(row, "binding") - 1]]
+            identity = backing[key]
+            for chunk in observed:
+                require(number(chunk, "uba") == number(identity, "home_va") + offset +
+                        number(chunk, "done") and
+                        number(chunk, "token") == number(identity, "backing_token") and
+                        number(chunk, "dcna") == number(auth[key], "peer_cna"),
+                        "transport chunk targets the wrong backing, offset, token or peer")
+            counts[kind.lower()] += len(observed)
+            counts[kind.lower() + "_bytes"] += length
+            counts["callbacks"] += 1
+            observed = []
+    require(active is None and pending is None and not observed and counts["callbacks"] >= 6,
+            "unfinished or missing transport chunk sequence")
+    return {**counts, "chunk_limit_bytes": limit, "request_response_verified": True,
+            "scope": "registered-pto-dispatches", "non_pto_bulk_sends": non_pto_bulk_sends}
 
 
 def main():
@@ -567,13 +717,15 @@ def main():
     parser.add_argument("--access-threads", type=int, choices=range(9))
     parser.add_argument("--require-negative-checks", action="store_true")
     parser.add_argument("--require-readonly-inputs", action="store_true")
+    parser.add_argument("--layout", choices=GEOMETRIES, default="cross-page")
     args = parser.parse_args()
     paths = [args.node_a, args.node_b, args.qemu_b]
     try:
         contents = [path.read_bytes() for path in paths]
         text = [data.decode("utf-8", errors="replace") for data in contents]
         result = validate(text[:2], text[2], args.require_timeout_recovery,
-                          args.access_threads, args.require_negative_checks, args.require_readonly_inputs)
+                          args.access_threads, args.require_negative_checks,
+                          args.require_readonly_inputs, args.layout)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:

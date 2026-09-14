@@ -133,6 +133,29 @@ class ManagedPtoCliTest(unittest.TestCase):
             self.assertEqual(self.run_config({**CONFIG, "readonly_inputs": "1",
                                              "key": "k" * length}).returncode, expected)
 
+    def test_layout_profiles_derive_bounded_geometry_before_any_connection(self):
+        profiles = (("cross-page", 64, 65536), ("nd", 16384, 262144),
+                    ("tail", 16256, 262144))
+        for layout, elements, size in profiles:
+            for flags in ({}, {"readonly_inputs": "1", "negative_checks": "1"},
+                          {"readonly_inputs": "1", "submit_timeout_ms": "5"}):
+                values = {**CONFIG, **flags, "layout": layout}
+                for explicit in ({}, {"elements": str(elements), "size_bytes": str(size)}):
+                    result = self.run_config({**values, **explicit})
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(f"bytes={size} layout={layout} elements={elements}", result.stdout)
+                    self.assertIn("network_operations=0", result.stdout)
+            for field, value in (("elements", elements), ("size_bytes", size)):
+                for invalid in ("0", str(value + 1), "-1", "18446744073709551615", "1x"):
+                    with self.subTest(layout=layout, field=field, invalid=invalid):
+                        self.assertEqual(self.run_config({**CONFIG, "layout": layout,
+                                                          field: invalid}).returncode, 2)
+                self.assertEqual(self.run_config({**CONFIG, "layout": layout},
+                    extra=f"{field}={value}\n{field}={value}\n").returncode, 2)
+        for layout in ("nd-strided", "dn", "nz", "unaligned", "unknown", "ND", "nd "):
+            self.assertEqual(self.run_config({**CONFIG, "layout": layout}).returncode, 2)
+        self.assertEqual(self.run_config(extra="layout=nd\nlayout=tail\n").returncode, 2)
+
 
 @unittest.skipUnless(shutil.which("cc"), "native C compiler required for isolated CPU probe")
 class ManagedPtoCpuProbeTest(unittest.TestCase):
@@ -171,6 +194,30 @@ class ManagedPtoOwnerGuardTest(unittest.TestCase):
 
 
 class ManagedPtoContractTest(unittest.TestCase):
+    def test_guest_preflight_accepts_exact_large_profiles_before_opening_service(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        body = source.split("run_mem_service_object_share() {", 1)[1].split(
+            "  if [ ! -x /bin/linqu_mem_service ]; then", 1)[0]
+        preflight = "preflight() {" + body + "\n}\npreflight\n"
+        defaults = {"mem_service_object_share_backend": "obmm", "mem_service_object_share_access": "cpu-pto"}
+        for layout, elements, size in (("cross-page", "64", "65536"),
+                                      ("nd", "16384", "262144"), ("tail", "16256", "262144")):
+            values = {**defaults, "lingqu_shmem_pto_layout": layout,
+                      "lingqu_shmem_pto_elements": elements, "mem_service_object_share_size": size}
+            for change, expected in (({}, 0), ({"mem_service_object_share_size": "4096"}, 2),
+                    ({"lingqu_shmem_pto_elements": "65"}, 2), ({"lingqu_shmem_pto_layout": "dn"}, 2),
+                    ({"mem_service_object_share_backend": "loopback"}, 2),
+                    ({"mem_service_object_share_iterations": "2"}, 2),
+                    ({"mem_service_object_share_fault": "capacity"}, 2)):
+                cases = "\n".join(f"{key}) printf '%s' '{value}';;" for key, value in
+                                  {**values, **change}.items())
+                script = "cmdline_value() { case \"$1\" in\n" + cases + (
+                    '\n*) printf "%s" "$2";; esac; }\nlog() { printf "%s\\n" "$*"; }\n') + preflight
+                with self.subTest(layout=layout, change=change):
+                    result = subprocess.run(["sh", "-c", script], capture_output=True,
+                                            text=True, timeout=5)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
     def test_runner_requires_exact_request_scoped_fault_manifest(self):
         runner = (ROOT / "guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh").read_text()
         function = runner.split("validate_pto_layout_manifest() {", 1)[1].split("\nPY", 1)[0]
@@ -241,6 +288,9 @@ class ManagedPtoContractTest(unittest.TestCase):
         self.assertIn("--require-negative-checks", runner)
         self.assertIn("lingqu_shmem_pto_readonly_inputs", run_app)
         self.assertIn("--require-readonly-inputs", runner)
+        self.assertIn('--layout "$LINGQU_SHMEM_PTO_LAYOUT"', runner)
+        self.assertIn('echo "size_bytes=$size"', run_app)
+        self.assertIn("export UBC_TRACE_DATA_PATH=1", runner)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")
     def test_runner_rejects_unsupported_access_before_guest_launch(self):

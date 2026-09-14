@@ -1066,14 +1066,22 @@ if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu" &&
 fi
 if managed_pto_selected; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
-        "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
         "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
-        "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ||
-        "$LINGQU_SHMEM_PTO_LAYOUT" != "cross-page" ||
-        "$LINGQU_SHMEM_PTO_ELEMENTS" != "64" ]]; then
-    echo "cpu-pto requires OBMM, 64 KiB, one round, no fault and cross-page 64 elements" >&2
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ]]; then
+    echo "cpu-pto requires OBMM, one round and no object-share fault" >&2
     exit 2
   fi
+  case "$LINGQU_SHMEM_PTO_LAYOUT:$LINGQU_SHMEM_PTO_ELEMENTS:$MEM_SERVICE_OBJECT_SHARE_SIZE" in
+    cross-page:64:65536) ;;
+    nd:16384:262144|tail:16256:262144)
+      # Larger views require observed request/response chunks in the evidence.
+      export UBC_TRACE_DATA_PATH=1
+      ;;
+    *)
+      echo "cpu-pto geometry requires cross-page/64/65536, nd/16384/262144 or tail/16256/262144" >&2
+      exit 2
+      ;;
+  esac
 fi
 if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]] || managed_pto_selected; then
   validate_lingqu_shmem_pto_config
@@ -3826,6 +3834,7 @@ run_iteration() {
       python3 "${SCRIPT_DIR}/validate_managed_pto.py" \
         --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
         --qemu-b "$nodeb_qemu_log" \
+        --layout "$LINGQU_SHMEM_PTO_LAYOUT" \
         --access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
         "${recovery_args[@]}" \
         --output "${nodea_guest_log:h}/managed-pto-validation.json" || return 1

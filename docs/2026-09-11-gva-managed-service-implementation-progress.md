@@ -2165,3 +2165,117 @@ QEMU r156、kernel r109、driver r138、服务提交
 SHA-256 为 `fe85145a5d9071eda8529e7a37bfb6ef9f6ffc9bf16d025ab251eb404bf01c62`。
 归档包含首轮失败与四轮成功的原始日志、两版 CLI/rootfs、源码快照、完整测试、
 修复前后的原生回归、23 个结束容器状态以及前后指纹。原始材料继续保留。
+
+## 2026-09-14 续作：大张量分片与 quadratic 编排修复（验证推进中）
+
+managed CLI 沿用原入口，增加 `layout=cross-page|nd|tail`，省略时保持原行为。
+可选 `elements`、`size_bytes` 分别作为精确一致性断言；错误组合在连接前拒绝。
+host 配置使用原有 layout/elements/size 字段，guest 启动前再次校验相同组合。
+ND 为 `128x128`、65,536-byte 张量；tail 为 `128x127`、65,024-byte 张量，
+tile 仍为 `128x128`。大尺寸每对象逻辑大小为 262,144 bytes，四个视图不重叠；
+原 cross-page 的 65,536-byte 对象和四个跨页 256-byte 视图保持不变。
+只读模式分别管理输入/输出对象，CPU oracle、负例和 completion 均计量完整张量。
+这些逻辑尺寸与 OBMM 按 2 MiB 分配的物理 region 分开记录。
+
+### 实际发现与修复
+
+- r169 在启动前暴露 `run_app` 遗留的 65,536-byte 固定尺寸条件。补齐三种组合的
+  preflight，并用可执行 shell 合同覆盖 21 个有效/无效配置；保留原失败运行。
+- r169b 的传输和 fence 成功，CPU 输出校验失败。原 quadratic 示例仅按
+  `a.shapes[0]` 分配中间张量：`128x128` 输入只申请 128 个元素，内核访问
+  16,384 个。仓库生成器现按 manifest 的完整 storage extent 分配，包含 stride
+  间隙；输入逻辑尺寸和 FP32 类型须匹配，四个 add/add-scalar/add-scalar/multiply
+  task 保持不变。六种布局的原生元数据 fixture 验证三种 rank、依赖、标量和
+  八种错误入参；退回旧分配逻辑后会触发尺寸断言。r175 的实际编译还校正了
+  Simpler `get_ref` 的 lvalue 寿命要求，替身同步此约束。计算修复已提交为
+  `33ed611e1fb95422105c3f4f4031c1e86737aafe`。
+- r176 两端数据、只读输入与资源回收通过，原 runner 因分片解析失败 exit 1。
+  原日志还包含启动阶段 legacy bootstrap 的 `4079+17` 分片，旧校验器将它们
+  套入 strict PTO 的 4055-byte 上限。r174c 按实际 register/unbind 窗口计量，
+  单独记录非 PTO bulk send；窗口外访问 managed backing、重放、窗口缺失、
+  缺片和精确长度错误继续拒绝。原报告和完整原始日志保留，未覆盖为成功。
+
+### 已核实的 ND 运行证据
+
+r176 在 n4-910c1 运行两个 guest、两个 256 KiB 逻辑对象和四个 CPU 读取线程。
+home 与 consumer 均核对完整 C/D，checksum 分别为 `5ea1f9e7e38ac0b5` /
+`f97716c2ca962900`；完整输入 checksum 前后均为 `61876dc76aebee83`。
+CPU 写保护收到 signal 11、code 2，SDK CPU/compute 写借用均返回 -13。
+四线程完成 148 次完整输入校验，均在 owner sealed 后继续完成检查再退出。
+两端所有 owner、holder、compute pin 及 kernel region 回到基线。
+
+独立断网容器用 r174c 校验器读取未改动的三份原始日志，exit 0，报告
+`managed-pto-revalidated-r176-r174c.json` 为 pass：4 LOAD、2 STORE、2 fence，
+共 68 个读取分片和 34 个写入分片；读取 262,144 bytes，写入 131,072 bytes。
+每次 callback 均为 16 个 4055-byte 分片加 656-byte 尾片，逐片请求/应答、
+backing、地址和 peer 一致，staging 为 0；另有 17 次非 PTO bulk send。
+原 runner exit 1 的事实保留，此处结论来自明确标识的独立原日志复核。
+独立进程查询确认无 QEMU 遗留；所有运行输入、源码及工件后验 SHA 不变。
+修复前后 ND 的三份生成内核源码完全相同。
+
+r174c 代码快照的 Python 定向 89 项为 87 通过、2 环境跳过，15.203 秒；
+完整根 510 项为 491 通过、5 跳过、5 失败、9 错误，60.210 秒。14 个失败 ID
+与既有基线精确一致。layout 为 72 通过、原 2 失败，1.27 秒。Rust 43 个顶层
+目标为 931 通过、32 失败、16 ignored，失败集合与重新编译的 r156g 父版本
+一致。完整套件未全绿；没有将基线失败改为 skip。所有完整回归均在远端执行。
+
+CLI SHA-256 为 `ec5ba009f9777fb615218ed5571d4dd59516ca90c4bf45dc1c4b73be168a8e52`，
+rootfs 为 `71e758ec76a5c52c1c7e106b31869766dfa6c463988c59f275abf54922978142`。
+ND manifest 为 `06a3fae59983acc71a7f5ee681c13de382851227a335c947fc15b53cc09b7d01`，
+fingerprint 为 `0x6d3ee0deb45753db`。QEMU r156、kernel r109、driver r138、
+服务提交 `6f090162536f0a92235587b13519306f28f3eaec` 保持不变；未改 Simpler
+算子，未加载模型，未 push 或更新父仓库 gitlink/lock。
+
+### 大尺寸权限矩阵与原日志复验
+
+r177b 的 ND 六负例整轮 runner/container 均 exit 0。该轮关闭后台 CPU 读取线程，
+单独核对权限矩阵：六次精确拒绝、24 次完整 65,536-byte 视图不变检查，随后原
+operation `20260914471/20260914472` 完成两次正常计算。两个执行权限负例
+`20260914477/20260914478` 各读取完整 A/B 后拒绝，未写入、未 fence；C/D、
+完整只读输入和 CPU 写保护沿用 r176 的结果及判据，两端资源回到基线。
+实际 8 LOAD、2 STORE、2 fence，共 136 个读取分片、34 个写入分片，读取
+524,288 bytes、写入 131,072 bytes，10 个 callback，staging 为 0；另有
+15 次非 PTO bulk send。运行前后输入、源码和工件 SHA 不变，无 QEMU 遗留。
+
+r177b 的 QEMU 原日志为 1,575,289,291 bytes。r181 优化校验器对无关 scalar I/O
+的元数据重复解析，保持权限、完成、几何、分片和原始日志 SHA 判据。
+新增 spy 用例确认 scalar I/O 不进入 PTO 元数据解析，原 136/34 分片计数仍须满足。
+首次两项 r181 复验因容器没有 `/usr/bin/time` 在执行校验器前 exit 127；保留日志，
+改用已有 bash 计时的 r181b 两项均 exit 0，耗时分别为 65.175 / 123.878 秒。
+它们对 r176/r177b 的完整原日志重新校验，只规范化报告中的文件路径字符串后，
+所有报告字段与先前结果完全一致，包括原始文件 SHA。未改写原日志或失败报告，
+这些耗时也不作为受控性能对比。
+
+r181 运行代码快照的 Python 定向 90 项为 88 通过、2 环境跳过，15.031 秒；
+完整根 511 项为 492 通过、5 跳过、5 失败、9 错误，59.899 秒。14 个失败 ID
+与基线精确一致；layout 为 72 通过、原 2 失败，1.28 秒。Rust 仍为 43 个顶层
+目标、931 通过、32 失败、16 ignored，失败集合与重编译父版本 r156g 完全相同。
+完整套件未全绿，未弱化或跳过失败项；源码快照 SHA 在本地与远端均核对一致。
+
+### Tail 四线程迟到完成恢复
+
+r178 使用 `128x127` 张量、原 `128x128` tile 及两个 256 KiB 逻辑对象，
+runner/container 均 exit 0。原 operation `20260914491/20260914492` 在首次
+5 ms 等待超时后分别恢复，未重复提交。第二次等待时输入 owner 保留 1 个
+compute/in-flight pin、输出保留 2 个，关闭和新借用均拒绝。四个 CPU 读取
+线程完成 144 次完整输入检查，每个线程在 sealed 后继续校验，再全部退出。
+
+home 和 consumer 的完整 65,024-byte C/D checksum 分别为
+`8c89fd43a4864ee0` / `d642f2dc24df838c`；整个只读输入在计算前后保持
+`29a268eceafb0343`。原进程 CPU 写保护、SDK 写借用拒绝、各 binding 对应的
+backing、零 staging 与两端资源归零全部通过。4 LOAD、2 STORE、2 fence 共
+68 个读取分片、34 个写入分片，读取 260,096 bytes、写入 130,048 bytes；
+每 callback 的 16 个 4055-byte 分片和 144-byte 尾片均有精确请求/响应证据。
+另有 15 次非 PTO bulk send；所有输入、源码、工件后验 SHA 不变，无 QEMU 遗留。
+
+r179 的默认 cross-page 单对象回归同样 runner/container exit 0：六次精确拒绝、
+24 次 256-byte 视图不变检查后，两次正常计算通过；4 线程完成 1,176 次检查，
+每个线程在 sealed 后继续校验。8 LOAD、2 STORE、2 fence、零 staging 和
+两端资源归零保持原判据，所有输入/源码/工件 SHA 不变，无 QEMU 遗留。
+r180 的旧 direct 入口 runner/container 均 exit 0：consumer 原 operation
+`1327819297914881` 成功，producer `lanes_verified=1 completion_acks=1`，
+import/export 正常释放。该轮使用同一最终 CLI/rootfs 和重建的普通 cross-page
+编排；所有输入、源码、工件后验 SHA 不变，无 QEMU 遗留。
+
+大尺寸正常、负例及四线程迟到完成的组合已通过。home 互换、多请求计算并发、
+全局对象引用绑定及后续阶段仍待补齐，`am2_complete=false`。

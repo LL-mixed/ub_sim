@@ -1241,6 +1241,9 @@ mem_service_object_share_managed() (
       echo "access_threads=$(cmdline_value lingqu_shmem_pto_access_threads 0)"
       echo "negative_checks=$(cmdline_value lingqu_shmem_pto_negative_checks 0)"
       echo "readonly_inputs=$(cmdline_value lingqu_shmem_pto_readonly_inputs 0)"
+      echo "layout=$(cmdline_value lingqu_shmem_pto_layout cross-page)"
+      echo "elements=$(cmdline_value lingqu_shmem_pto_elements 64)"
+      echo "size_bytes=$size"
     } >/tmp/managed-share.pto.conf
     /bin/lingqu_shmem_pto_direct --managed-config /tmp/managed-share.pto.conf \
       --validate-only || exit 1
@@ -1411,10 +1414,19 @@ run_mem_service_object_share() {
 
   if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ]; } ||
       { [ "$access" = "cpu-pto" ] &&
-        { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] ||
+        { [ "$backend" != "obmm" ] ||
           [ "$iterations" != "1" ] || [ "$fault" != "none" ]; }; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=access_config"
     return 2
+  fi
+  if [ "$access" = "cpu-pto" ]; then
+    case "$(cmdline_value lingqu_shmem_pto_layout cross-page):$(cmdline_value lingqu_shmem_pto_elements 64):$size" in
+      cross-page:64:65536|nd:16384:262144|tail:16256:262144) ;;
+      *)
+        log "mem_service object-share: status=fail node=$node_idx reason=access_geometry"
+        return 2
+        ;;
+    esac
   fi
 
   if [ ! -x /bin/linqu_mem_service ]; then

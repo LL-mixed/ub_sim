@@ -34,8 +34,8 @@ int mem_service_mapping_owner_acquire(struct mem_service_mapping_owner *owner,
 {
     *view = (struct mem_service_mapping_access_view) {0};
     *lease = NULL;
-    assert(kind == MEM_SERVICE_MAPPING_ACCESS_CPU && offset == vector_offset(0));
-    assert(len == VECTOR_BYTES && flags == MEM_SERVICE_CLIENT_MAP_READ);
+    assert(kind == MEM_SERVICE_MAPPING_ACCESS_CPU && offset == 3968);
+    assert(len == 256 && flags == MEM_SERVICE_CLIENT_MAP_READ);
     ++owner->acquires;
     if (owner->leaked_lease) *lease = (void *)owner;
     return owner->acquire_rc;
@@ -58,7 +58,7 @@ static void exercise(bool readonly, bool pending, unsigned failure)
     }
     input->owner = &owners[0];
     input->config = (struct managed_config) {.node = 1, .generation = 135,
-                                           .readonly_inputs = readonly};
+        .readonly_inputs = readonly, .geometry = managed_geometries[0]};
     output->config = input->config;
     output->owner = &owners[1];
     output->is_output = true;

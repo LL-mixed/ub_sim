@@ -279,6 +279,20 @@ r162c 已通过上述只读页表、六次 PTO 拒绝及后续两次正常计算
 guard 返回值失败及修复前后原生回归均保留。此子集不关闭多 home、多请求并发
 及更大分片的阶段出口，详细来源和边界见实施记录。
 
+大尺寸 managed CLI 现支持 ND `128x128` 和 tail `128x127`，每对象逻辑大小
+256 KiB，原 cross-page 保持默认。quadratic 编排按完整 storage extent 申请
+中间张量，保持既有算子和四步计算。r176 的 ND 双对象、四线程、两轮完整输出、
+只读保护及回收已产生实际证据；其原 runner 被分片解析缺陷判为失败。r174c
+校验器从未改动的完整原始日志核实了 102 个分片和全部原判据，独立复核 exit 0；
+原失败报告保留。分片计量按 register/unbind 窗口区分启动阶段 legacy I/O，
+窗口外访问 managed backing、重放和缺片继续失败。r177b 的大尺寸权限矩阵在
+关闭后台 CPU 读取线程后整轮 exit 0：六拒绝、24 次完整视图不变、两次正常计算，
+实际核对 170 个分片和资源归零。r181b 使用优化解析器重新校验两轮完整原日志，
+全部判据、计数及 SHA 与先前结果一致。r178 的 tail 四线程完成两次原 completion
+恢复、144 次完整输入检查、102 个实际分片及资源归零，整轮 exit 0；各 callback
+尾片为 144 bytes。r179 默认单对象四线程六负例和 r180 旧 direct 入口回归均
+runner/container exit 0，无 QEMU 遗留。完整 AM2 保持未完成。
+
 - 将现有 Memory Service/PTO acquire 接到 managed 对象绑定，保留现有 W5 引用兼容。
   两种访问方式共用 holder；CPU mapping 与 PTO 操作各自贡献可观察的 pin/in-flight。
 - 完成 CPU/PTO 双向写读及 PTO/PTO 写读的 publish/acquire，核对真实指令和 backing。
@@ -429,7 +443,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
 | AM1 | 进行中：双节点 CPU/SDK、页保护、SDK/provider 描述符负例、home kernel checked-export 身份负例、资源与容量、并发分配子集已通过；完整阶段未完成 | 下一数据能力推进同对象 CPU/PTO 接入；长期循环、合法格式旧身份及完整矩阵仍须独立完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)，r123 的 17 组 kernel 检查、r124 两端各 24 组 provider 检查和 r125 两轮 SDK 实测通过；A01-A06/A09 整项仍未关闭 |
-| AM2 | 进行中：四种读写组合、原 completion 恢复、四线程 shared owner，以及 r162c/r163 的只读输入与独立可写输出子集通过；完整阶段未完成 | home 互换、多请求计算并发、更大分片及现有全局对象引用绑定 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：CPU 页保护与 SDK 写借用拒绝通过；六次 PTO 精确拒绝、24 次数据不变检查后两次正常计算成功，双 owner 分别计量 pending pin 并恢复原 completion；r164 单对象回归、零 staging 和资源判据保留；A07-A11 整项仍未关闭 |
+| AM2 | 进行中：四种读写组合、原 completion 恢复、四线程 shared owner、只读双对象、r176 的 ND 原日志独立复核、r177b 大尺寸六负例及 r178 tail 四线程迟到恢复通过；完整阶段未完成 | home 互换、多请求计算并发及现有全局对象引用绑定 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r176 原 runner 解析失败记录保留；r177b 为 170 个实际分片；r178 为两次恢复、144 次线程检查及 102 个分片；r179/r180 默认与旧入口回归通过，r181b 原日志复验一致；A07-A11 整项仍未关闭 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
 | AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |
 

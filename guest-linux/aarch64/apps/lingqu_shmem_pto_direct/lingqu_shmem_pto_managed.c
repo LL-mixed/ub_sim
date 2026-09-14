@@ -22,9 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MANAGED_BYTES 65536U
-#define VECTOR_ELEMENTS 64U
-#define VECTOR_BYTES (VECTOR_ELEMENTS * sizeof(float))
+#define MAX_VECTOR_ELEMENTS 16384U
 #define METADATA_BYTES 4096U
 #define MAX_ACCESS_THREADS 8U
 #define NEGATIVE_CASES 6U
@@ -34,6 +32,17 @@ static const char *const negative_names[NEGATIVE_CASES] = {
     "tstore-on-read", "tload-on-write"
 };
 
+struct managed_geometry {
+    const char *name;
+    uint32_t rows, columns, elements, tensor_bytes, object_bytes;
+};
+
+static const struct managed_geometry managed_geometries[] = {
+    {"cross-page", 1, 64, 64, 256, 65536},
+    {"nd", 128, 128, 16384, 65536, 262144},
+    {"tail", 128, 127, 16256, 65024, 262144},
+};
+
 struct managed_config {
     char connect[128], key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
     uint64_t generation, fingerprint, timeout_ms, submit_timeout_ms;
@@ -41,6 +50,7 @@ struct managed_config {
     bool recovery_expected;
     bool negative_checks;
     bool readonly_inputs;
+    struct managed_geometry geometry;
 };
 
 struct managed_state {
@@ -116,15 +126,17 @@ static int read_config(const char *path, struct managed_config *config)
 {
     const char *names[] = {"connect", "key", "node_id", "generation",
         "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms",
-        "access_threads", "negative_checks", "readonly_inputs"};
+        "access_threads", "negative_checks", "readonly_inputs", "layout", "elements", "size_bytes"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
     unsigned seen = 0;
+    uint64_t expected_elements = 0, expected_bytes = 0;
     FILE *file = fopen(path, "r");
     int rc = -EINVAL;
     if (!file) return -errno;
     memset(config, 0, sizeof(*config));
+    config->geometry = managed_geometries[0];
     while ((length = getline(&line, &capacity, file)) >= 0) {
         size_t n = (size_t)length;
         if (!n || n >= 512 || memchr(line, '\0', n)) goto out;
@@ -141,7 +153,14 @@ static int read_config(const char *path, struct managed_config *config)
         if (field == sizeof(names) / sizeof(names[0]) || (seen & (1U << field)))
             goto out;
         seen |= 1U << field;
-        if (field < 2) {
+        if (field == 11) {
+            size_t index;
+            for (index = 0; index < sizeof(managed_geometries) / sizeof(managed_geometries[0]);
+                 ++index)
+                if (!strcmp(value, managed_geometries[index].name)) break;
+            if (index == sizeof(managed_geometries) / sizeof(managed_geometries[0])) goto out;
+            config->geometry = managed_geometries[index];
+        } else if (field < 2) {
             char *dest = field ? config->key : config->connect;
             size_t capacity = field ? sizeof(config->key) : sizeof(config->connect);
             if (strlen(value) >= capacity || strpbrk(value, " \t")) goto out;
@@ -166,12 +185,16 @@ static int read_config(const char *path, struct managed_config *config)
                     config->negative_checks = number != 0; break;
             case 10: if (number > 1) goto out;
                      config->readonly_inputs = number != 0; break;
+            case 12: expected_elements = number; break;
+            case 13: expected_bytes = number; break;
             default: goto out;
             }
         }
     }
     if (ferror(file) || (seen & 127) != 127) goto out;
     if (!valid_connect(config->connect)) goto out;
+    if (((seen & (1U << 12)) && expected_elements != config->geometry.elements) ||
+        ((seen & (1U << 13)) && expected_bytes != config->geometry.object_bytes)) goto out;
     if (config->readonly_inputs && strlen(config->key) + strlen("-output") >=
         sizeof(config->key)) goto out;
     config->recovery_expected = (seen & 128) != 0;
@@ -189,9 +212,11 @@ out:
     return rc;
 }
 
-static uint64_t vector_offset(unsigned vector)
+static uint64_t vector_offset(const struct managed_state *state, unsigned vector)
 {
-    return (uint64_t)(vector + 1) * 4096 - VECTOR_BYTES / 2;
+    const struct managed_geometry *geometry = &state->config.geometry;
+    return geometry->rows == 1 ? (uint64_t)(vector + 1) * 4096 - geometry->tensor_bytes / 2 :
+           (uint64_t)vector * geometry->tensor_bytes;
 }
 
 static const char *object_label(const struct managed_state *state)
@@ -215,6 +240,8 @@ static struct managed_state *vector_state(struct managed_state *state, unsigned 
 static float expected_value(unsigned vector, unsigned element)
 {
     float a = (float)(element % 8 + 1), b = (float)(element % 4 + 1);
+    /* Keep the original small oracle; larger views must not repeat it. */
+    if (element >= 64) { a = (float)(element / 8 + 1); b = (float)(element % 8 + 1); }
     if (vector == 0) return a;
     if (vector == 1) return b;
     float c = (a + b + 1.0f) * (a + b + 2.0f);
@@ -239,8 +266,9 @@ static int verify_vector_callback(void *opaque,
     unsigned vector = check->vector;
     (void)lifecycle; (void)view;
     struct mem_service_visibility_completion completion;
-    float expected[VECTOR_ELEMENTS];
-    for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i) {
+    float expected[MAX_VECTOR_ELEMENTS];
+    size_t bytes = state->config.geometry.tensor_bytes;
+    for (unsigned i = 0; i < state->config.geometry.elements; ++i) {
         if (check->negative_operation && vector >= 2) {
             const uint32_t sentinel = 0x7fc00001;
             memcpy(&expected[i], &sentinel, sizeof(sentinel));
@@ -248,21 +276,21 @@ static int verify_vector_callback(void *opaque,
             expected[i] = expected_value(vector, i);
         }
     }
-    uint64_t checksum = mem_service_provider_checksum64(expected, sizeof(expected));
+    uint64_t checksum = mem_service_provider_checksum64(expected, bytes);
     int rc = mem_service_provider_channel_wait_range_visible(channel,
-        &mapping->binding, vector_offset(vector), VECTOR_BYTES, checksum,
+        &mapping->binding, vector_offset(state, vector), bytes, checksum,
         state->config.timeout_ms, &completion);
     if (rc) return rc;
-    const void *actual = (const uint8_t *)mapping->base + vector_offset(vector);
-    if (memcmp(actual, expected, sizeof(expected))) return -EIO;
+    const void *actual = (const uint8_t *)mapping->base + vector_offset(state, vector);
+    if (memcmp(actual, expected, bytes)) return -EIO;
     if (check->negative_operation) {
         printf("MANAGED_PTO_NEGATIVE_DATA node=%u case=%s op_id=%" PRIu64
             " vector=%u checksum=%016" PRIx64 " bytes=%zu unchanged=pass object=%s\n",
             state->config.node, check->path, check->negative_operation, vector,
-            checksum, sizeof(expected), object_label(state));
+            checksum, bytes, object_label(state));
     } else printf("MANAGED_PTO node=%u path=%s vector=%u version=%u checksum=%016" PRIx64
            " bytes=%zu cpu_verify=pass object=%s\n", state->config.node, check->path, vector,
-           vector < 2 ? 1 : vector, checksum, sizeof(expected), object_label(state));
+           vector < 2 ? 1 : vector, checksum, bytes, object_label(state));
     return 0;
 }
 
@@ -283,8 +311,8 @@ static int seed_inputs_callback(void *opaque,
     (void)lifecycle; (void)view;
     struct mem_service_visibility_completion completion;
     for (unsigned vector = 0; vector < 4; ++vector) {
-        uint8_t *base = (uint8_t *)mapping->base + vector_offset(vector);
-        for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i) {
+        uint8_t *base = (uint8_t *)mapping->base + vector_offset(state, vector);
+        for (unsigned i = 0; i < state->config.geometry.elements; ++i) {
             if (vector < 2) {
                 float value = expected_value(vector, i);
                 memcpy(base + i * sizeof(float), &value, sizeof(value));
@@ -298,7 +326,7 @@ static int seed_inputs_callback(void *opaque,
     int rc = mem_service_provider_channel_publish_range(channel,
         &mapping->binding, 0, mapping->len, checksum, &completion);
     if (!rc) printf("MANAGED_PTO node=0 inputs_published=1 version=1 bytes=%u object=%s\n",
-                    MANAGED_BYTES, object_label(state));
+                    state->config.geometry.object_bytes, object_label(state));
     return rc;
 }
 
@@ -367,7 +395,7 @@ static int map_object(struct managed_state *state)
                  state->config.generation, state->is_output ? 1 : 0);
         struct mem_service_client_allocate request = {
             .key = state->config.key, .idempotency_key = idem,
-            .session_id = state->session, .size_bytes = MANAGED_BYTES,
+            .session_id = state->session, .size_bytes = state->config.geometry.object_bytes,
             .capabilities = MEM_SERVICE_CLIENT_MANAGED_CAP_MAP,
         };
         rc = mem_service_client_allocate_object(&state->client, &request,
@@ -376,7 +404,8 @@ static int map_object(struct managed_state *state)
     }
     rc = wait_allocation(state, "active", false);
     if (rc) return rc;
-    if (state->allocation.size_bytes != MANAGED_BYTES || !state->allocation.provider_backed)
+    if (state->allocation.size_bytes != state->config.geometry.object_bytes ||
+        !state->allocation.provider_backed)
         return -ESTALE;
     snprintf(idem, sizeof(idem), "pto-acquire-%s", state->session);
     rc = mem_service_client_acquire_object(&state->client, state->config.key, idem,
@@ -439,7 +468,7 @@ static int adopt_mapping(struct managed_state *state)
     state->held = false; /* This exact holder now belongs to the SDK owner. */
     struct mem_service_mapping_access_view view;
     rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
-        0, MANAGED_BYTES, mapping_access(state),
+        0, state->config.geometry.object_bytes, mapping_access(state),
         &state->cpu_pin, &view);
     if (!rc) printf("MANAGED_OWNER node=%u state=adopted generation=%" PRIu64
         " mapping_id=%" PRIu64 " cpu_pins=1 holder_transferred=1 object=%s\n",
@@ -480,7 +509,8 @@ static void *cpu_worker(void *opaque)
     struct mem_service_mapping_lease *pin = NULL;
     struct mem_service_mapping_access_view view;
     int rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
-        vector_offset(0), VECTOR_BYTES, MEM_SERVICE_CLIENT_MAP_READ, &pin, &view);
+        vector_offset(state, 0), state->config.geometry.tensor_bytes,
+        MEM_SERVICE_CLIENT_MAP_READ, &pin, &view);
     bool ready = false, observed_seal = false;
     do {
         pthread_mutex_lock(&state->workers_lock);
@@ -489,7 +519,7 @@ static void *cpu_worker(void *opaque)
         if (stop) break;
         if (!rc) {
             const volatile float *actual = view.base;
-            for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i)
+            for (unsigned i = 0; i < state->config.geometry.elements; ++i)
                 if (actual[i] != expected_value(0, i)) { rc = -EIO; break; }
         }
         pthread_mutex_lock(&state->workers_lock);
@@ -549,7 +579,8 @@ static int probe_owner_close(struct managed_state *state, bool in_flight)
     struct mem_service_mapping_lease *blocked = NULL;
     struct mem_service_mapping_access_view view;
     rc = mem_service_mapping_owner_acquire(state->owner, MEM_SERVICE_MAPPING_ACCESS_CPU,
-        vector_offset(0), VECTOR_BYTES, MEM_SERVICE_CLIENT_MAP_READ, &blocked, &view);
+        vector_offset(state, 0), state->config.geometry.tensor_bytes,
+        MEM_SERVICE_CLIENT_MAP_READ, &blocked, &view);
     if (rc != -ECANCELED || blocked) return -EPROTO;
     if (state->is_output) {
         state->owner_sealed = true;
@@ -665,7 +696,8 @@ static int inject_negative(struct managed_state *state, unsigned fault,
         break;
     }
     case 2: control->requester_cna = state->config.requester == 1 ? 2 : 1; break;
-    case 3: refs[2].byte_offset = MANAGED_BYTES - VECTOR_BYTES + 1; break;
+    case 3: refs[2].byte_offset = state->config.geometry.object_bytes -
+                                state->config.geometry.tensor_bytes + 1; break;
     case 4: refs[2].access = LINGQU_PTO_UB_GM_READ; break;
     /* Execution probes use explicitly marked kernels and ordinary metadata. */
     case 5: case 6: break;
@@ -687,9 +719,11 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     int rc;
     for (unsigned i = 0; i < 3; ++i) {
         struct lingqu_shmem_memref_spec spec = {
-            .byte_offset = vector_offset(vectors[i]), .byte_length = VECTOR_BYTES,
-            .rank = 2, .dtype = 0, .shape = {1, VECTOR_ELEMENTS},
-            .strides = {VECTOR_ELEMENTS, 1},
+            .byte_offset = vector_offset(state, vectors[i]),
+            .byte_length = state->config.geometry.tensor_bytes,
+            .rank = 2, .dtype = 0,
+            .shape = {state->config.geometry.rows, state->config.geometry.columns},
+            .strides = {state->config.geometry.columns, 1},
             .access = i == 2 ? LINGQU_SHMEM_ACCESS_WRITE : LINGQU_SHMEM_ACCESS_READ,
         };
         rc = lingqu_shmem_mem_service_acquire_owned(state->compute,
@@ -738,8 +772,9 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
         " tensor_bytes=%zu retained_leases=3 release_guard=pass object_maps=%" PRIu64
         ",%" PRIu64 ",%" PRIu64 "\n",
         round, request.op_id, state->allocation.generation,
-        state->mapping_id, vector_offset(vectors[0]),
-        vector_offset(vectors[1]), vector_offset(vectors[2]), (size_t)VECTOR_BYTES,
+        state->mapping_id, vector_offset(state, vectors[0]),
+        vector_offset(state, vectors[1]), vector_offset(state, vectors[2]),
+        (size_t)state->config.geometry.tensor_bytes,
         vector_state(state, vectors[0])->mapping_id,
         vector_state(state, vectors[1])->mapping_id,
         vector_state(state, vectors[2])->mapping_id);
@@ -824,11 +859,11 @@ static int readonly_cpu_probe(void *opaque,
     (void)channel; (void)lifecycle;
     if (mapping->flags != MEM_SERVICE_CLIENT_MAP_READ ||
         view->flags != MEM_SERVICE_CLIENT_MAP_READ) return -EPROTO;
-    uint8_t *target = (uint8_t *)mapping->base + vector_offset(0);
+    uint8_t *target = (uint8_t *)mapping->base + vector_offset(state, 0);
     int rc = lingqu_shmem_pto_probe_readonly(target, &fault);
     if (rc) return rc;
     const volatile float *input = (const volatile float *)target;
-    for (unsigned i = 0; i < VECTOR_ELEMENTS; ++i)
+    for (unsigned i = 0; i < state->config.geometry.elements; ++i)
         if (input[i] != expected_value(0, i)) return -EIO;
     state->readonly_checksum = mem_service_provider_checksum64(mapping->base, mapping->len);
     printf("MANAGED_PTO_READONLY node=%u object=input probe=cpu-write-denied "
@@ -861,7 +896,8 @@ static int probe_readonly_input(struct managed_state *state)
         struct mem_service_mapping_lease *blocked = NULL;
         struct mem_service_mapping_access_view view;
         int rc = mem_service_mapping_owner_acquire(state->owner, kinds[i],
-            vector_offset(0), VECTOR_BYTES, MEM_SERVICE_CLIENT_MAP_WRITE, &blocked, &view);
+            vector_offset(state, 0), state->config.geometry.tensor_bytes,
+            MEM_SERVICE_CLIENT_MAP_WRITE, &blocked, &view);
         if (rc != -EACCES || blocked) return -EPROTO;
     }
     struct mem_service_mapping_owner_stats stats;
@@ -937,10 +973,11 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
         return 2;
     }
     if (validate_only) {
-        printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=cross-page "
+        printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=%s "
             "elements=%u callable=1 network_operations=0 submit_timeout_ms=%" PRIu64
             " recovery_expected=%u access_threads=%u negative_checks=%u readonly_inputs=%u\n",
-            config.node, MANAGED_BYTES, VECTOR_ELEMENTS, config.submit_timeout_ms,
+            config.node, config.geometry.object_bytes, config.geometry.name,
+            config.geometry.elements, config.submit_timeout_ms,
             config.recovery_expected ? 1 : 0, config.access_threads, config.negative_checks ? 1 : 0,
             config.readonly_inputs ? 1 : 0);
         return 0;

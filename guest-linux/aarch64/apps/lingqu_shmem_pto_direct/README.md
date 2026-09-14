@@ -76,9 +76,10 @@ TSTORE 的 C，四个视图始终落在同一 backing。CPU 只初始化输入�
 构建使用本目录的 `make MANAGED=1`；常规 initramfs 同时启用该模式。
 现有 `run_ub_dual_node_apps.sh --app mem_service_object_share --config FILE`
 通过配置 `MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-pto` 选择联合用例，默认 `cpu`
-保持原有 SDK 检查。联合模式要求 backend=obmm、size=65536、iterations=1、
-fault=none，以及已有 PTO manifest/fingerprint/CNA 配置。它校验 cross-page
-工件的真实几何和两个 dispatch 的 callback、backing 身份及 CPU 结果，不复用
+保持原有 SDK 检查。联合模式要求 backend=obmm、iterations=1、fault=none，
+以及已有 PTO manifest/fingerprint/CNA 配置；默认 cross-page 使用 size=65536，
+ND/tail 使用下表规定的尺寸。它校验所选工件的真实几何和两个 dispatch 的
+callback、backing 身份及 CPU 结果，不复用
 旧独立 PTO 用例的通过标记。所有测试失败和未知 completion 都保留原始日志。
 
 可选 `submit_timeout_ms` 启用超时恢复用例，须在 `1..timeout_ms-1` 范围内。
@@ -158,8 +159,50 @@ r162 首轮在完成数据计算后暴露输出 owner guard 返回值错误：�
 分别保留 1/2 个计算 pin 时恢复原 completion，4 线程完成 4058 次校验。
 两轮均验证完整 64 KiB 输入 checksum 不变、逐对象 backing、零 staging 和资源
 归零。r164 的默认单对象六负例及 r165 的旧 direct 入口回归通过。
-当前仍为单 home、两个 64 KiB 对象、
+该组验收范围为单 home、两个 64 KiB 对象、
 256-byte 视图和两次顺序正常计算，`am2_complete=false`。
+
+尺寸扩展配置约定（各布局的实跑结果分别记录）：沿用本入口，配置增加
+`layout=cross-page|nd|tail`；省略时保持 cross-page。由 profile 推导元素数和
+对象尺寸，可选 `elements`、`size_bytes` 用作一致性断言，错误组合在连接前拒绝。
+host 继续使用已有 layout/elements/size 配置，禁止从日志猜测期望几何。
+
+| Managed profile | 张量几何 | 张量 bytes | 每对象 bytes | A/B/C/D offset |
+| --- | --- | ---: | ---: | --- |
+| cross-page | 1x64 | 256 | 65,536 | 3968 / 8064 / 12160 / 16256 |
+| nd | 128x128 | 65,536 | 262,144 | 0 / 65536 / 131072 / 196608 |
+| tail | 128x127，tile 128x128 | 65,024 | 262,144 | 0 / 65024 / 130048 / 195072 |
+
+大尺寸使用四个不重叠、64-byte 对齐视图与统一 256 KiB 对象上限；只读模式仍将
+输入和输出分开管理。CPU oracle、负例检查和 completion 计量必须覆盖完整张量。
+实际分片验收使用现有 QEMU 数据路径 trace，逐条核对发送、精确长度响应和对应
+PTO callback；不能用张量尺寸推算的分片数代替运行证据。原始日志保留，派生报告
+放在既有 campaign 输出目录。默认小尺寸、只读、延迟恢复、负例和 legacy 入口
+继续回归，完整 AM2 状态保持未完成。
+
+quadratic 编排由 `prepare_simpler_host_artifacts.py` 生成，沿用四个 add / add-scalar /
+add-scalar / multiply task，按 manifest 的完整 storage extent 分配三个中间张量。
+入口核对三个 FP32 张量的逻辑元素数；外部 rank 可以为 1、2 或 5。不能仅取
+`shapes[0]`：r169b 的 `128x128` 实跑在传输完成后出现 CPU checksum 错误，
+随后核对发现旧示例只为中间结果申请了 128 个元素。新编排同时计入 strided
+布局的间隙，标量使用明确的 FP32 位模式。元数据原生 fixture 校验六种布局的
+分配大小、四 task 依赖、标量及无效入参；它不替代真实 PTO 数据结果验收。
+修复需要重新生成 orchestration 工件，复用 runtime manifest 不会重用旧编排。
+
+分片判据使用真实 register/unbind 窗口：启动阶段的 legacy bootstrap page read
+同样出现在原始日志中，但使用独立 backing 和 `4079+17` 分片。它们单独计入
+`non_pto_bulk_sends`，不进入 strict PTO 的 4055-byte 分片计量。窗口外访问任一
+managed backing、重复应答、窗口重叠/缺失、缺片及长度错误继续失败。整份原始
+日志保留并计算 SHA，不能删除非 PTO 行后再宣称验证了原文件。
+
+大尺寸实际子集：r176 的 ND 双对象四线程数据、权限、回收和 102 个分片，经
+修复后的验收器独立复核原日志通过；原 runner 的解析失败报告保留。
+r177b 的 ND 六负例、24 次完整视图不变及两次正常计算整轮通过，实测 170 个分片。
+r178 的 tail 四线程、两次原 completion 恢复及 102 个分片整轮通过；每 callback
+尾片为 144 bytes。r179 默认单对象四线程六负例和 r180 旧 direct 入口均通过。
+详细输入指纹、失败记录、测试基线和剩余验收项见
+[实施记录](../../../../docs/2026-09-11-gva-managed-service-implementation-progress.md)。
+范围仍是两节点、单 home、两次顺序正常计算，`am2_complete=false`。
 
 Input publication is ordered by the release fence in `seed_region()` before
 the bootstrap record is published. The workload also attempts `msync()` when
