@@ -2643,3 +2643,69 @@ SDK provider publish 与可见性、V2 reader mapping 和 W5 仍待接入；seal
 `54cb624cd9c156d1c9a6f3921dab3c5789f624a22e05a3a5db78a50e51be11a7`。
 最终 247 项完整回归摘要 SHA-256 为
 `423ebe4ca88bac76a6940bf60f38eb5da0913b084803b438449d26e3243b9316`。
+
+## 2026-09-14 续作：V2 发布目录的 RPC、安装 SDK 与 CLI
+
+独立服务新增 metadata-only `0x7e reference_transition`，提供 begin、stage、
+seal、resolve、acquire；公开 `mem_service_client_reference_transition()` 和
+`mem_service_reference_protocol.h`，CLI 入口为 `reference-transition`。
+begin/seal 使用 allocation key，stage/resolve 使用逻辑 object key，acquire
+核对完整 V2 内的 allocation key。V1 operation ID、64-byte ObjectRef 和既有
+808-byte client record ABI 保持不变；新接口显式 opt-in，旧端不支持时拒绝。
+
+本批补齐以下控制边界：
+
+- 幂等回执返回前重新验证 ACTIVE allocation、generation、content version、
+  provider readiness 与 home incarnation；resolve/acquire 使用登记的完整引用。
+  已释放 holder 的旧 ACQUIRE 回执不能重新取得访问资格。
+- BEGIN 预留首次 STAGE 和 SEAL 的回执容量，ACQUIRE 预留 RELEASE。
+  表满时，额外 STAGE 在变更前被拒绝；无效请求不占用他人的清理预留。
+- 通用 retention 不删除 managed-view 或该协议的幂等记录；旧对象/artifact/
+  prefix/block 写入拒绝覆盖 managed-view。
+- 公共请求解析拒绝重复/越长/动作不匹配字段、无效整数与非法引用；wire 入口
+  拒绝嵌入 NUL，避免尾部字段被忽略。SDK 拒绝不一致的响应，失败时保留输出原值。
+- 真实 CLI/SDK/daemon 用例覆盖双视图、版本更新、holder 与映射清理、容量耗尽、
+  home 替换、readiness 恢复、UNIX 及受信网络控制端点和原始报文拒绝。
+
+验证过程与保留的失败记录：
+
+| 批次 | 范围 | 结果 |
+| --- | --- | --- |
+| r220 | 新控制协议定向测试 | 8 项中 3 通过、5 失败；fixture 用 `owner` 写入由 `producer` 分配的对象，按归属规则被拒绝，随后修正 fixture 会话 |
+| r221 | 修正后控制协议/core/codec、原生和安装态 | 定向 10 项通过，host artifact 与 installed SDK 门禁通过 |
+| r222 | 完整独立 Python 回归 | 256 项，249 通过、5 跳过、2 失败；遗漏了安装文件数与兼容 payload 数的字面量断言更新 |
+| r223 | 加入 wire NUL 拒绝后完整回归 | 257 项，250 通过、5 跳过，同两项计数断言失败；新增功能用例通过 |
+| r224 | 同步三个计数断言后完整回归 | **257 项，252 通过、5 跳过、零失败/错误**；16 分片执行清单无遗漏、无重复，全部 exit 0 |
+
+五项环境跳过为三个 ub_sim 专属文件契约、缺交叉工具链的 arm64 deb 门禁，以及
+隔离容器缺少 non-loopback IPv4 的监听策略用例。跳过保持可见，不计为通过。
+完整 suite 在指定远端缓存容器运行，`--network none --pull never`，不下载依赖。
+本地仅运行 8 项轻量 codec/core/mock-wire 测试、语法检查与指纹核对。
+
+r224 的 `reference-protocol-smoke`、`reference-catalog-smoke`、
+`object-ref-v2-smoke`、`host-artifact-smoke`、`installed-sdk-runtime-smoke`、
+`installed-reference-protocol-smoke`、`installed-object-ref-v2-smoke` 均通过。
+core catalog 与新 SDK mock-wire 的 ASan/UBSan、1 MiB 栈限制下的 restore ASan
+夹具通过。九份 CLI 生成契约逐字比对通过；wire schema 现为 39 operations、
+224 fields，安装 manifest 现为 57 files、15 public headers。
+启动校验有一条 runner 校验串格式错误，随后以 `sha256sum --strict` 单独核对
+冻结 runner 与汇总工具，均通过；补验日志纳入归档。
+
+服务提交 `8ba34a02d80b5a207a51d7215083c7e0990711b4`，tree 为
+`80f5b7f3d52c72f4a3a80c5330488b446d4ac443`。提交前 213 项本地源码 SHA
+与最终 r224 清单逐项一致。源码归档 SHA-256 为
+`8c304b2802aaf029a7380fb6709872d6fb36582482c9faaba60b9f914d9edda2`；
+源码清单 SHA-256 为
+`dac69d1cb33bc54abd195b10425752a0560cf68a6065bca4c52a6342d699468a`。
+
+证据归档 `out/verified-r220-r224-reference-rpc-evidence.tar.gz` 为 3,780,530
+bytes，包含前后源码、完整分片日志、安装/契约/sanitizer 输出及 40 个已结束
+作业的状态。归档 SHA-256 为
+`b5eda96b0fa539bcf0215fed6ea5280f57b5c60e5681787603c0a5ab54b0b4ab`；
+最终完整回归摘要 SHA-256 为
+`f8cf3801239eb6be15f44fb59aa99be54f562fccca12654ed065da4a1f18a8e3`。
+
+**边界：** 本批证明当前 daemon 生命周期内的控制协议，不证明 payload 已完成
+写入或 checksum 正确。V2 reader mapping、provider 发布/可见性闭环、W5、
+AM3 重启身份域及回收仍待实现与实际验证，AM2/AM3/总目标保持未完成。
+未 push，父仓库 gitlink/lock 未更新，本批源码未用于根仓库 guest 构建。

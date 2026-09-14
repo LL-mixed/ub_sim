@@ -61,6 +61,15 @@ resolve/acquire：写入前推进版本，按登记的完整 V2 和当前 alloca
 大栈帧溢出，原失败记录保留，新增 1 MiB 栈回归通过。wire、SDK reader mapping、
 provider 发布/可见性与 W5 仍未接通，core metadata 结果不代替实际数据闭环验收。
 
+同日控制协议续作：已将 V2 begin/stage/seal/resolve/acquire 接入独立 `0x7e`
+RPC、类型化安装 SDK 与 `reference-transition` CLI。重放前核对当前 generation、
+内容 version、活动 home incarnation 与已登记视图；保留首次 stage、seal 和
+release 的结果容量，拒绝旧 metadata 写入覆盖受管理引用。r224 完整 257 项为
+252 通过、5 项环境跳过、零失败/错误；16 分片执行清单精确覆盖全部测试，
+原生/安装态、sanitizer 和九份契约清单比对通过。独立服务提交为 `8ba34a0`。
+V2 reader mapping、provider 发布/可见性闭环、W5 及重启恢复仍待完成；本轮
+控制协议验收不关闭 AM2、AM3 或总目标。未 push，父仓库 gitlink/lock 未更新。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
