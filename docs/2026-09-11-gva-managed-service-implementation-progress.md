@@ -3271,3 +3271,63 @@ config、tokenizer 和 tokenizer_config 的 SHA-256 已记录于本地
 Rust 的 `model_runtime_object_payload_view()` 也仍消费旧引用并具有 snapshot/
 registry 路径，需按受管理对象身份检查相应模型执行接入。上述为源码缺口定位，
 没有声明 W5 接入、模型正确性或多节点矩阵通过。
+
+### r253-r259：百轮入口与真实第三轮容量失败
+
+沿用 `cpu-reference`，host/guest/验收器统一接受规范十进制 1 至 100 轮，拒绝
+零、前导零、越界和非数字。每轮创建真实数据 allocation 及两个同步 allocation，
+发布两段 V2，只读映射读取后退役三对象。验收器新增每轮 writer 服务资源归零
+检查及 allocation cycle 计数；reader 的中间全局快照允许观察到下一轮，自己的
+provider 映射仍逐次检查。新增合成 100 轮夹具、缺轮/中间资源残留拒绝和
+host/guest 边界一致性测试。夹具通过不计作实际百轮验证。
+
+r253 四文件 overlay SHA-256：
+`94486685d775d89ba1f6e24cb4445514780fa97b53a74295ad433ed97f45ed86`。
+远端 guest Python 目录完整发现/执行 543 个唯一 test ID：538 通过、5 项
+交叉编译器环境跳过、零失败/错误/加载错误，容器 exit 0、无 OOM。r254 在同一
+源码完成完整 Rust workspace：43 harness、963 通过、16 ignored、零失败或
+filtered；11:52:16 至 12:01:08 UTC，exit 0、无 OOM。
+
+r255 的实际 100 轮配置在第三轮失败，原容器 11:54:53 至 11:55:08 UTC，
+exit 1、无 OOM。两端仅完成两轮、四个 V2 reader 视图，第三轮数据 allocation
+generation=7 已 active，writer map 返回 `capacity_exceeded`，holder 保留。
+不能计为百轮通过，也不能把 worker 退出改写为资源已安全回收。原失败归档
+`reference-pressure-evidence-r255-failed.tar.gz` 为 90,454 bytes，SHA-256：
+`c87c84c20658a6fda915584f64b72c74ae1ec4ef68d550a7f5ead0f1ade8e6c7`，
+已取回本地核对。
+
+随后只增加失败时的 `allocation-stats` 诊断，保持服务、provider、内核和容量
+配置不变。最终 r256 overlay SHA-256：
+`025273eb4c07f391b17c384cdb71ae9ec191d62494feec8b3748d5bc3c830e99`。
+9 项本地轻量测试通过；r257 再次完整执行上述 543 项并取得相同结果，exit 0、
+无 OOM。测试结果 JSON SHA-256：
+`8acc08c79dfc9470ad2073eb388acf723174bef0cc4751724fa379652c76c23a`。
+最终源码的 r258 Rust 原任务已完成：43 个独立 harness、963 通过、16 ignored、
+零失败或 filtered，12:03:28 至 12:12:14 UTC，exit 0、无 OOM。计数逐个取
+外层 harness 的最终结果，避免重复计算嵌套测试输出；日志 SHA-256：
+`4e682b24f0a736601fbc08570307f139a76cb96a2361265cb3704061fafb4dae`。
+Python 的五项跳过与 Rust 的 ignored 均不计作通过；上述回归不替代实际百轮验收。
+
+r259 使用三轮最小复现采集额外诊断，原容器 12:03:31 至 12:03:45 UTC，
+仍 exit 1、无 OOM。失败时服务实际报告：
+
+| 计数 | 实际值 |
+| --- | ---: |
+| allocate / publish 成功 | 7 / 7 |
+| retire / reclaim 成功 | 6 / 6 |
+| live objects / refs / import mappings | 1 / 1 / 0 |
+| backing / address reserved bytes | 2097152 / 2097152 |
+| idempotency capacity / used | 64 / 59 |
+| cleanup reserved / available / reservation deficit | 4 / 1 / 0 |
+
+诊断归档 `reference-pressure-evidence-r259-failed.tar.gz` 为 90,609 bytes，
+SHA-256：`dbf2d5c2e235db93a65b41058862aa7ef197148d2c974f79752464bfe36d6fc4`。
+该轮结束后未发现遗留 QEMU，失败对象的隔离/恢复仍需按 AM3 验证。
+
+源码 `mem_service_new_cleanup_reservations()` 对新 mapping BEGIN 预留后续三条
+应答，另需 BEGIN 自身一条，超过当前可用一条，准入返回容量错误。provider map
+尚未执行；这与前两轮资源归零、第三轮无 import mapping 的实际计数一致。
+历史应答表没有随已退役生命周期回收是当前百轮的首个实际限制。必须保留旧请求
+的重放/拒绝语义及在用清理容量，不能通过放大表或丢弃旧请求历史宣称解决。
+worker 日志也明确 `address_reuse=disabled`，后续地址重用仍须按 AM3 的确认、
+drain、epoch 与旧上下文隔离要求实现；当前百轮、完整压力矩阵和总目标均未完成。

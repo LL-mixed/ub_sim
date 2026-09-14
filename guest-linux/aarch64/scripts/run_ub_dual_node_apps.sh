@@ -1100,9 +1100,10 @@ if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-reference" ]]; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
         "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
         "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ||
-        ( "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" &&
-          "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "2" ) ]]; then
-    echo "cpu-reference requires OBMM, 65536 bytes, one or two rounds and no fault" >&2
+        ( "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != [1-9] &&
+          "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != [1-9][0-9] &&
+          "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "100" ) ]]; then
+    echo "cpu-reference requires OBMM, 65536 bytes, 1..100 rounds and no fault" >&2
     exit 2
   fi
 fi

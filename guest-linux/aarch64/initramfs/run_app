@@ -1149,6 +1149,13 @@ mem_service_object_share_allocation_pressure() (
   echo "mem_service allocation-pressure: phase=complete"
 )
 
+mem_service_reference_iterations_valid() {
+  case "$1" in
+    [1-9]|[1-9][0-9]|100) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 mem_service_object_share_reference_ops() (
   node="$1"; size="$2"; round="$3"; seed="$4"; generation="$5"; version="$6"
   key="obj-ref-$round"
@@ -1244,7 +1251,11 @@ mem_service_object_share_reference() (
       echo "provider_import_region_bytes=2097152"
       mem_service_object_share_reference_ops "$node" "$size" "$round" "$seed" "$generation" "$version"
     } >"$config"
-    /bin/linqu_mem_service object-session --config "$config" || exit 1
+    if ! /bin/linqu_mem_service object-session --config "$config"; then
+      echo "mem_service reference-capacity: node=$node round=$round phase=failed"
+      /bin/linqu_mem_service allocation-stats --connect "$connect" || true
+      exit 1
+    fi
     round=$((round + 1))
   done
 )
@@ -1537,7 +1548,7 @@ run_mem_service_object_share() {
   fi
   if [ "$access" = "cpu-reference" ] &&
       { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] || [ "$fault" != "none" ] ||
-        { [ "$iterations" != "1" ] && [ "$iterations" != "2" ]; }; }; then
+        ! mem_service_reference_iterations_valid "$iterations"; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=reference_config"
     return 2
   fi

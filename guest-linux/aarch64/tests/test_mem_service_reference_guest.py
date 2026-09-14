@@ -125,6 +125,57 @@ def qemu_fixture(iterations=1):
 
 
 class ReferenceGuestTests(unittest.TestCase):
+    def test_hundred_distinct_allocation_lifecycles(self):
+        logs = fixture(100)
+        result = validator.validate(*logs, 100, 41, 7)
+        self.assertEqual(result["allocation_cycles"], 100)
+        self.assertEqual(result["retired_allocations"], 300)
+        self.assertEqual(len(result["views"]), 200)
+        self.assertEqual(len({view["generation"] for view in result["views"]}), 100)
+        self.assertEqual(len(validator.validate_qemu(qemu_fixture(100), result["views"])), 200)
+        for count in (0, 101):
+            with self.assertRaisesRegex(ValueError, "unsupported reference"):
+                validator.validate(*logs, count, 41, 7)
+        with self.assertRaisesRegex(ValueError, "missing successful session completion"):
+            validator.validate(*fixture(99), 100, 41, 7)
+
+    def test_every_writer_round_must_drain_before_reallocation(self):
+        logs = fixture(3)
+        lines = logs[0].splitlines()
+        stats = [index for index, line in enumerate(lines) if "action=stats" in line]
+        for field in ("live_objects", "live_refs", "in_flight", "import_mappings",
+                      "backing_allocated_bytes", "address_reserved_bytes",
+                      "quarantined_objects", "quarantined_bytes"):
+            with self.subTest(field=field):
+                changed = lines.copy()
+                changed[stats[3]] = changed[stats[3]].replace(f"{field}=0", f"{field}=1")
+                with self.assertRaises(ValueError):
+                    validator.validate("\n".join(changed), logs[1], 3, 41, 7)
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")
+    def test_host_and_guest_iteration_bounds_agree(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        guest = "mem_service_reference_iterations_valid() {" + source.split(
+            "mem_service_reference_iterations_valid() {", 1)[1].split(
+            "\nmem_service_object_share_reference_ops()", 1)[0]
+        host = (SCRIPTS / "run_ub_dual_node_apps.sh").read_text()
+        marker = 'if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-reference" ]]; then'
+        host = marker + host.split(marker, 1)[1].split("\nif managed_pto_selected;", 1)[0]
+        for value, valid in (("1", True), ("2", True), ("3", True), ("100", True),
+                             ("0", False), ("01", False), ("101", False),
+                             ("-1", False), ("1x", False), ("", False)):
+            with self.subTest(value=value):
+                for shell, script in (("sh", guest +
+                        f"\nmem_service_reference_iterations_valid '{value}'\n"),
+                        ("zsh", "MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-reference\n"
+                         "MEM_SERVICE_OBJECT_SHARE_BACKEND=obmm\n"
+                         "MEM_SERVICE_OBJECT_SHARE_SIZE=65536\n"
+                         "MEM_SERVICE_OBJECT_SHARE_FAULT=none\n"
+                         f"MEM_SERVICE_OBJECT_SHARE_ITERATIONS='{value}'\n" + host)):
+                    run = subprocess.run([shell, "-s"], input=script,
+                                         capture_output=True, text=True, timeout=5)
+                    self.assertEqual(run.returncode == 0, valid, run.stderr)
+
     def test_exact_two_view_and_two_round_evidence(self):
         for rounds in (1, 2):
             result = validator.validate(*fixture(rounds), rounds, 41, 7)
@@ -238,6 +289,17 @@ class ReferenceGuestTests(unittest.TestCase):
             self.assertIn("op=begin_reference key=obj-ref-1 idempotency_key=ref-begin-1 generation=73 version=8", run.stdout)
             self.assertIn("op=seal_reference key=obj-ref-1 idempotency_key=ref-seal-1 generation=73 version=9", run.stdout)
             self.assertEqual(run.stdout.count("op=publish_reference"), 2)
+            failed_session = mock.replace('object-session) cat "$3" ;;',
+                'object-session) return 1 ;;\n'
+                "allocation-stats) printf 'idempotency_capacity=64\\nidempotency_used=59\\n' ;;")
+            run = subprocess.run(["sh", "-s"], input=failed_session + helper +
+                '\nmem_service_object_share_reference 0 65536 3 41 7 unix:fixture\n',
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(run.returncode, 1)
+            self.assertIn("reference-capacity: node=0 round=1 phase=failed", run.stdout)
+            self.assertIn("idempotency_capacity=64", run.stdout)
+            self.assertIn("idempotency_used=59", run.stdout)
+            self.assertNotIn("key=obj-ref-2", run.stdout)
             not_ready = mock.replace(
                 "printf 'data_plane_ready=0\\nprovider_directory_ready=1\\n'",
                 "printf 'data_plane_ready=1\\nprovider_directory_ready=0\\n'; "
@@ -277,7 +339,7 @@ class ReferenceGuestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             config = pathlib.Path(directory) / "runner.env"
             for backend, size, rounds, fault in (("loopback", 65536, 1, "none"),
-                    ("obmm", 4096, 1, "none"), ("obmm", 65536, 3, "none"),
+                    ("obmm", 4096, 1, "none"), ("obmm", 65536, 101, "none"),
                     ("obmm", 65536, 1, "sdk_contract")):
                 config.write_text(f"MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-reference\n"
                     f"MEM_SERVICE_OBJECT_SHARE_BACKEND={backend}\nMEM_SERVICE_OBJECT_SHARE_SIZE={size}\n"

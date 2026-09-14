@@ -98,7 +98,7 @@ def validate_resources(text, node, iterations):
 
 
 def validate(node_a, node_b, iterations, seed, incarnation):
-    require(iterations in (1, 2) and incarnation > 0 and 0 <= seed < (1 << 64) - 1,
+    require(1 <= iterations <= 100 and incarnation > 0 and 0 <= seed < (1 << 64) - 1,
             "unsupported reference guest configuration")
     results = []
     all_ops = []
@@ -135,9 +135,15 @@ def validate(node_a, node_b, iterations, seed, incarnation):
         pattern = [0, 1, 0, 0] if node == 0 else [0, 1, 0, 1, 0, 0]
         require([int(row["import_mappings"]) for row in stats] == pattern * iterations,
                 "service mapping ledger disagrees with access sequence")
-        for field in ("live_objects", "live_refs", "in_flight", "import_mappings",
-                      "backing_allocated_bytes", "address_reserved_bytes", "quarantined_objects", "quarantined_bytes"):
-            require(int(stats[-1][field]) == 0, f"service resources not drained: {field}")
+        # Writer checks after all three allocations are retired, before the
+        # next allocation. Reader's intermediate global snapshot may observe
+        # the next round; its own provider mappings are checked every time.
+        drained = stats[3::4] if node == 0 else stats[-1:]
+        for snapshot in drained:
+            for field in ("live_objects", "live_refs", "in_flight", "import_mappings",
+                          "backing_allocated_bytes", "address_reserved_bytes",
+                          "quarantined_objects", "quarantined_bytes"):
+                require(int(snapshot[field]) == 0, f"service resources not drained: {field}")
         require(f"status=ok node={node} role={'provider' if node == 0 else 'consumer'} backend=obmm" in text,
                 "missing guest completion")
         validate_resources(text, node, iterations)
@@ -202,6 +208,7 @@ def validate(node_a, node_b, iterations, seed, incarnation):
                                 bytes=512, checksum=expected_checksum, address=base + offset))
     require(len(set(generations)) == iterations, "allocation generation reused across rounds")
     return dict(status="pass", scope="managed-reference-two-guest", iterations=iterations,
+                allocation_cycles=iterations, retired_allocations=iterations * 3,
                 views=results, node_a_sha256=hashlib.sha256(node_a.encode()).hexdigest(),
                 node_b_sha256=hashlib.sha256(node_b.encode()).hexdigest())
 
