@@ -194,6 +194,21 @@ reclaim 确认。区间 ENOSPC 只在平台确认保留前失败且输出 descri
 提供该能力；扩容结果和小窗口复用结果分开记录，均不得替代实际 backing
 容量、旧身份拒绝、异常回收和百轮运行的验收。
 
+CPU 解除映射验收补齐约定：V2 writer 和两个 reader 视图的显式 unmap
+启用 `probe_unmapped=1`。探针在持有映射的同一进程读取有效地址，确认
+managed unmap 后再读原地址，要求同步目标地址故障。validator 必须将每次
+探针的 session、key、generation、地址和位置绑定到对应 map/unmap；缺失、
+重复、错序或无故障均拒绝。此项不替代旧 provider descriptor/token 拒绝、
+强制撤销、跨重启或同址新映射建立后的裸指针隔离验收。
+
+r323-r331 已补齐上述正常 unmap 子项：独立服务 `4236654` 已按授权
+发布并本地锁定；独立 Python 281 通过、5 跳过，父仓库 Python 548
+通过、5 跳过，完整 Rust 963 通过、16 ignored，均零失败。真实双 guest
+三轮和百轮分别核对 9/300 次同进程原地址故障；百轮包含 594 次旧 V2
+控制面拒绝、200 个新视图及 400 次分配退役，最终资源检查通过，无遗留
+QEMU。旧 provider descriptor/token、强制撤销、在途访问和恢复保持未验收；
+详见实施记录 r323-r331 的源码、镜像、运行及原始证据指纹。
+
 双节点 CLI 的 `--config` 文件可指定
 `MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE=1073741824`（1 GiB）。当前配置
 入口接受 2 MiB 对齐的十进制字节数，范围 2 MiB 至 4 GiB；这是该测试入口

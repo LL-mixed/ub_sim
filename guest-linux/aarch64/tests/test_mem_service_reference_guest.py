@@ -93,6 +93,10 @@ def fixture(iterations=1):
                         visible_index += int(action == "wait_visible")
                 elif action == "probe_readonly":
                     lines.append(session + " cpu_fault_probe=probe_readonly offset=0 signal=11")
+                elif action == "unmap":
+                    address = base + ((128, 4224)[map_index - 1] if node else 0)
+                    lines.append(f"{session} cpu_unmapped_probe=pass key={key} generation={generation} "
+                                 f"address=0x{address:016x} signal=11 read_before_unmap=1 unmap_confirmed=1")
                 elif action == "stats":
                     size = sizes[stats_index]
                     stats_index += 1
@@ -347,6 +351,7 @@ class ReferenceGuestTests(unittest.TestCase):
             result = validator.validate(*fixture(rounds), rounds, 41, 7)
             self.assertEqual(result["status"], "pass")
             self.assertEqual(len(result["views"]), rounds * 2)
+            self.assertEqual(len(result["cpu_unmapped_checks"]), rounds * 3)
             self.assertEqual(result["views"][0]["generation"], 80)
 
     def test_missing_corrupt_or_reordered_evidence_is_rejected(self):
@@ -381,10 +386,51 @@ class ReferenceGuestTests(unittest.TestCase):
         logs = fixture()
         lines = logs[1].splitlines()
         for index, line in enumerate(lines):
-            if "action=" in line or "reference_hex=" in line or "cpu_fault_probe=" in line:
+            if any(marker in line for marker in ("action=", "reference_hex=", "cpu_fault_probe=", "cpu_unmapped_probe=")):
                 with self.subTest(missing=line):
                     with self.assertRaises((ValueError, KeyError, IndexError)):
                         validator.validate(logs[0], "\n".join(lines[:index] + lines[index + 1:]), 1, 41, 7)
+
+    def test_unmapped_cpu_fault_must_match_identity_address_and_order(self):
+        for node in (0, 1):
+            logs = fixture()
+            lines = logs[node].splitlines()
+            index = next(i for i, line in enumerate(lines) if "cpu_unmapped_probe=" in line)
+            for old, new in (("cpu_unmapped_probe=pass", "cpu_unmapped_probe=fail"),
+                             ("signal=11", "signal=0"),
+                             ("read_before_unmap=1", "read_before_unmap=0"),
+                             ("unmap_confirmed=1", "unmap_confirmed=0"),
+                             ("generation=80", "generation=81"),
+                             ("key=obj-ref-1", "key=obj-ref-2"),
+                             ("address=0x000070000060", "address=0x000070000061")):
+                with self.subTest(node=node, mutation=old):
+                    changed = lines.copy()
+                    self.assertIn(old, changed[index])
+                    changed[index] = changed[index].replace(old, new)
+                    candidate = logs.copy()
+                    candidate[node] = "\n".join(changed)
+                    with self.assertRaises(ValueError):
+                        validator.validate(*candidate, 1, 41, 7)
+            for changed in (lines[:index] + lines[index + 1:],
+                            lines[:index] + [lines[index]] + lines[index:],
+                            lines[:index] + [lines[index + 1], lines[index]] + lines[index + 2:]):
+                candidate = logs.copy()
+                candidate[node] = "\n".join(changed)
+                with self.assertRaises(ValueError):
+                    validator.validate(*candidate, 1, 41, 7)
+
+    def test_generated_unmaps_enable_same_process_cpu_probe(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        helper = "mem_service_object_share_reference_ops() (" + source.split(
+            "mem_service_object_share_reference_ops() (", 1)[1].split(
+            "\nmem_service_reference_reader_prepare()", 1)[0]
+        for node, count in ((0, 1), (1, 2)):
+            run = subprocess.run(["sh", "-s"], input=helper +
+                f"\nmem_service_object_share_reference_ops {node} 65536 1 41 80 8\n",
+                capture_output=True, text=True, timeout=5)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            unmaps = [line for line in run.stdout.splitlines() if line.startswith("op=unmap ")]
+            self.assertEqual(unmaps, ["op=unmap key=obj-ref-1 probe_unmapped=1"] * count)
 
     def test_cli_writes_summary_only_for_complete_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

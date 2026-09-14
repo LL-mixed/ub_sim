@@ -144,6 +144,37 @@ def validate_reference_rejections(node_a, node_b, iterations, views):
     return results
 
 
+def validate_unmapped_probes(text, node, iterations):
+    """Tie each same-process fault to its actual mapped view and unmap receipt."""
+    rows = records(text, "mem_service object-session:")
+    maps = [row for row in rows if row.get("action") in ("map", "map_reference")]
+    probes = [(index, row) for index, row in enumerate(rows) if "cpu_unmapped_probe" in row]
+    unmaps = [index for index, row in enumerate(rows) if row.get("action") == "unmap"]
+    require(len(maps) == len(probes) == len(unmaps) == iterations * (1 if node == 0 else 2),
+            "missing CPU unmap probes")
+    results = []
+    for mapping, (index, probe), unmap_index in zip(maps, probes, unmaps):
+        require(index + 1 == unmap_index, "CPU probe must immediately precede its unmap receipt")
+        unmap = rows[unmap_index]
+        round_index = len(results) // (1 if node == 0 else 2) + 1
+        require(probe.get("cpu_unmapped_probe") == "pass" and
+                probe.get("signal") in ("7", "11") and
+                probe.get("read_before_unmap") == probe.get("unmap_confirmed") == "1",
+                "CPU access after unmap was not rejected")
+        require(probe["session"] == mapping["session"] == unmap["session"] and
+                probe["key"] == mapping["key"] == unmap["key"] == f"obj-ref-{round_index}" and
+                int(probe["address"], 0) == int(mapping["base"], 0) and
+                mapping["status"] == unmap["status"] == "ok",
+                "CPU unmap probe identity or address mismatch")
+        acquisitions = [row for row in rows[:index] if row.get("action") in
+                        ("acquire", "acquire_reference") and row.get("status") == "ok"]
+        require(acquisitions and int(probe["generation"]) == int(acquisitions[-1]["generation"]),
+                "CPU unmap probe generation mismatch")
+        results.append(dict(node=node, key=probe["key"], generation=int(probe["generation"]),
+                            address=int(probe["address"], 0), signal=int(probe["signal"])))
+    return results
+
+
 def validate(node_a, node_b, iterations, seed, incarnation):
     require(1 <= iterations <= 100 and incarnation > 0 and 0 <= seed < (1 << 64) - 1,
             "unsupported reference guest configuration")
@@ -256,9 +287,11 @@ def validate(node_a, node_b, iterations, seed, incarnation):
                                 bytes=512, checksum=expected_checksum, address=base + offset))
     require(len(set(generations)) == iterations, "allocation generation reused across rounds")
     rejected = validate_reference_rejections(node_a, node_b, iterations, results)
+    unmapped = validate_unmapped_probes(node_a, 0, iterations) + validate_unmapped_probes(node_b, 1, iterations)
     return dict(status="pass", scope="managed-reference-two-guest", iterations=iterations,
                 allocation_cycles=iterations, retired_allocations=iterations * 4,
                 stale_reference_checks=rejected,
+                cpu_unmapped_checks=unmapped,
                 views=results, node_a_sha256=hashlib.sha256(node_a.encode()).hexdigest(),
                 node_b_sha256=hashlib.sha256(node_b.encode()).hexdigest())
 

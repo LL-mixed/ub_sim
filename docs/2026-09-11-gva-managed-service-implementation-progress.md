@@ -3837,3 +3837,76 @@ worker 控制 RPC 仍使用原默认 3 秒，object-session 和新增 reference 
 原始字节与报告采用的换行归一化日志指纹分开核对，原失败 r315 保留。
 M2/AM3 的 provider token、旧 CPU 映射、在途 drain 和故障恢复仍未关闭，
 W5 模型矩阵及完整目标继续保持未完成。
+
+### r323-r330：同进程解除映射后的实际 CPU 故障检查
+
+独立服务 `423665411a9fbf14b251e44d7cb177b149956e87` 新增可选诊断
+`unmap key=<key> probe_unmapped=1`。当前可读映射先被实际读取，managed
+unmap 确认后再在原进程读取保存的地址，只接受该地址的同步 SIGSEGV/SIGBUS。
+清理失败时不执行探针且保留重试归属；默认 unmap 不增加 CPU 访问。
+新增测试覆盖未映射、错误 key、重新映射、非法参数、munmap 假成功以及
+munmap 失败后重试。r323 四项定向测试通过；r324 最终候选包含明确的
+`unmap_confirmed=1` 回执，不改变原 cleanup_pending 失败检查。
+
+r324 独立仓库全量 286 个唯一用例，281 通过、5 环境跳过，零失败/错误；
+执行清单逐项覆盖四个新测试，2026-09-14 16:49:27 至 16:56:08 UTC。
+结果 SHA-256：
+`50e1426d5fb09f0a5af5fb4fa4f04a73cec1d2da01a1114d22a7084e44a30229`。
+r325 构建、ASan/UBSan worker/history、安装 SDK 及九份 manifest 比对均
+通过，16:49:30 至 16:52:39 UTC，exit 0、无 OOM。日志 SHA-256：
+`51f628de17eb54af84c36c65ffd3f86515fc7fb7e862d5a77d27dafbb20ac323`。
+送测六文件与最终工作树逐字节一致。该提交已仅发布到授权的 mem_service
+分支，远端 ref 完整 SHA 核对一致；父仓库 gitlink/lock 本地同步并通过
+source check，父仓库未推送。
+
+r327 使用干净锁定源码构建 AArch64 静态 CLI/worker，保留 kernel r109
+和 QEMU r281。镜像 `managed-unmapped-r327.cpio.gz` SHA-256：
+`3f9303bb892a926401afd56e2f55e606365ed1bfae87fd421f31efa7426051c2`。
+父仓库送测快照 `unmapped-root-r326.tar.gz` SHA-256：
+`fdc696c832a1c021e12d1db4128612ed58a66905dc0b672fa3f7b8851f8c0609`。
+r328 Python 全集 553 个唯一用例，548 通过、5 交叉编译器环境跳过，零失败、
+错误及加载错误；16:59:37 至 17:01:00 UTC，exit 0、无 OOM。结果 SHA-256：
+`604b40098e38977ecc545fe20411f6f226f4994ad2953605f0c33ce339711fdd`。
+
+r330 在指定实际验证环境运行双 guest 三轮，17:01:02 至 17:01:21 UTC，
+exit 0、无 OOM。16 MiB aperture、64 KiB 对象、seed=41：writer 的三次
+和 reader 的六次解除映射后 CPU 访问均出现实际同步故障，validator 核对
+对应 session/key/generation/address 及 map/unmap 位置。六个新视图、
+三代同址不同 segment/checksum、12 次旧 V2 控制面拒绝、12 次分配退役
+及最终服务/provider/kernel 资源回收均通过，原作业结束后确认无遗留 QEMU。
+报告 SHA-256：
+`6648d34660573283641d7acdf93973f02e08ab69342711150a9c0c1e9372f570`。
+归档 `unmapped-evidence-r330.tar.gz` 为 112,677 bytes，SHA-256：
+`a7080458451b03c2ec601154cfbb885904f1c5c26ef28e9876e4d2775d076b08`。
+
+上述证据只关闭正常 unmap 后、新映射建立前的 CPU 不可访问子项。旧
+provider descriptor/token、强制撤销、在途访问、同址新映射后的旧访问
+上下文以及跨重启恢复保持待验收；不能用正常解除映射的故障取代这些证据。
+
+r329 完整 Rust workspace 在 16:59:37 至 17:08:23 UTC 运行，exit 0、
+无 OOM。逐个核对 43 个外层 harness 最终结果，963 通过、16 ignored、
+零失败，未累计嵌套用例输出。日志 SHA-256：
+`c977241f5d3476e53d902d6cc6940fed80977946917f90bbe7a2943e75de78a5`；
+`rust-results-r329.json` SHA-256：
+`c793d2a68e59232903b43bdb4d8e792f0911345ed975ca194ca5fd5f2531d905`。
+r323-r329 的定向/完整 Python、构建、安装验证及 Rust 原始日志归档
+`unmapped-unit-evidence-r329.tar.gz` 为 196,571 bytes，SHA-256：
+`965b15485d05e2304ba1936fb19d46dc07c4d64e43948d6c7997838b0cf0123f`。
+
+r331 使用同一镜像、16 MiB aperture、64 KiB 对象及 seed=41 完成实际
+双 guest 百轮，17:02:34 至 17:12:42 UTC，exit 0、无 OOM。writer 100 次、
+reader 200 次原地址访问均在正常 unmap 后发生预期 CPU 故障；每次关联
+实际映射和完整代际。100 个新 generation/segment 复用同一 home VA，
+200 个新视图和 100 个 A checksum 均核对通过。594 次旧 V2 请求拒绝
+包括 192 次 stale_ref 和 402 次 not_found；后者对应退役身份槽位回收。
+400 次分配完成退役，最终服务/provider/kernel 资源回到基线，无遗留 QEMU。
+报告 SHA-256：
+`d6a043b1645d32c6d97b8ca5f8b060ad8f2c2eb369560738e11385e4589c0f86`。
+`unmapped-evidence-r331.tar.gz` 为 1,576,821 bytes，SHA-256：
+`d3f56e703dc40317fa756aaa1d5556b27350c46853ffc7e1ac7f2531b117d1a8`。
+完整原始日志保留；报告的换行归一化指纹和原始字节指纹分别核对。
+证据回传曾出现两次 SCP 和一次状态查询的 SSH 握手超时；仅重试传输和
+查询，原 r329/r331 作业未重启，网络审计保留各次结果。扩大的是 SSH
+握手等待预算，guest 业务请求截止时间、测试内容和通过条件保持不变。
+完整计划仍未完成；上述正常 unmap 验收不关闭旧 provider 身份、强制
+撤销、恢复、W5 模型矩阵及 tokenless 联合失效的剩余要求。

@@ -1194,7 +1194,7 @@ mem_service_object_share_reference_ops() (
     echo "op=publish_reference key=$key/a idempotency_key=ref-stage-a-$round offset=128 len=512 kind=5 owner=0 producer=0"
     echo "op=publish_reference key=$key/b idempotency_key=ref-stage-b-$round offset=4224 len=512 kind=5 owner=0 producer=0"
     echo "op=write key=$key offset=128 len=1 seed=99 expect_status=unsupported"
-    echo "op=unmap key=$key"
+    echo "op=unmap key=$key probe_unmapped=1"
     echo "op=stats"
     echo "op=seal_reference key=$key idempotency_key=ref-seal-$round generation=$generation version=$((version + 1))"
     echo "op=release key=$key idempotency_key=ref-release-$round expected_generation=$generation"
@@ -1217,7 +1217,7 @@ mem_service_object_share_reference_ops() (
       echo "op=read key=$key offset=0 len=512 seed=$seed"
       echo "op=probe_readonly key=$key"
       echo "op=read key=$key offset=512 len=1 seed=$seed expect_status=capacity_exceeded"
-      echo "op=unmap key=$key"
+      echo "op=unmap key=$key probe_unmapped=1"
       echo "op=stats"
       echo "op=release key=$key idempotency_key=ref-reader-release-$round-$view"
       seed=$((seed + 1))
