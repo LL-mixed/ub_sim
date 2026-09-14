@@ -23,6 +23,7 @@ sys.path.pop(0)
 def fixture(iterations=1):
     """Deliberately synthetic logs, including independently encoded references."""
     logs = []
+    publication_refs = {}
     for node in (0, 1):
         lines = []
         for phase in ("baseline",):
@@ -37,6 +38,17 @@ def fixture(iterations=1):
             generation = 73 + 7 * round_index
             base = 0x700000000000 + round_index * 0x600000
             session = f"mem_service object-session: session=client-{node}"
+            if node == 1:
+                for view in ("a", "b"):
+                    logical = key + "/" + view
+                    lines.append(f"mem_service reference-capture: round={round_index} "
+                                 f"key={logical} reference_hex={publication_refs[logical]}")
+                if round_index > 1:
+                    for view in ("a", "b"):
+                        old = f"obj-ref-{round_index - 1}/{view}"
+                        for action in ("resolve", "acquire", "map-begin"):
+                            lines.append(f"mem_service reference-rejection: round={round_index} "
+                                f"key={old} action={action} status=stale_ref reference_hex={publication_refs[old]}")
             lines.append(session + " peer_canary=ok peers=1")
             if node == 0:
                 lines.append(f"mem_service reference-allocation: key={key} generation={generation} version=8")
@@ -61,6 +73,7 @@ def fixture(iterations=1):
                         validator.checksum(data), 256, 1, generation, 7, 65536,
                         key.encode(), b"guest-node-0").hex()
                     lines.append(f"{session} reference_key={op_key} reference_hex={ref}")
+                    publication_refs[op_key] = ref
                 if action == "map":
                     line += f" base=0x{base:016x} len=65536"
                 elif action == "map_reference":
@@ -126,6 +139,134 @@ def qemu_fixture(iterations=1):
 
 
 class ReferenceGuestTests(unittest.TestCase):
+    def test_completion_barrier_is_retired_after_check_barrier(self):
+        writer = validator.expected_operations(0, "obj-ref-1")
+        reader = validator.expected_operations(1, "obj-ref-1")
+        self.assertEqual([key for action, key, _ in writer if action == "retire"],
+                         ["obj-ref-1", "ref-ready-1", "ref-checked-1", "ref-done-1"])
+        self.assertEqual(writer[-2], ("wait_state", "ref-done-1", "ok"))
+        self.assertEqual(reader[-2], ("wait_state", "ref-done-1", "ok"))
+
+    def test_exact_old_references_and_order_are_required(self):
+        logs = fixture(3)
+        result = validator.validate(*logs, 3, 41, 7)
+        self.assertEqual(len(result["stale_reference_checks"]), 12)
+        self.assertTrue(all(row["old_generation"] != row["new_generation"]
+                            for row in result["stale_reference_checks"]))
+        missing = logs[1].replace("status=stale_ref reference_hex=", "status=not_found reference_hex=")
+        self.assertEqual(len(validator.validate(logs[0], missing, 3, 41, 7)["stale_reference_checks"]), 12)
+        for old, new in (("action=acquire status=stale_ref", "action=acquire status=ok"),
+                         ("action=map-begin status=stale_ref", "action=map-begin status=internal"),
+                         ("reference-rejection: round=2", "reference-rejection: round=3"),
+                         ("reference-capture: round=1", "reference-capture: round=2")):
+            with self.subTest(old=old), self.assertRaises(ValueError):
+                validator.validate(logs[0], logs[1].replace(old, new, 1), 3, 41, 7)
+        lines = logs[1].splitlines()
+        targets = [i for i, line in enumerate(lines) if "reference-rejection:" in line or "reference-capture:" in line]
+        for index in targets:
+            with self.subTest(missing=index), self.assertRaises(ValueError):
+                validator.validate(logs[0], "\n".join(lines[:index] + lines[index + 1:]), 3, 41, 7)
+        captures = [line.split("reference_hex=", 1)[1] for line in lines if "reference-capture:" in line]
+        index = next(i for i, line in enumerate(lines) if "reference-rejection:" in line)
+        changed = lines.copy()
+        changed[index] = changed[index].replace(captures[0], captures[2])
+        with self.assertRaisesRegex(ValueError, "exact prior reference"):
+            validator.validate(logs[0], "\n".join(changed), 3, 41, 7)
+        reordered = lines.copy()
+        probe = reordered.pop(index)
+        reordered.append(probe)
+        with self.assertRaises(ValueError):
+            validator.validate(logs[0], "\n".join(reordered), 3, 41, 7)
+
+    def test_reader_helper_submits_saved_reference_and_rejects_uncertainty(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        helper = "mem_service_reference_reader_prepare() (" + source.split(
+            "mem_service_reference_reader_prepare() (", 1)[1].split(
+            "\nmem_service_object_share_reference()", 1)[0]
+        old_hex, new_hex = "a" * 512, "b" * 512
+        mock = '''reference_cli() {
+          command="$1"; shift; action=""; key=""; reference=""
+          while [ "$#" -gt 0 ]; do
+            case "$1" in --action) action="$2" ;; --key) key="$2" ;;
+              --reference-hex) reference="$2" ;; esac
+            shift 2
+          done
+          if [ "$command" = inspect-allocation ]; then
+            printf 'status=ok\\nstate=active\\n'; return 0
+          fi
+          if [ "$command" = allocate-object ]; then
+            printf 'status=ok\\n'; return 0
+          fi
+          case "$phase:$key" in
+            1:obj-ref-1/*) printf 'reference_hex=%s\\n' "$old_hex"; return 0 ;;
+            2:obj-ref-2/*) printf 'reference_hex=%s\\n' "$new_hex"; return 0 ;;
+          esac
+          [ "$action" = resolve ] || [ "$reference" = "$old_hex" ] || return 3
+          printf 'mem_service reference-transition: status=%s\\nstatus=%s\\n' "$reject" "$reject"
+          return "$reject_rc"
+        }
+        '''
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "uptime").write_text("1.0 1.0\n")
+            helper = helper.replace("/bin/linqu_mem_service", "reference_cli").replace(
+                "/bin/busybox ", "").replace("/proc/uptime", str(root / "uptime")).replace(
+                "/tmp/reference-", str(root / "reference-"))
+            for status, rc, expected in (("stale_ref", 1, 0), ("not_found", 1, 0),
+                    ("internal", 1, 1), ("invalid_session", 2, 1), ("stale_ref", 0, 1),
+                    ("", 1, 1), ("stale_ref\nstatus=internal", 1, 1)):
+                with self.subTest(status=status, rc=rc):
+                    script = (f"old_hex='{old_hex}'\nnew_hex='{new_hex}'\n"
+                              f"reject='{status}'\nreject_rc={rc}\n" + mock + helper +
+                              "\nphase=1\nmem_service_reference_reader_prepare 1 unix:fixture || exit 1\n"
+                              "phase=2\nmem_service_reference_reader_prepare 2 unix:fixture\n")
+                    run = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, timeout=5)
+                    self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
+                    if expected == 0:
+                        self.assertEqual(run.stdout.count("mem_service reference-capture:"), 4)
+                        self.assertEqual(run.stdout.count("mem_service reference-rejection:"), 6)
+                        self.assertEqual(run.stdout.count("reference_hex=" + old_hex), 8)
+            for bad_hex in ("a" * 511, "g" * 512, "a" * 512 + "\nreference_hex=" + old_hex):
+                script = f"old_hex='{bad_hex}'\n" + mock + helper + \
+                    "\nphase=1\nmem_service_reference_reader_prepare 1 unix:fixture\n"
+                run = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(run.returncode, 0)
+
+    def test_reader_check_runs_alongside_session_before_access_barrier(self):
+        source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        helper = "mem_service_object_share_reference_ops() (" + source.split(
+            "mem_service_object_share_reference_ops() (", 1)[1].split(
+            "\nmem_service_object_share_managed()", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "uptime").write_text("1.0 1.0\n")
+            helper = helper.replace("/bin/linqu_mem_service", "reference_cli").replace(
+                "/bin/busybox ", "").replace("/proc/uptime", str(root / "uptime")).replace(
+                "/tmp/reference-", str(root / "reference-"))
+            mock = '''reference_cli() {
+              case "$1" in
+                provider-directory-status) echo provider_directory_ready=1 ;;
+                object-session)
+                  touch "$fixture_dir/started"
+                  while [ ! -f "$fixture_dir/checked" ]; do sleep 0.01; done
+                  cat "$3" ;;
+                inspect-allocation)
+                  if [ -f "$fixture_dir/started" ]; then echo state=active
+                  else echo status=not_found; return 1; fi ;;
+                reference-transition) printf 'reference_hex=%s\\n' "$reference_hex" ;;
+                allocate-object) touch "$fixture_dir/checked" ;;
+                *) return 2 ;;
+              esac
+            }
+            '''
+            script = f"fixture_dir='{root}'\nreference_hex='{'a' * 512}'\n" + mock + helper + \
+                "\nmem_service_object_share_reference 1 65536 1 41 7 unix:fixture\n"
+            run = subprocess.run(["sh", "-s"], input=script, capture_output=True, text=True, timeout=5)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertEqual(run.stdout.count("mem_service reference-capture:"), 2)
+            self.assertIn("op=wait_state key=ref-checked-1 state=active", run.stdout)
+            self.assertLess(run.stdout.index("key=ref-checked-1"), run.stdout.index("op=acquire_reference"))
+
     def test_same_address_requires_new_segment_and_new_payload(self):
         logs = fixture(3)
         qemu = qemu_fixture(3)
@@ -154,7 +295,7 @@ class ReferenceGuestTests(unittest.TestCase):
         logs = fixture(100)
         result = validator.validate(*logs, 100, 41, 7)
         self.assertEqual(result["allocation_cycles"], 100)
-        self.assertEqual(result["retired_allocations"], 300)
+        self.assertEqual(result["retired_allocations"], 400)
         self.assertEqual(len(result["views"]), 200)
         self.assertEqual(len({view["generation"] for view in result["views"]}), 100)
         self.assertEqual(len(validator.validate_qemu(qemu_fixture(100), result["views"])), 200)

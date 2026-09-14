@@ -3763,3 +3763,77 @@ segment 各不相同；最终资源归零，确认无遗留 QEMU。原报告 SHA
 本次修复消除这一已观察到的失败，不证明任意历史规模下的长期延迟上界。
 扩大预留窗口、窗口内分散放置和确认回收后复用是互补能力；多 aperture 池
 尚未实现，混合碎片压力、故障恢复、旧身份实际拒绝和完整模型矩阵继续保留。
+
+### r308-r321：实际旧 V2 引用拒绝与完成屏障
+
+沿用 `cpu-reference`、已发布服务 `9e6aa1c` 和现有 `reference-transition`
+CLI，reader 在 ready 对象 active 后 resolve 并保存两份真实完整 V2。从
+第二轮起，新对象已发布时，提交上一轮原始引用执行 resolve、acquire 和
+map-begin；只接受 stale_ref 或已移除身份的 not_found，任何成功、internal、
+超时或解析失败均失败。校验器逐字节对照上一轮 writer 发布，核对操作顺序、
+新旧 generation、实际地址和随后新引用的数据读取。该组属于控制面旧引用
+准入证据，不替代旧 provider token、CPU 映射或在途撤销的实际访问拒绝。
+
+检查最初置于 reader session 启动前。源码核对发现双方 endpoint canary
+需要同时进入，故在实际 guest 启动前改为并行检查与 `ref-checked` 屏障。
+reader 必须等屏障 active 才 acquire 新引用，writer 负责最终退役四个对象；
+helper 异常退出保持失败，父流程退出时等待或终止本次 helper。r308 初版
+镜像和 r309 Python 回归通过，但未执行实际 guest；r310 初版 Rust 的 43 个
+harness 为 963 通过、16 ignored、零失败，16:10:34 至 16:19:29 UTC，exit 0。
+这些初版结果不作为最终源代码的回归证据。
+
+r312 镜像、r313 完整 Python 545 通过、5 跳过后，r315 实际三轮发现新增
+检查屏障排在原完成屏障之后释放。reader 观察 done 已退役就检查资源，此时
+checked 仍存活，完整验收报 `service resources not drained: live_objects`。
+原作业 16:15:20 至 16:15:39 UTC，exit 1、无 OOM；两端流程最终均结束并清理，
+不能把最终清理结果覆盖中间顺序错误。原始归档 `stale-evidence-r315.tar.gz`
+为 111,304 bytes，SHA-256：
+`2805cb0eeed007309c29bea51256cd48e0a6b4d077283f9c50cd91b58b61d09f`。
+
+修正为 key、ready、checked、done 的退役顺序，使 done 始终最后确认；
+资源判据保持不变，增加顺序与并发启动回归。15 项本地轻量测试及 shell
+语法检查通过。r317 冻结四文件快照 SHA-256：
+`c4c9ebc427a032578068e60480d39949e565a6569a2821df23860c57fe245f17`。
+r318 用该快照重建镜像，服务二进制、kernel r109 与 QEMU r281 均未改源码；
+16:18:37 至 16:18:52 UTC，exit 0。`managed-stale-r318.cpio.gz` SHA-256：
+`234d2680e92cf9436e347d9cd62acdeb9e332a76f06059c8edec9cf3150bfb06`。
+
+r319 最终 Python 完整回归精确覆盖 551 个唯一用例，546 通过、5 项交叉
+编译器环境跳过，零失败/错误/加载错误；16:18:37 至 16:20:00 UTC，exit 0、
+无 OOM。`root-results-r319.json` SHA-256：
+`76ce901a698fd5c9b9e9a66367163fba093e0c9338a9fa3b402d68e322fc5fb5`。
+
+r321 同配置三轮真实 guest 重跑通过，16:19:36 至 16:19:54 UTC，exit 0、
+无 OOM。12 次分配退役、6 个新视图、3 个独立 A checksum 核对通过；数据
+generation 为 1/5/9，segment 各异，home VA 均为 `0x700000000000`。
+第二、三轮合计 12 个原引用 resolve/acquire/map-begin 都返回 stale_ref；
+每项提交的完整引用与上一轮实际发布一致，新引用随后读到新数据。最终
+服务/provider/kernel 资源验收通过，确认无遗留 QEMU。报告 SHA-256：
+`c73386e5efe52b1f324cf9765a6f6aace3ae614d7b97b710a0513ff9b74fe925`。
+`stale-evidence-r321.tar.gz` 为 112,596 bytes，SHA-256：
+`76d8b392699518105ea060ba25628923272b746e11b3e7edd2272fc9c80a14de`。
+
+r320 最终快照的完整 Rust workspace 原作业 16:20:26 至 16:29:13 UTC，
+exit 0、无 OOM；43 个外层 harness 最终结果合计 963 通过、16 ignored、
+零失败，未重复累计嵌套测试输出。原始日志 SHA-256：
+`d8da06bb97a92ac466c0d2a1902704c2f34cea434ff154bb17be01cf6cedd6b1`。
+逐 harness 结果 `rust-results-r320.json` SHA-256：
+`fc4b47c6c97e101b846eeff23930224f2f1979ea6eda891a985e6dd42470eea4`。
+r322 使用同一最终镜像、16 MiB aperture、64 KiB 对象和 seed=41，百轮
+带旧引用检查的实际双 guest 验证通过；16:21:15 至 16:31:16 UTC，exit 0、
+无 OOM。100 代不同 segment 的数据对象复用 `0x700000000000`，200 个
+新视图及 100 个独立 A checksum 通过。400 次分配全部退役，包含新增的
+检查屏障；最终服务/provider/kernel 资源归零，确认无遗留 QEMU。
+
+99 次轮间复用各检查两份旧引用的三个入口，共 594 次明确拒绝：192 次
+stale_ref、402 次 not_found。每次请求都与上一轮真实发布的完整 V2 一致，
+并关联新代同址对象和后续新数据读取；任何内部错误或超时都没有计入通过。
+worker 控制 RPC 仍使用原默认 3 秒，object-session 和新增 reference CLI
+使用显式 30 秒客户端超时；两层截止时间分别记录，不混称为单一超时。
+报告 SHA-256：
+`4c67145c868f64490b67b4dbe4b21e4852bad59a09e371b24f71b1edeb327815`。
+`stale-evidence-r322.tar.gz` 为 1,572,900 bytes，SHA-256：
+`63d4cfd426c6ef2802a4867b59386a54a53f8dd5ec21c2adc2b9d104f9fe321c`。
+原始字节与报告采用的换行归一化日志指纹分开核对，原失败 r315 保留。
+M2/AM3 的 provider token、旧 CPU 映射、在途 drain 和故障恢复仍未关闭，
+W5 模型矩阵及完整目标继续保持未完成。

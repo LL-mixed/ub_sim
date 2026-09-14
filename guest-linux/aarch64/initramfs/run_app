@@ -1200,13 +1200,14 @@ mem_service_object_share_reference_ops() (
     echo "op=release key=$key idempotency_key=ref-release-$round expected_generation=$generation"
     echo "op=allocate key=$ready idempotency_key=ref-ready-$round size_bytes=65536 capabilities=map"
     echo "op=wait_state key=$done state=active timeout_ms=60000 poll_ms=50"
-    for retired in "$key" "$ready" "$done"; do
+    for retired in "$key" "$ready" "ref-checked-$round" "$done"; do
       echo "op=retire key=$retired idempotency_key=retire-$retired"
       echo "op=wait_state key=$retired state=retired timeout_ms=60000 poll_ms=50"
     done
     echo "op=stats"
   else
     echo "op=wait_state key=$ready state=active timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=ref-checked-$round state=active timeout_ms=60000 poll_ms=50"
     echo "op=stats"
     for view in a b; do
       echo "op=acquire_reference key=$key/$view idempotency_key=ref-reader-$round-$view"
@@ -1227,8 +1228,76 @@ mem_service_object_share_reference_ops() (
   fi
 )
 
+mem_service_reference_reader_prepare() (
+  round="$1"; connect="$2"
+  receipt="/tmp/reference-ready-$round.receipt"
+  read -r uptime ignored </proc/uptime
+  deadline=$((${uptime%%.*} + 60))
+  while true; do
+    if /bin/linqu_mem_service inspect-allocation --connect "$connect" \
+        --key "ref-ready-$round" --timeout-ms 1000 --max-attempts 1 >"$receipt"; then
+      state="$(/bin/busybox sed -n 's/^state=//p' "$receipt")"
+      case "$state" in active) break ;; allocating) ;; *) cat "$receipt"; exit 1 ;; esac
+    elif ! /bin/busybox grep -qx 'status=not_found' "$receipt"; then
+      cat "$receipt"; exit 1
+    fi
+    read -r uptime ignored </proc/uptime
+    [ "${uptime%%.*}" -lt "$deadline" ] || exit 1
+    sleep 0.05
+  done
+  for view in a b; do
+    receipt="/tmp/reference-capture-$round-$view.receipt"
+    /bin/linqu_mem_service reference-transition --connect "$connect" \
+      --action resolve --key "obj-ref-$round/$view" --timeout-ms 30000 \
+      --max-attempts 1 >"$receipt" || { cat "$receipt"; exit 1; }
+    hex="$(/bin/busybox sed -n 's/^reference_hex=//p' "$receipt")"
+    [ "${#hex}" = 512 ] || exit 1
+    case "$hex" in *[!0-9a-f]*) exit 1 ;; esac
+    echo "mem_service reference-capture: round=$round key=obj-ref-$round/$view reference_hex=$hex"
+  done
+  previous=$((round - 1))
+  for view in a b; do
+    [ "$round" -gt 1 ] || break
+    old="/tmp/reference-capture-$previous-$view.receipt"
+    hex="$(/bin/busybox sed -n 's/^reference_hex=//p' "$old")" || exit 1
+    [ "${#hex}" = 512 ] || exit 1
+    case "$hex" in *[!0-9a-f]*) exit 1 ;; esac
+    for action in resolve acquire map-begin; do
+      receipt="/tmp/reference-rejected-$round-$view-$action.receipt"
+      set -- --connect "$connect" --action "$action" --timeout-ms 30000 --max-attempts 1
+      if [ "$action" = resolve ]; then
+        set -- "$@" --key "obj-ref-$previous/$view"
+      else
+        set -- "$@" --key "obj-ref-$previous" --reference-hex "$hex" --access 1 \
+          --session-id client-1 --idempotency-key "ref-stale-$round-$view-$action"
+      fi
+      if /bin/linqu_mem_service reference-transition "$@" >"$receipt"; then
+        cat "$receipt"
+        echo "mem_service reference-rejection: unexpected_success round=$round action=$action"
+        exit 1
+      fi
+      status="$(/bin/busybox sed -n 's/^status=//p' "$receipt")"
+      case "$status" in stale_ref|not_found) ;; *) cat "$receipt"; exit 1 ;; esac
+      /bin/busybox grep -qx "mem_service reference-transition: status=$status" "$receipt" || exit 1
+      echo "mem_service reference-rejection: round=$round key=obj-ref-$previous/$view action=$action status=$status reference_hex=$hex"
+    done
+  done
+  /bin/linqu_mem_service allocate-object --connect "$connect" \
+    --key "ref-checked-$round" --idempotency-key "ref-checked-$round" \
+    --session-id client-1 --size-bytes 65536 --capabilities 1 \
+    >"/tmp/reference-checked-$round.receipt" || exit 1
+)
+
 mem_service_object_share_reference() (
   node="$1"; size="$2"; iterations="$3"; seed="$4"; incarnation="$5"; connect="$6"
+  check_pid=""
+  cleanup_reference_check() {
+    if [ -n "$check_pid" ]; then
+      kill "$check_pid" 2>/dev/null || true
+      wait "$check_pid" 2>/dev/null || true
+    fi
+  }
+  trap cleanup_reference_check EXIT
   # Both infrastructure registrations must exist before preallocating. The
   # subsequent two SDK endpoints still perform their own peer canary.
   read -r uptime ignored </proc/uptime
@@ -1270,10 +1339,18 @@ mem_service_object_share_reference() (
       echo "provider_import_region_bytes=2097152"
       mem_service_object_share_reference_ops "$node" "$size" "$round" "$(((seed + round - 1) % 256))" "$generation" "$version"
     } >"$config"
+    if [ "$node" = "1" ]; then
+      mem_service_reference_reader_prepare "$round" "$connect" &
+      check_pid=$!
+    fi
     if ! /bin/linqu_mem_service object-session --config "$config"; then
       echo "mem_service reference-capacity: node=$node round=$round phase=failed"
       /bin/linqu_mem_service allocation-stats --connect "$connect" || true
       exit 1
+    fi
+    if [ -n "$check_pid" ]; then
+      wait "$check_pid" || exit 1
+      check_pid=""
     fi
     round=$((round + 1))
   done

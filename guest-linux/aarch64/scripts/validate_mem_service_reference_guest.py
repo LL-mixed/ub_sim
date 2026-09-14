@@ -64,11 +64,12 @@ def expected_operations(node, key):
                        ("write", key, "unsupported")]
         operations += [(action, key, "ok") for action in ("unmap", "stats", "seal_reference", "release")]
         operations += [("allocate", ready, "ok"), ("wait_state", done, "ok")]
-        for retired in (key, ready, done):
+        for retired in (key, ready, key.replace("obj-ref", "ref-checked"), done):
             operations += [("retire", retired, "ok"), ("wait_state", retired, "ok")]
         operations += [("stats", key, "ok")]
     else:
-        operations = [("wait_state", ready, "ok"), ("stats", key, "ok")]
+        operations = [("wait_state", ready, "ok"),
+                      ("wait_state", key.replace("obj-ref", "ref-checked"), "ok"), ("stats", key, "ok")]
         for view in ("a", "b"):
             operations += [("acquire_reference", key + "/" + view, "ok")]
             operations += [(action, key, "ok") for action in
@@ -95,6 +96,52 @@ def validate_resources(text, node, iterations):
                 "provider ownership or view geometry differs")
         require(int(row["vma_count"]) in ((1, 2, 3) if live else (0,)), "wrong VMA count")
     validate_kernel_regions(text)
+
+
+def validate_reference_rejections(node_a, node_b, iterations, views):
+    captures = records(node_b, "mem_service reference-capture:")
+    rejected = records(node_b, "mem_service reference-rejection:")
+    require(not records(node_a, "mem_service reference-capture:") and
+            not records(node_a, "mem_service reference-rejection:"), "wrong stale probe node")
+    require(len(captures) == 2 * iterations and len(rejected) == 6 * (iterations - 1),
+            "missing captured references or stale rejection checks")
+    published = {row["reference_key"]: row["reference_hex"] for row in
+                 records(node_a, "mem_service object-session:") if "reference_hex" in row}
+    lines = node_b.splitlines()
+    capture_lines = [i for i, line in enumerate(lines) if line.startswith("mem_service reference-capture: ")]
+    rejection_lines = [i for i, line in enumerate(lines) if line.startswith("mem_service reference-rejection: ")]
+    acquires = [i for i, line in enumerate(lines) if line.startswith("mem_service object-session: ")
+                and " action=acquire_reference " in line][::2]
+    endings = [i for i, line in enumerate(lines) if line.startswith("mem_service object-session: ")
+               and " result=ok " in line]
+    require(len(acquires) == len(endings) == iterations, "missing reader ordering anchors")
+    results = []
+    for round_index in range(1, iterations + 1):
+        for view_index, view in enumerate(("a", "b")):
+            index = 2 * (round_index - 1) + view_index
+            key = f"obj-ref-{round_index}/{view}"
+            require(captures[index] == dict(round=str(round_index), key=key,
+                    reference_hex=published[key]), "captured reference differs from real publication")
+            require(capture_lines[index] < acquires[round_index - 1] and
+                    (round_index == 1 or capture_lines[index] > endings[round_index - 2]),
+                    "reference capture ordering mismatch")
+            if round_index == 1:
+                continue
+            old_key = f"obj-ref-{round_index - 1}/{view}"
+            old_view, new_view = views[index - 2], views[index]
+            for action_index, action in enumerate(("resolve", "acquire", "map-begin")):
+                check_index = 6 * (round_index - 2) + 3 * view_index + action_index
+                row = rejected[check_index]
+                require(row.get("status") in ("stale_ref", "not_found"), "stale access was not explicitly rejected")
+                require(row == dict(round=str(round_index), key=old_key, action=action,
+                        status=row["status"], reference_hex=published[old_key]),
+                        "stale probe did not submit the exact prior reference")
+                require(capture_lines[2 * round_index - 1] < rejection_lines[check_index] < acquires[round_index - 1],
+                        "stale probe was not between new publication and new reader access")
+                results.append(dict(round=round_index, key=old_key, action=action, status=row["status"],
+                    old_generation=old_view["generation"], new_generation=new_view["generation"],
+                    reused_address=old_view["address"] == new_view["address"]))
+    return results
 
 
 def validate(node_a, node_b, iterations, seed, incarnation):
@@ -135,7 +182,7 @@ def validate(node_a, node_b, iterations, seed, incarnation):
         pattern = [0, 1, 0, 0] if node == 0 else [0, 1, 0, 1, 0, 0]
         require([int(row["import_mappings"]) for row in stats] == pattern * iterations,
                 "service mapping ledger disagrees with access sequence")
-        # Writer checks after all three allocations are retired, before the
+        # Writer checks after all four allocations are retired, before the
         # next allocation. Reader's intermediate global snapshot may observe
         # the next round; its own provider mappings are checked every time.
         drained = stats[3::4] if node == 0 else stats[-1:]
@@ -208,8 +255,10 @@ def validate(node_a, node_b, iterations, seed, incarnation):
             results.append(dict(key=key + "/" + view, generation=generation, offset=offset,
                                 bytes=512, checksum=expected_checksum, address=base + offset))
     require(len(set(generations)) == iterations, "allocation generation reused across rounds")
+    rejected = validate_reference_rejections(node_a, node_b, iterations, results)
     return dict(status="pass", scope="managed-reference-two-guest", iterations=iterations,
-                allocation_cycles=iterations, retired_allocations=iterations * 3,
+                allocation_cycles=iterations, retired_allocations=iterations * 4,
+                stale_reference_checks=rejected,
                 views=results, node_a_sha256=hashlib.sha256(node_a.encode()).hexdigest(),
                 node_b_sha256=hashlib.sha256(node_b.encode()).hexdigest())
 
