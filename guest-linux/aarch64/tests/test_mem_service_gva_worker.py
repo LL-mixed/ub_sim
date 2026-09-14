@@ -91,7 +91,7 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                        "mem_service_client_publish_allocation", "gva_manager_unexport_segment",
                        "gva_manager_retire_segment", "mem_service_client_reclaim_allocation",
                        "mem_service_client_retire_object",
-                       "open", "close", "ioctl", "mem_service_client_provider_refresh",
+                       "open", "close", "ioctl", "fsync", "mem_service_client_provider_refresh",
                        "mem_service_client_poll_allocation", "mem_service_client_provider_deregister"]
             built = subprocess.run(
                 command + [str(ROOT / "guest-linux/aarch64/tests/mem_service_gva_worker_golden.c")]

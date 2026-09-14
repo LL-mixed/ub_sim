@@ -31,6 +31,7 @@ def fixture(iterations=1):
                           "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
                           "export_handles=1 export_bytes=2097152 import_handles=0 import_bytes=0"])
         for round_index in range(1, iterations + 1):
+            round_seed = (41 + round_index - 1) & 255
             key = f"obj-ref-{round_index}"
             # Values intentionally do not follow the driver's allocation order.
             generation = 73 + 7 * round_index
@@ -54,7 +55,7 @@ def fixture(iterations=1):
                 if action == "publish_reference":
                     view_index = int(op_key.endswith("/b"))
                     offset = (128, 4224)[view_index]
-                    data = bytes((41 + view_index + i) & 255 for i in range(512))
+                    data = bytes((round_seed + view_index + i) & 255 for i in range(512))
                     ref = struct.pack("<QHHHHIIQQQQQIIQQQ96s64s", 0x514f424d4d524546,
                         2, 5, 2, 0, 0, 0, 9, validator.checksum(key.encode()), offset, 512,
                         validator.checksum(data), 256, 1, generation, 7, 65536,
@@ -72,7 +73,7 @@ def fixture(iterations=1):
                         view_index = {"write": write_index, "read": read_index,
                                       "wait_visible": visible_index}[action]
                         offset = (128, 4224)[view_index] if node == 0 else 0
-                        value = validator.checksum(bytes((41 + view_index + i) & 255 for i in range(512)))
+                        value = validator.checksum(bytes((round_seed + view_index + i) & 255 for i in range(512)))
                         line += f" offset={offset} len=512 checksum=0x{value:016x}"
                         write_index += int(action == "write")
                         read_index += int(action == "read")
@@ -125,6 +126,30 @@ def qemu_fixture(iterations=1):
 
 
 class ReferenceGuestTests(unittest.TestCase):
+    def test_same_address_requires_new_segment_and_new_payload(self):
+        logs = fixture(3)
+        qemu = qemu_fixture(3)
+        for round_index in range(1, 4):
+            base = 0x700000000000 + round_index * 0x600000
+            for offset in (0, 128, 4224):
+                logs = [text.replace(f"0x{base + offset:016x}",
+                                     f"0x{0x700000000000 + offset:016x}") for text in logs]
+            qemu = qemu.replace(f"home_va=0x{base:x}", "home_va=0x700000000000")
+        result = validator.validate(*logs, 3, 41, 7)
+        self.assertEqual(len({view["checksum"] for view in result["views"][::2]}), 3)
+        routes = validator.validate_qemu(qemu, result["views"])
+        self.assertEqual(len({route["home_va"] for route in routes}), 1)
+        with self.assertRaisesRegex(ValueError, "segment identity reused"):
+            validator.validate_qemu(qemu.replace("segment_id=0x66", "segment_id=0x65"),
+                                    result["views"])
+        with self.assertRaisesRegex(ValueError, "different segments"):
+            validator.validate_qemu(qemu.replace("segment_id=0x65", "segment_id=0x999", 2),
+                                    result["views"])
+        old_checksum = f"0x{result['views'][0]['checksum']:016x}"
+        new_checksum = f"0x{result['views'][2]['checksum']:016x}"
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            validator.validate(logs[0], logs[1].replace(new_checksum, old_checksum), 3, 41, 7)
+
     def test_hundred_distinct_allocation_lifecycles(self):
         logs = fixture(100)
         result = validator.validate(*logs, 100, 41, 7)
@@ -333,6 +358,32 @@ class ReferenceGuestTests(unittest.TestCase):
                     self.assertEqual(row.get("expect_status", "ok"), status)
                     if action != "stats":
                         self.assertEqual(row["key"], key)
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")
+    def test_aperture_configuration_bounds_and_fault_isolation(self):
+        source = (SCRIPTS / "run_ub_dual_node_apps.sh").read_text()
+        marker = 'if [[ "$MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE" != "auto" ]]; then'
+        check = marker + source.split(marker, 1)[1].split(
+            'if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu"', 1)[0]
+        for size, fault, expected in (
+                ("auto", "address_capacity", 0), ("16777216", "none", 0),
+                ("1073741824", "none", 0), ("4294967296", "none", 0),
+                ("2097152", "none", 0), ("0", "none", 2),
+                ("2097153", "none", 2), ("8589934592", "none", 2),
+                ("0x40000000", "none", 2), ("-1", "none", 2),
+                ("99999999999999999999", "none", 2),
+                ("1073741824", "address_capacity", 2)):
+            with self.subTest(size=size, fault=fault):
+                run = subprocess.run(["zsh", "-c",
+                    'MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE="$1"\n'
+                    'MEM_SERVICE_OBJECT_SHARE_FAULT="$2"\n' + check,
+                    "aperture-check", size, fault], capture_output=True,
+                    text=True, timeout=5)
+                self.assertEqual(run.returncode, expected, run.stderr)
+        self.assertIn("mem_service_object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}", source)
+        guest = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        self.assertIn("cmdline_value mem_service_object_share_aperture_size auto", guest)
+        self.assertIn('aperture_size="$requested_aperture"', guest)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh runner required")
     def test_runner_rejects_invalid_reference_profiles_before_launch(self):

@@ -17,6 +17,13 @@
 就推断资源不存在。retire 成功仅证明 kernel registry 确认，跨 holder drain、
 映射撤销和实际 backing 回收仍由 provider 的生命周期管理负责。
 
+区间分配的一个明确例外是 `gva_manager_allocate_segment()` 直接转发
+ALLOC_SEGMENT ioctl 的 ENOSPC：匹配内核只在尚未保留区间时返回该错误，
+输出 descriptor 不改变。调用方必须使用零初始化的 descriptor 并核对其
+仍全零，才能记录本次确认无 segment；不能把此契约推广到其他 errno 或
+其他 ioctl。成功分配后的 copy_to_user 失败返回 EFAULT，仍可能拥有资源。
+requested_home_va=0 请求内核选择空闲区间；结果照常检查大小、对齐和身份。
+
 `gva_manager_unexport_segment` 只接受已经核对的 segment/export 绑定，先查询
 真实 segment，再执行 unexport；调用方必须先确认所有 holder 已解除映射。
 它不自动退役 segment，调用方记录 unexport 成功后再单独执行 retire。任一步失败

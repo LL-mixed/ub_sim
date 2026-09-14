@@ -7,7 +7,8 @@ enum failure_mode {
     GOOD, ALLOC_FAIL, EXPORT_FAIL, PUBLISH_FAIL, BAD_REPLY,
     UNEXPORT_FAIL, RETIRE_FAIL, RECLAIM_FAIL, BAD_RECLAIM_REPLY,
     CANCEL_FAIL, BAD_CANCEL_REPLY, BAD_CANCEL_BINDING, BACKED_CANCEL_REPLY,
-    BACKING_EMPTY
+    BACKING_EMPTY, ADDRESS_FULL, ADDRESS_FULL_WITH_DESC, ALLOC_COPY_LOST,
+    ALLOC_EMPTY_IO_ERROR, ALLOC_OUTSIDE_APERTURE, ADDRESS_FULL_JOURNAL_FAIL
 };
 static enum failure_mode mode;
 static unsigned allocated, exports, publishes;
@@ -16,6 +17,15 @@ static bool publish_cancelled, empty_cancel;
 static bool drive_worker_loop;
 static bool rollback_empty;
 static unsigned cancellations, loop_polls;
+static uint64_t kernel_address = 0x700000000000ULL;
+static bool fail_next_sync;
+
+int __real_fsync(int fd);
+int __wrap_fsync(int fd)
+{
+    if (fail_next_sync) { fail_next_sync = false; errno = EIO; return -1; }
+    return __real_fsync(fd);
+}
 
 int __real_open(const char *path, int flags, ...);
 int __real_close(int fd);
@@ -93,14 +103,25 @@ int __wrap_mem_service_client_provider_deregister(const struct mem_service_clien
 
 int __wrap_gva_manager_allocate_segment(int fd, struct obmm_cmd_gsva_alloc_segment_v1 *cmd)
 {
-    assert(fd == 42);
+    assert(fd == 42 && cmd->requested_home_va == 0);
     allocated++;
+    if (mode == ADDRESS_FULL || mode == ADDRESS_FULL_JOURNAL_FAIL ||
+        mode == ALLOC_COPY_LOST || mode == ALLOC_EMPTY_IO_ERROR) {
+        fail_next_sync = mode == ADDRESS_FULL_JOURNAL_FAIL;
+        errno = (mode == ADDRESS_FULL || fail_next_sync) ? ENOSPC :
+                mode == ALLOC_COPY_LOST ? EFAULT : EIO;
+        return -1;
+    }
     cmd->desc = (struct obmm_gsva_segment_desc_v1){
-        .version = 1, .flags = 7, .segment_id = 9, .home_va = cmd->requested_home_va,
+        .version = 1, .flags = 7, .segment_id = 9 + allocated,
+        .home_va = kernel_address,
         .size = cmd->size, .epoch = 1, .home_cna = 7, .owner_node_id = 0,
         .node_count = 2, .cache_policy = cmd->cache_policy, .access_flags = 3,
-        .token_id = 2, .token_value = 3,
+        .token_id = 2 + allocated, .token_value = 3 + allocated,
     };
+    if (mode == ADDRESS_FULL_WITH_DESC) { errno = ENOSPC; return -1; }
+    if (mode == ALLOC_OUTSIDE_APERTURE) cmd->desc.home_va += 0x10000000;
+    if (mode == ALLOC_FAIL) errno = EIO;
     return mode == ALLOC_FAIL ? -1 : 0;
 }
 
@@ -154,14 +175,14 @@ int __wrap_mem_service_client_publish_allocation(
 int __wrap_gva_manager_unexport_segment(int fd,
     const struct obmm_gsva_segment_desc_v1 *segment, const struct obmm_cmd_export *exported)
 {
-    assert(fd == 42 && segment->segment_id == 9 && exported->mem_id == 17);
+    assert(fd == 42 && segment->segment_id == 9 + allocated && exported->mem_id == 17);
     unexports++;
     return mode == UNEXPORT_FAIL ? -1 : 0;
 }
 
 int __wrap_gva_manager_retire_segment(int fd, struct obmm_cmd_gsva_retire_segment_v1 *retire)
 {
-    assert(fd == 42 && retire->segment_id == 9 && retire->epoch == 1);
+    assert(fd == 42 && retire->segment_id == 9 + allocated && retire->epoch == 1);
     assert(rollback_empty ? unexports == 0 : unexports == retires + 1);
     retires++;
     return mode == RETIRE_FAIL ? -1 : 0;
@@ -215,13 +236,12 @@ int main(void)
     };
     FILE *journal = tmpfile();
     struct worker_reservation reservation = {0};
-    uint64_t next_address = aperture.base;
     assert(journal);
     for (mode = GOOD; mode <= BAD_REPLY; mode++) {
         unsigned old_alloc = allocated, old_export = exports, old_publish = publishes;
         memset(&reservation, 0, sizeof(reservation));
         int rc = allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                               &reservation, &next_address);
+                               &reservation);
         assert((rc == 0) == (mode == GOOD));
         assert(allocated == old_alloc + 1);
         assert(exports == old_export + (mode != ALLOC_FAIL));
@@ -232,23 +252,21 @@ int main(void)
         unsigned before = allocated;
         memset(&reservation, 0, sizeof(reservation));
         assert(allocate_work(42, -1, &config, &client, &aperture, &work,
-                             &reservation, &next_address) != 0);
+                             &reservation) != 0);
         strcpy(work.state, "retiring");
         assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                             &reservation, &next_address) != 0);
+                             &reservation) != 0);
         assert(allocated == before);
     }
     for (int failure = GOOD; failure <= BAD_RECLAIM_REPLY; failure++) {
         struct mem_service_client_allocation release = {0};
-        uint64_t previous_address = next_address;
         mode = GOOD;
         memset(&reservation, 0, sizeof(reservation));
         strcpy(work.state, "allocating");
         assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                             &reservation, &next_address) == 0);
-        assert(reservation.segment.home_va >= previous_address);
+                             &reservation) == 0);
+        assert(reservation.segment.home_va == kernel_address);
         assert(reservation.segment.size == config.allocation_granularity_bytes);
-        assert(next_address == reservation.segment.home_va + reservation.segment.size);
         release = work;
         strcpy(release.state, "retiring");
         release.provider_backed = true;
@@ -289,19 +307,18 @@ int main(void)
         mode = GOOD;
         memset(&reservation, 0, sizeof(reservation));
         work.size_bytes = UINT64_MAX;
-        uint64_t before_address = next_address;
         assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                             &reservation, &next_address) == 1);
-        assert(!reservation.occupied && next_address == before_address);
+                             &reservation) == 1);
+        assert(!reservation.occupied);
         assert(allocated == before);
         work.size_bytes = aperture.size + 1;
         assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                             &reservation, &next_address) == 1);
-        assert(!reservation.occupied && next_address == before_address);
+                             &reservation) == 1);
+        assert(!reservation.occupied);
         assert(allocated == before);
         work.size_bytes = 2097153;
         assert(!allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                              &reservation, &next_address));
+                              &reservation));
         assert(allocated == before + 1 && reservation.segment.size == 4194304);
     }
     {
@@ -332,27 +349,25 @@ int main(void)
         const uint64_t alignments[] = {0, 4096, 65536, 2097152, 8388608};
         for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
             for (size_t j = 0; j < sizeof(alignments) / sizeof(alignments[0]); j++) {
-                uint64_t previous = next_address;
                 uint64_t alignment = alignments[j] < 2097152 ? 2097152 : alignments[j];
                 memset(&reservation, 0, sizeof(reservation));
                 work.size_bytes = sizes[i];
                 work.alignment_bytes = alignments[j];
                 assert(!allocate_work(42, fileno(journal), &config, &client, &aperture,
-                                      &work, &reservation, &next_address));
-                assert(reservation.segment.home_va >= previous);
+                                      &work, &reservation));
+                assert(reservation.segment.home_va == kernel_address);
                 assert(!(reservation.segment.home_va & (alignment - 1)));
                 assert(reservation.segment.size == ((sizes[i] + 2097151) & ~2097151ULL));
-                assert(next_address == reservation.segment.home_va + reservation.segment.size);
             }
         }
         unsigned before = allocated;
         memset(&reservation, 0, sizeof(reservation));
         work.alignment_bytes = 3;
         assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                             &reservation, &next_address) == WORKER_ALLOCATE_ERROR);
+                             &reservation) == WORKER_ALLOCATE_ERROR);
         work.alignment_bytes = 1ULL << 63;
         assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                             &reservation, &next_address) == WORKER_ALLOCATE_CAPACITY);
+                             &reservation) == WORKER_ALLOCATE_CAPACITY);
         assert(allocated == before && !reservation.occupied);
         work.alignment_bytes = 65536;
     }
@@ -362,7 +377,7 @@ int main(void)
         work.size_bytes = 17;
         publish_cancelled = true;
         assert(!allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                              &reservation, &next_address));
+                              &reservation));
         assert(allocated == before + 1 && reservation.occupied);
         publish_cancelled = false;
         strcpy(work.state, "retiring");
@@ -384,14 +399,13 @@ int main(void)
         rollback_empty = empty_cancel = true;
         for (size_t i = 0; i < sizeof(failures) / sizeof(failures[0]); i++) {
             unsigned before_publish = publishes;
-            uint64_t previous_address = next_address;
             memset(&reservation, 0, sizeof(reservation));
             strcpy(work.state, "allocating");
             mode = BACKING_EMPTY;
             assert(allocate_work(42, fileno(journal), &config, &client, &aperture, &work,
-                                 &reservation, &next_address) == WORKER_ALLOCATE_BACKING_EMPTY);
+                                 &reservation) == WORKER_ALLOCATE_BACKING_EMPTY);
             assert(reservation.occupied && reservation.export_no_backing);
-            assert(next_address > previous_address && publishes == before_publish);
+            assert(reservation.segment.home_va == kernel_address && publishes == before_publish);
             unexports = retires = reclaims = 0;
             reservation.exported.mem_id = 17;
             assert(rollback_unbacked_work(42, fileno(journal), &config, &client, &work,
@@ -413,6 +427,72 @@ int main(void)
         rollback_empty = false;
     }
     {
+        const enum failure_mode failures[] = {ADDRESS_FULL, ADDRESS_FULL_WITH_DESC,
+            ALLOC_COPY_LOST, ALLOC_EMPTY_IO_ERROR, ALLOC_OUTSIDE_APERTURE,
+            ADDRESS_FULL_JOURNAL_FAIL};
+        strcpy(work.state, "allocating");
+        work.size_bytes = 65536;
+        for (size_t i = 0; i < sizeof(failures) / sizeof(failures[0]); i++) {
+            unsigned old_exports = exports, old_publishes = publishes;
+            mode = failures[i];
+            memset(&reservation, 0, sizeof(reservation));
+            int result = allocate_work(42, fileno(journal), &config, &client,
+                                       &aperture, &work, &reservation);
+            assert(result == (mode == ADDRESS_FULL ? WORKER_ALLOCATE_CAPACITY :
+                                                     WORKER_ALLOCATE_ERROR));
+            assert(reservation.occupied == (mode != ADDRESS_FULL));
+            assert(exports == old_exports && publishes == old_publishes);
+            if (reservation.occupied) {
+                assert(reservation.generation == work.generation);
+                assert(!strcmp(reservation.key, work.key));
+            }
+        }
+    }
+    {
+        /* Kernel selection may return a released address. The worker must
+         * keep the new identity and reject old cleanup, without a high-water
+         * cursor. This boundary fixture does not simulate actual OBMM I/O. */
+        struct mem_service_client_allocation previous = {0};
+        struct obmm_gsva_segment_desc_v1 old_segment = {0};
+        mode = GOOD;
+        empty_cancel = false;
+        for (unsigned cycle = 0; cycle < 100; cycle++) {
+            struct mem_service_client_allocation release;
+            unsigned before;
+            memset(&reservation, 0, sizeof(reservation));
+            work.generation++;
+            work.size_bytes = 65536;
+            assert(!allocate_work(42, fileno(journal), &config, &client,
+                                  &aperture, &work, &reservation));
+            assert(reservation.segment.home_va == kernel_address);
+            assert(reservation.segment.segment_id != old_segment.segment_id);
+            assert(reservation.segment.token_id != old_segment.token_id);
+            assert(reservation.segment.token_value != old_segment.token_value);
+            before = allocated;
+            assert(allocate_work(42, fileno(journal), &config, &client,
+                                 &aperture, &work, &reservation));
+            assert(allocated == before); /* A live local slot cannot be replaced. */
+            unexports = retires = reclaims = 0;
+            if (cycle) {
+                assert(reclaim_work(42, fileno(journal), &config, &client,
+                                    &previous, &reservation));
+                assert(!unexports && !retires && !reclaims);
+            }
+            release = work;
+            strcpy(release.state, "retiring");
+            release.provider_backed = true;
+            release.address = reservation.segment.home_va;
+            release.address_len = reservation.segment.size;
+            release.descriptor_len = reservation.descriptor.len;
+            memcpy(release.descriptor, reservation.descriptor.bytes, release.descriptor_len);
+            old_segment = reservation.segment;
+            assert(!reclaim_work(42, fileno(journal), &config, &client,
+                                 &release, &reservation));
+            assert(!reservation.occupied && unexports == 1 && retires == 1 && reclaims == 1);
+            previous = release;
+        }
+    }
+    {
         char directory[] = "/tmp/gva-worker-loop-XXXXXX";
         char config_path[256], state_path[256];
         unsigned before = allocated;
@@ -426,6 +506,7 @@ int main(void)
                 state_path);
         assert(!fclose(file));
         drive_worker_loop = true;
+        empty_cancel = true;
         mode = GOOD;
         assert(!mem_service_provider_obmm_serve_allocations(config_path));
         assert(allocated == before + 1);

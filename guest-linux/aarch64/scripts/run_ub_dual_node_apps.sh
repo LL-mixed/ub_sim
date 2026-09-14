@@ -60,6 +60,7 @@ MEM_SERVICE_OBJECT_SHARE_SEED="${MEM_SERVICE_OBJECT_SHARE_SEED:-41}"
 MEM_SERVICE_OBJECT_SHARE_ADDRESS="${MEM_SERVICE_OBJECT_SHARE_ADDRESS:-}"
 MEM_SERVICE_OBJECT_SHARE_PORT="${MEM_SERVICE_OBJECT_SHARE_PORT:-12347}"
 MEM_SERVICE_OBJECT_SHARE_INCARNATION="${MEM_SERVICE_OBJECT_SHARE_INCARNATION:-7}"
+MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE="${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE:-auto}"
 MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX="${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX:-}"
 GVA_DIRECT_MODE="${GVA_DIRECT_MODE:-write-read}"
 GVA_DIRECT_LOCAL_VA="${GVA_DIRECT_LOCAL_VA:-0x710000000000}"
@@ -1090,6 +1091,19 @@ SERIAL_DIR="$SERIAL_RUNTIME_DIR/serial"
 SERIAL_ENV_FILE="$OUT_DIR/dual_node_serial_env.${RUN_ID}.sh"
 
 apply_app_selection "$APP_SELECTION"
+if [[ "$MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE" != "auto" ]]; then
+  if [[ ! "$MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE" =~ ^[1-9][0-9]{0,9}$ ]] ||
+     (( MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE < 2097152 ||
+        MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE > 4294967296 ||
+        MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE % 2097152 != 0 )); then
+    echo "Memory Service aperture size must be auto or decimal bytes: 2 MiB..4 GiB, aligned to 2 MiB" >&2
+    exit 2
+  fi
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ]]; then
+    echo "Memory Service fault scenarios require auto aperture size to preserve their capacity checks" >&2
+    exit 2
+  fi
+fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-reference" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-pto" ]]; then
@@ -2994,6 +3008,8 @@ run_iteration() {
       "mem_service_object_share_port=${MEM_SERVICE_OBJECT_SHARE_PORT}"
     append_cmdline_if_missing \
       "mem_service_object_share_incarnation=${MEM_SERVICE_OBJECT_SHARE_INCARNATION}"
+    append_cmdline_if_missing \
+      "mem_service_object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}"
     if [[ -n "$MEM_SERVICE_OBJECT_SHARE_ADDRESS" ]]; then
       append_cmdline_if_missing \
         "mem_service_object_share_address=${MEM_SERVICE_OBJECT_SHARE_ADDRESS}"

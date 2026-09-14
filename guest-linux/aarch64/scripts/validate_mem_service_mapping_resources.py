@@ -346,7 +346,7 @@ def pressure_snapshots(block, label, terminal):
 
 
 def validate_address_capacity(text, node, iterations, size):
-    """Check real reservations and refusal before/after non-reusable retirement."""
+    """Check full aperture, confirmed empty refusal, and same-address reuse."""
     if iterations != 1:
         raise ValueError("address capacity profile requires one lifecycle")
     if node:
@@ -354,14 +354,15 @@ def validate_address_capacity(text, node, iterations, size):
             raise ValueError("peer did not observe address pressure barrier")
         return
     markers = [f"mem_service address-pressure: phase={phase}" for phase in
-               ("filled", "rejected", "released")]
+               ("filled", "reused", "rejected", "released")]
     if any(text.count(marker) != 1 for marker in markers):
         raise ValueError("address pressure did not complete exactly once")
     positions = [text.index(marker) for marker in markers]
     if positions != sorted(positions):
         raise ValueError("out-of-order address pressure")
     filled = text[positions[0]:positions[1]]
-    rejected = text[positions[1]:positions[2]]
+    reused = text[positions[1]:positions[2]]
+    rejected = text[positions[2]:positions[3]]
 
     def objects(block, expected):
         views = pressure_snapshots(block, "inspect-allocation", "descriptor_hex")
@@ -369,14 +370,14 @@ def validate_address_capacity(text, node, iterations, size):
             raise ValueError("missing or extra allocation evidence")
         return {view["key"]: view for view in views}
 
-    active = ("obj-share-1", "obj-sent-1", "obj-returned-1", "address-fill")
+    active = ("obj-share-1", "obj-sent-1", "obj-returned-1", "address-fill", "address-gap")
     early = ("address-overflow", "address-alignment")
-    late = ("address-exhausted", "address-no-reuse")
     initial = objects(filled, active + early)
-    final = objects(rejected, ("address-fill",) + late)
+    replacement = objects(reused, ("address-fill", "address-exhausted", "address-reused"))
+    final = objects(rejected, ("address-gap", "address-reused"))
     ranges = []
-    for key, logical, alignment in zip(active, (size, 65536, 65536, 8388608),
-                                       (4194304, 0, 0, 8388608)):
+    for key, logical, alignment in zip(active, (size, 65536, 65536, 8388608, 2097152),
+                                       (4194304, 0, 0, 8388608, 0)):
         view = initial[key]
         address, length = int(view["address"]), int(view["address_len"])
         if (view["state"] != "active" or view["provider_backed"] != "1" or
@@ -388,29 +389,52 @@ def validate_address_capacity(text, node, iterations, size):
             raise ValueError("invalid actual allocation geometry")
         ranges.append((address, address + length))
     ordered = sorted(ranges)
-    if any(left[1] > right[0] for left, right in zip(ordered, ordered[1:])) or \
-            ranges[-1][1] != 0x700001000000:
+    if any(left[1] != right[0] for left, right in zip(ordered, ordered[1:])) or \
+            ordered[0][0] != 0x700000000000 or ordered[-1][1] != 0x700001000000:
         raise ValueError("overlapping reservations or aperture not exhausted")
-    for view in [initial[key] for key in early] + list(final.values()):
+    for view in ([initial[key] for key in early] + list(final.values()) +
+                 [replacement[key] for key in ("address-fill", "address-exhausted")]):
         if (view["state"] != "retired" or view["descriptor_hex"] or
                 any(int(view[field]) for field in
                     ("address", "address_len", "descriptor_len", "provider_backed", "live_refs"))):
             raise ValueError("rejected or retired allocation retained accessible resources")
-    if initial["address-fill"]["generation"] != final["address-fill"]["generation"]:
+    if initial["address-fill"]["generation"] != replacement["address-fill"]["generation"]:
         raise ValueError("filler identity changed during reclaim")
+    old, new = initial["address-fill"], replacement["address-reused"]
+    if (new["state"] != "active" or new["provider_backed"] != "1" or
+            any(new[field] != old[field] for field in
+                ("address", "address_len", "size_bytes", "alignment_bytes", "descriptor_len")) or
+            len(new["descriptor_hex"]) != 192 or new["descriptor_hex"] == old["descriptor_hex"] or
+            int(new["generation"]) <= max(int(view["generation"]) for view in initial.values()) or
+            new["generation"] == replacement["address-exhausted"]["generation"] or
+            new["generation"] != final["address-reused"]["generation"] or
+            initial["address-gap"]["generation"] != final["address-gap"]["generation"]):
+        raise ValueError("reused interval lacks a fresh matching allocation identity")
     expected_rejected = {initial[key]["generation"] for key in early} | \
-                        {final[key]["generation"] for key in late}
+                        {replacement["address-exhausted"]["generation"]}
     observed_rejected = []
     for line in text.splitlines():
         if line.startswith("obmm-worker ") and "reason=address_capacity" in line:
             fields = dict(item.split("=", 1) for item in line.split()[1:])
             observed_rejected.append(fields["generation"])
-    if len(observed_rejected) != 4 or set(observed_rejected) != expected_rejected:
+    if len(observed_rejected) != 3 or set(observed_rejected) != expected_rejected:
         raise ValueError("missing worker capacity cancellations")
-    for generation in expected_rejected:
+    for generation in (initial[key]["generation"] for key in early):
         if f"obmm-worker generation={generation} phase=reserve-intent " in text:
             raise ValueError("capacity cancellation followed a resource-creating attempt")
-    for block, backing, live in ((filled, 14680064, 4), (rejected, 6291456, 3)):
+    exhausted_generation = replacement["address-exhausted"]["generation"]
+    phases = []
+    for line in text.splitlines():
+        if line.startswith(f"obmm-worker generation={exhausted_generation} phase="):
+            row = dict(item.split("=", 1) for item in line.split()[1:])
+            if row["segment"] != "0" or row["export"] != "0":
+                raise ValueError("capacity cancellation retained kernel resources")
+            phases.append(row["phase"])
+    if phases != ["reserve-intent", "reserve-empty", "capacity-reject-intent",
+                  "cancel-empty", "cancel-confirmed"]:
+        raise ValueError("missing ordered kernel capacity outcome receipt")
+    for block, backing, live in ((filled, 16777216, 5), (reused, 16777216, 5),
+                                 (rejected, 6291456, 3)):
         stats = pressure_snapshots(block, "allocation-stats", "idempotency_reservation_deficit")
         if len(stats) != 1:
             raise ValueError("missing pressure resource counters")

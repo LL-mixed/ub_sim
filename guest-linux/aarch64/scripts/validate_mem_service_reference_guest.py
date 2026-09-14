@@ -184,7 +184,8 @@ def validate(node_a, node_b, iterations, seed, incarnation):
             publication = published[(round_index - 1) * 2 + view_index]
             require(publication["reference_key"] == key + "/" + view, "wrong logical publication")
             ref = decode_reference(publication["reference_hex"])
-            expected_checksum = checksum(bytes((seed + view_index + i) & 255 for i in range(512)))
+            expected_checksum = checksum(bytes((seed + round_index - 1 + view_index + i) & 255
+                                               for i in range(512)))
             expected = dict(magic=0x514f424d4d524546, layout=2, kind=5, state=2, flags=0,
                             owner=0, producer=0, version=int(receipt["version"]) + 1, offset=offset,
                             length=512, checksum=expected_checksum, wire_bytes=256, access=1,
@@ -217,6 +218,7 @@ def validate_qemu(text, views):
     """Require strict managed routes for the exact reader views, then unmap."""
     expected = [view["address"] - view["offset"] for view in views]
     seen = set()
+    allocation_segments = {}
     active = None
     routes = []
     for line in text.splitlines():
@@ -233,6 +235,14 @@ def validate_qemu(text, views):
                     all(value > 0 for value in identity), "invalid or overlapping strict route")
             require(len(routes) < len(expected) and identity[2] == expected[len(routes)],
                     "strict route does not match reader allocation")
+            generation = views[len(routes)]["generation"]
+            if generation in allocation_segments:
+                require(allocation_segments[generation] == identity[1],
+                        "views of one allocation use different segments")
+            else:
+                require(identity[1] not in allocation_segments.values(),
+                        "segment identity reused across allocation generations")
+                allocation_segments[generation] = identity[1]
             require(int(row["size"], 0) == 2097152 and row["source"] == "2" and
                     row["profile"] == "1", "wrong managed route size or address profile")
             seen.add(identity[0])

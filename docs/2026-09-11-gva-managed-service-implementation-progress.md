@@ -3553,3 +3553,123 @@ sha256sum 后完成；未重新启动 guest，失败观察记录保留。
 容量失败仍有效。设备并行执行、W5 模型矩阵与全部后续阶段不计为通过。
 QEMU 已本地提交 `d48c2c7634`；父仓库另行提交对应测试和本记录。
 本批不推送、不更新未发布平台 gitlink。
+
+### r287-r293：内核选址复用、容量结果分类与可配置地址窗口
+
+worker 已删除单调地址游标，设置 `requested_home_va=0`，由现有内核
+区间分配器选择空闲区间。完整正常回收仍要求 holder/ref 归零、实际
+unexport、内核 retire 和服务 reclaim 确认；新分配使用全新身份。
+只有直接 ALLOC_SEGMENT 返回 ENOSPC 且 descriptor 全零，才按平台的
+保留前失败契约取消无资源请求。EFAULT、其他 I/O 错误、矛盾 descriptor
+和日志同步失败保留占用意图并停止处理，不能仅凭全零输出声称没有资源。
+
+新增边界测试直接提取实际内核分配函数和 ioctl 分支，验证 ENOSPC 在
+预留前发生，以及成功分配后 copyout 失败返回 EFAULT 并保留真实预留。
+worker fixture 包含同一地址百次分配/回收、身份更新和旧 reclaim 拒绝。
+这组包装边界测试不计为实际 guest 百轮。
+
+r287 原生测试在已有 worker-loop fixture 处失败：新用例留下的
+`empty_cancel` 状态未恢复。显式初始化后，r289 原生 worker 和 manager
+通过；r289 随后因新内核 fixture 缺少 ioctl include，以及在不完整平台
+目录执行全模块而失败。保留两轮原始失败日志，没有将其计为全量通过。
+
+r288 独立服务全量共 276 个唯一用例，16 个隔离分片逐项核对覆盖一次：
+271 通过、5 跳过、零失败/错误。跳过包括 3 项下游源码契约、1 项缺少
+交叉编译器的打包测试、1 项缺少非 loopback 接口的测试；均不计为通过。
+结果 `reuse-results-r288.json` SHA-256：
+`d015024532f6d7bbfbdef7f84a2bbdc65ba47c5373d14cdc58f04360d9fbb007`。
+
+r290 修正 fixture 后原生及 ASan/UBSan worker、manager、host artifact、
+安装态 SDK、9 份 CLI manifest 对照均通过；13 项定向测试通过，包括
+实际内核分配/copyout 边界和地址容量验证器。原作业 14:52:43 至
+14:53:37 UTC，exit 0、无 OOM。日志 SHA-256：
+`114312a05e7868ec623dabc04761977409ecd166f24acb93527fe43952ee1d94`。
+
+独立服务提交 `3280c64324d34d32e86b8d75b88d7be9bf7f326c` 已按授权仅
+推送至该仓库 `origin/codex/gva-managed-service-completion`，ls-remote
+确认完整 SHA 一致。父仓库本地 gitlink/lock 同步，源码锁定检查通过；
+父仓库及平台子仓库未推送。
+
+根据用户确认，正常业务允许扩大地址窗口。双节点 `--config` 增加
+`MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE`，默认 auto 保留原场景行为；
+支持 2 MiB 对齐、2 MiB 至 4 GiB 的十进制字节数，故障容量场景保留 auto。
+此范围属于测试入口验证范围。不同对象可使用不相邻区间；当前每个
+segment 和单节点 aperture 仍各自连续，多 aperture 池尚未实现。
+22 项轻量定向测试及 shell 语法检查通过。原 r273 的“不扩大 aperture”
+决定限定为小窗口压力测试，不再约束正常业务验证；原失败证据保持有效。
+
+r293 从已发布的干净服务源码同时重建静态 AArch64 服务 CLI 和 provider
+worker，替换 initramfs 中两者与 run_app，避免只更新 CLI 而运行旧 worker。
+构建、ELF 架构、静态链接、脚本语法及压缩包校验通过，15:05:17 至
+15:05:33 UTC，exit 0、无 OOM。镜像 `managed-replay-r293.cpio.gz` SHA-256：
+`f579dd6235ba573ff77be26b20444ccd5b493ff0ae3e9839fe9f371358d2fb80`。
+内核使用既有 r109 镜像，QEMU 使用 r281 严格访问保护产物；两者未改源码。
+后续实际运行结果独立记录，以上编译和 fixture 结果不替代运行验收。
+
+### r291-r298：三轮复用通过，百轮转入控制面延迟问题
+
+r291 父仓库 Python 全量 547 个唯一用例：542 通过、5 项交叉编译器
+环境跳过，零失败/错误/加载错误；清单逐项唯一，15:05:17 至 15:06:39
+UTC，exit 0、无 OOM。结果 SHA-256：
+`4f4802d06848bcb09f0ce1b79e4c024f80c502586e3a7abe07f2ec908717bc44`。
+r292 完整 Rust workspace 原作业 15:05:17 至 15:14:04 UTC，exit 0、
+无 OOM。43 个外层 harness 的最终结果合计 963 通过、16 ignored、零失败；
+嵌套测试输出不重复累计。原始日志 SHA-256：
+`ba8a3117ed00fd032f59a58642d5410d162475f8d8667d820f4600e0316607f0`。
+
+r294 实际双 guest 使用 16 MiB aperture、64 项幂等表、64 KiB 对象及
+seed=41，三轮全流程通过，15:06:40 至 15:06:58 UTC，exit 0、无 OOM。
+三轮数据对象都位于 `0x700000000000`，generation 为 1/4/7，segment
+分别不同；各轮 payload seed 递增，6 个 reader 视图与独立 checksum
+核对通过。9 次分配完成实际回收，每轮服务资源归零，最终 kernel census
+恢复基线。该结果越过 r273 的第三轮地址容量失败点，尚未证明旧 token
+再次访问被拒绝、强制撤销或跨重启恢复。
+
+r294 报告 SHA-256：
+`e5adb26667be3083f22b5fdd6597af1eaec27fae02b9402f56925036f3b153a6`。
+首次归档核对发现报告中的 guest 日志指纹采用 Python read_text 的换行
+归一化文本，与串口原始字节不同。按验证器现有实现独立重算后完全一致；
+原始文件另记 raw SHA，未修改日志或运行报告。归档 `reuse-evidence-r294.tar.gz`
+为 111,060 bytes，SHA-256：
+`8fd915c777c6a7ae0a4071036be9e6e4d8eddb008e34ea03704343712e825ee9`。
+
+r295 将 aperture 扩到 1 GiB，运行 100 轮；r296 以同一镜像、QEMU、
+对象大小和轮数恢复到 16 MiB 作对照。两者均完成 26 轮，第 27 轮
+generation=79 分配和 begin_reference 成功，随后 map 返回 internal /
+map_cleanup_required；两 worker 记录 wire io timeout 并停止，保留
+reconciliation_required。最终均有 1 个对象及 holder 未确认清理，
+allocate_rejected_count=0、idempotency_available=59、history_records=730。
+两次均不能计为百轮通过，也不能计为最终资源回收通过。r296 的 init
+退出还导致 kernel panic，保留原始失败，不过滤为成功。
+
+r295 15:07:59 至 15:09:32 UTC；r296 15:14:58 至 15:16:31 UTC，均 exit 1、
+无 OOM。r296 在本批 Rust 作业结束后启动，仍复现同一轮次失败。
+原始归档分别为：
+
+- `reuse-evidence-r295.tar.gz`：445,735 bytes，SHA-256
+  `bf91f3dd765698b323f83b3cb7f430aa85f98442ad599ab74876817a2493ab63`。
+- `reuse-evidence-r296.tar.gz`：446,266 bytes，SHA-256
+  `c749c05f44abcdfc54ab1b295b4c4e8be83f1b79feac685947ccdeacc60f792e`。
+
+r297 为单独的真实 address_capacity 场景：5 个对象无空洞覆盖 16 MiB，
+超额请求得到 reserve-empty/cancel-confirmed；释放 8 MiB filler 后，
+新对象复用其地址并获得新 descriptor/generation。再释放新增对象，原始
+读写流程继续，最终新增资源归零。两节点 mapping_resources、kernel_regions、
+address_capacity 验证均通过，15:11:35 至 15:12:32 UTC，exit 0、无 OOM。
+原始归档 `reuse-evidence-r297.tar.gz` 为 1,775,993 bytes，SHA-256：
+`d5a7d70a19d41dbb9441836cec3d896cb17db7cec0b9c772789d5afa3693d749`。
+所有 guest 原作业结束后均核对无遗留 QEMU。
+
+r298 在隔离原生容器对已发布的 replay history 源码包装 read 计数，
+固定 128-byte 合成响应：从 671 条追加 59 条至 730 条，触发 82,718 次
+read、8,047,954 bytes，耗时 36.642 ms；一次不存在 key 查询触发 1,462 次
+read、142,256 bytes，耗时 0.651 ms。这是存储边界成本诊断，不能当作
+guest 或业务性能。源码确认 make_room 对每条缓存记录分别 append，
+append 每次重新全文件校验；worker TCP 默认截止时间为 3 秒。
+该证据证明归档的重复扫描放大，具体 guest 超时因果仍需修复前后测量。
+诊断 exit 0、无 OOM，日志 SHA-256：
+`05dd35f034325d8000afd2f2e676c46290a2df2a0c4b496689c12746d8f5bac0`。
+
+下一项优先补有界批量归档，在维持整份历史完整性校验、冲突拒绝、原缓存
+持久化后才淘汰等语义的前提下减少重复扫描，然后重跑两种窗口百轮。
+M2/M3、旧身份实际拒绝、W5 模型矩阵、故障恢复及完整目标保持未完成。

@@ -32,6 +32,132 @@ def compile_golden(compiler, output):
 
 
 class GvaManagerLibraryTest(unittest.TestCase):
+    @unittest.skipUnless(platform.system() == "Linux", "requires Linux UAPI")
+    def test_kernel_allocation_capacity_precedes_reservation(self):
+        source = (ROOT / "guest-linux/kernel_ub/drivers/ub/obmm/obmm_core.c").read_text()
+        allocator = source.split("static int obmm_gsva_alloc_segment(", 1)[1].split(
+            "\nstatic int obmm_gsva_query_segment", 1)[0]
+        ioctl_case = source.split("case OBMM_CMD_GSVA_ALLOC_SEGMENT:", 1)[1].split(
+            "case OBMM_CMD_GSVA_QUERY_SEGMENT:", 1)[0]
+        program = r'''
+#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <ub/obmm.h>
+#include <ub/gsva.h>
+typedef uint64_t u64;
+typedef uint32_t u32;
+#define PAGE_SIZE 4096
+#define PAGE_ALIGNED(n) (!((n) & 4095))
+#define PAGE_ALIGN(n) (((n) + 4095) & ~4095ULL)
+#define GFP_KERNEL 0
+#define IORESOURCE_MEM 1
+#define IORESOURCE_BUSY 2
+#define pr_info(...) ((void)0)
+#define pr_err(...) ((void)0)
+#define __user
+#define check_add_overflow(a,b,p) __builtin_add_overflow(a,b,p)
+#define mutex_lock(p) ((void)(p))
+#define mutex_unlock(p) ((void)(p))
+struct resource { u64 start, end; const char *name; unsigned flags; };
+struct obmm_gsva_segment { struct resource address; struct obmm_gsva_segment_desc_v1 desc; int node; };
+struct ub_entity { u32 cna; };
+static struct ub_entity entity = {.cna=7};
+static struct obmm_cmd_gsva_aperture obmm_gsva_aperture = {
+    .base=0x700000000000ULL, .size=0x400000, .node_count=2,
+    .flags=OBMM_GSVA_APERTURE_F_ACTIVE};
+static struct resource obmm_gsva_address_space;
+static u64 obmm_gsva_segment_counter = 31;
+static int obmm_gsva_aperture_lock, obmm_gsva_segment_lock, obmm_gsva_segments;
+static int resource_error, registered, live, resource_calls;
+static bool reserved, lose_output;
+static struct obmm_gsva_segment *last_segment;
+static void *kzalloc(size_t bytes, int flags) {
+    (void)flags; assert(!live); last_segment=calloc(1,bytes);
+    assert(last_segment); live++; return last_segment;
+}
+static void kfree(void *ptr) { assert(live==1 && !reserved); live--; free(ptr); }
+static int ub_get_bus_controller(struct ub_entity **out, unsigned capacity, unsigned *count) {
+    assert(capacity==1); *out=&entity; *count=1; return 0;
+}
+static int request_resource(struct resource *root, struct resource *entry) {
+    (void)root; (void)entry; assert(!reserved); resource_calls++;
+    if (!resource_error) reserved=true;
+    return resource_error;
+}
+static int allocate_resource(struct resource *root, struct resource *entry,
+    u64 size, u64 low, u64 high, u64 alignment, void *fn, void *data) {
+    assert(!fn && !data && low==root->start && high==root->end);
+    entry->start=(low+alignment-1)&~(alignment-1);
+    entry->end=entry->start+size-1;
+    return request_resource(root,entry);
+}
+static void list_add_tail(int *node, int *head) {
+    (void)node; (void)head; assert(reserved && !registered); registered++;
+}
+static u32 obmm_gsva_next_token_id(void) { return 41; }
+static u64 obmm_gsva_next_token_value(void) { return 73; }
+static int copy_from_user(void *out, const void *in, size_t bytes) { memcpy(out,in,bytes); return 0; }
+static int copy_to_user(void *out, const void *in, size_t bytes) {
+    if (lose_output) return bytes;
+    memcpy(out,in,bytes); return 0;
+}
+static int obmm_gsva_alloc_segment(''' + allocator + r'''
+static int allocation_ioctl(struct obmm_cmd_gsva_alloc_segment_v1 *user) {
+    int ret;
+    union { struct obmm_cmd_gsva_alloc_segment_v1 gsva_alloc_seg; } cmd_param;
+    unsigned long arg=(uintptr_t)user;
+    switch (OBMM_CMD_GSVA_ALLOC_SEGMENT) {
+    case OBMM_CMD_GSVA_ALLOC_SEGMENT:''' + ioctl_case + r'''
+    default: assert(0);
+    }
+    return 0;
+}
+int main(void) {
+    struct obmm_cmd_gsva_alloc_segment_v1 cmd={.version=1, .size=0x200000,
+        .alignment=0x200000, .requested_p_tag=OBMM_GSVA_P_TAG_AUTO, .access_flags=3};
+    const struct obmm_gsva_segment_desc_v1 empty={0};
+    cmd.size=0x800000;
+    assert(allocation_ioctl(&cmd)==-ENOSPC);
+    assert(!live && !reserved && !registered && !resource_calls);
+    assert(obmm_gsva_segment_counter==31 && !memcmp(&cmd.desc,&empty,sizeof(empty)));
+    cmd.size=0x200000;
+    resource_error=-EBUSY;
+    assert(allocation_ioctl(&cmd)==-ENOSPC);
+    assert(!live && !reserved && !registered && resource_calls==1);
+    assert(obmm_gsva_segment_counter==31 && !memcmp(&cmd.desc,&empty,sizeof(empty)));
+    resource_error=-ENOMEM;
+    assert(allocation_ioctl(&cmd)==-ENOMEM);
+    assert(!live && !reserved && !registered && obmm_gsva_segment_counter==31);
+    resource_error=0; lose_output=true;
+    assert(allocation_ioctl(&cmd)==-EFAULT);
+    assert(live==1 && reserved && registered==1 && obmm_gsva_segment_counter==32);
+    assert(!memcmp(&cmd.desc,&empty,sizeof(empty))); /* Empty output alone proves nothing. */
+    reserved=false; registered=0; kfree(last_segment);
+    lose_output=false;
+    assert(!allocation_ioctl(&cmd));
+    assert(live==1 && reserved && registered==1 && obmm_gsva_segment_counter==33);
+    assert(cmd.desc.home_va==obmm_gsva_aperture.base && cmd.desc.segment_id);
+    reserved=false; registered=0; kfree(last_segment);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "allocator-outcome"
+            include = stage_uapi(binary.parent)
+            compiled = subprocess.run(
+                ["cc", "-Wall", "-Wextra", "-Werror", "-std=c11", "-I", str(include),
+                 "-x", "c", "-", "-o", str(binary)], input=program,
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     @unittest.skipUnless(platform.system() == "Linux", "native Linux CLI diagnostic test")
     def test_export_identity_cli_never_issues_a_valid_export(self):
         kernel = ROOT / "guest-linux" / "kernel_ub"

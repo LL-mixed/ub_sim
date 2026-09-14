@@ -14,7 +14,8 @@ enum response_mode {
     RETIRE_EPOCH, RETIRE_ERROR, STALE_TOKEN, EXPORT_ADDRESS, EXPORT_ERROR,
     UNEXPORT_ERROR, CHECKED_EMPTY, CHECKED_MISSING_ERROR, CHECKED_CONTRADICTION,
     CHECKED_UNKNOWN, CHECKED_VERSION, CHECKED_IDENTITY, CHECKED_FLAGS,
-    CHECKED_RESERVED, CHECKED_SIZE, CHECKED_OLD_KERNEL, CHECKED_COPY_LOST
+    CHECKED_RESERVED, CHECKED_SIZE, CHECKED_OLD_KERNEL, CHECKED_COPY_LOST,
+    ALLOC_ENOSPC, ALLOC_OUTPUT_LOST
 };
 static enum response_mode mode;
 static unsigned calls;
@@ -113,6 +114,10 @@ int ioctl(int fd, unsigned long op, ...)
         break;
     }
     case OBMM_CMD_GSVA_ALLOC_SEGMENT:
+        if (mode == ALLOC_ENOSPC || mode == ALLOC_OUTPUT_LOST) {
+            errno = mode == ALLOC_ENOSPC ? ENOSPC : EFAULT;
+            return -1;
+        }
         ((struct obmm_cmd_gsva_alloc_segment_v1 *)argument)->desc = descriptor();
         break;
     case OBMM_CMD_GSVA_QUERY_SEGMENT:
@@ -254,6 +259,18 @@ int main(void)
     assert(gva_manager_allocate_segment(42, &alloc) == 0);
     assert(alloc.desc.token_id == 11 && alloc.desc.token_value == 53);
     assert(alloc.desc.epoch == 19);
+    alloc.requested_home_va = 0;
+    assert(!gva_manager_allocate_segment(42, &alloc));
+    assert(alloc.desc.home_va == 0x700000000000ULL);
+    for (mode = ALLOC_ENOSPC; mode <= ALLOC_OUTPUT_LOST; mode++) {
+        struct obmm_gsva_segment_desc_v1 empty = {0};
+        memset(&alloc.desc, 0, sizeof(alloc.desc));
+        before = calls;
+        assert(gva_manager_allocate_segment(42, &alloc) == -1);
+        assert(errno == (mode == ALLOC_ENOSPC ? ENOSPC : EFAULT));
+        assert(calls == before + 1 && !memcmp(&alloc.desc, &empty, sizeof(empty)));
+    }
+    alloc.requested_home_va = 0x700000000000ULL;
     for (i = 0; i < sizeof(bad_alloc) / sizeof(bad_alloc[0]); i++) {
         mode = bad_alloc[i];
         assert(gva_manager_allocate_segment(42, &alloc) == -1);

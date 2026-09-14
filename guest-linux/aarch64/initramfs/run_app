@@ -913,10 +913,12 @@ mem_service_object_share_address_pressure() (
     echo "op=wait_state key=address-alignment state=retired timeout_ms=60000 poll_ms=50"
     echo "op=allocate key=address-fill idempotency_key=address-fill size_bytes=8388608 alignment_bytes=8388608 capabilities=map"
     echo "op=wait_state key=address-fill state=active timeout_ms=60000 poll_ms=50"
+    echo "op=allocate key=address-gap idempotency_key=address-gap size_bytes=2097152 capabilities=map"
+    echo "op=wait_state key=address-gap state=active timeout_ms=60000 poll_ms=50"
   } >/tmp/address-pressure-fill.conf
   /bin/linqu_mem_service object-session --config /tmp/address-pressure-fill.conf || exit 1
   echo "mem_service address-pressure: phase=filled"
-  for key in obj-share-1 obj-sent-1 obj-returned-1 address-fill address-overflow address-alignment; do
+  for key in obj-share-1 obj-sent-1 obj-returned-1 address-fill address-gap address-overflow address-alignment; do
     /bin/linqu_mem_service inspect-allocation --connect "$connect" --key "$key" || exit 1
   done
   /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
@@ -928,12 +930,29 @@ mem_service_object_share_address_pressure() (
     echo "op=wait_state key=address-exhausted state=retired timeout_ms=60000 poll_ms=50"
     echo "op=retire key=address-fill idempotency_key=address-fill-retire"
     echo "op=wait_state key=address-fill state=retired timeout_ms=60000 poll_ms=50"
-    echo "op=allocate key=address-no-reuse idempotency_key=address-no-reuse size_bytes=1 capabilities=map"
-    echo "op=wait_state key=address-no-reuse state=retired timeout_ms=60000 poll_ms=50"
+    echo "op=allocate key=address-reused idempotency_key=address-reused size_bytes=8388608 alignment_bytes=8388608 capabilities=map"
+    echo "op=wait_state key=address-reused state=active timeout_ms=60000 poll_ms=50"
   } >/tmp/address-pressure-drain.conf
   /bin/linqu_mem_service object-session --config /tmp/address-pressure-drain.conf || exit 1
+  echo "mem_service address-pressure: phase=reused"
+  for key in address-fill address-exhausted address-reused; do
+    /bin/linqu_mem_service inspect-allocation --connect "$connect" --key "$key" || exit 1
+  done
+  /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
+  for key in address-gap address-reused; do
+    /bin/linqu_mem_service retire-object --connect "$connect" --key "$key" \
+      --idempotency-key "$key-retire" || exit 1
+  done
+  {
+    echo "session_id=address-pressure"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=address-gap state=retired timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=address-reused state=retired timeout_ms=60000 poll_ms=50"
+  } >/tmp/address-pressure-reclaimed.conf
+  /bin/linqu_mem_service object-session --config /tmp/address-pressure-reclaimed.conf || exit 1
   echo "mem_service address-pressure: phase=rejected"
-  for key in address-fill address-exhausted address-no-reuse; do
+  for key in address-gap address-reused; do
     /bin/linqu_mem_service inspect-allocation --connect "$connect" --key "$key" || exit 1
   done
   /bin/linqu_mem_service allocation-stats --connect "$connect" || exit 1
@@ -1249,7 +1268,7 @@ mem_service_object_share_reference() (
       echo "provider_node_count=2"
       echo "provider_generation=$((incarnation + round))"
       echo "provider_import_region_bytes=2097152"
-      mem_service_object_share_reference_ops "$node" "$size" "$round" "$seed" "$generation" "$version"
+      mem_service_object_share_reference_ops "$node" "$size" "$round" "$(((seed + round - 1) % 256))" "$generation" "$version"
     } >"$config"
     if ! /bin/linqu_mem_service object-session --config "$config"; then
       echo "mem_service reference-capacity: node=$node round=$round phase=failed"
@@ -1285,6 +1304,12 @@ mem_service_object_share_managed() (
   esac
   [ "$fault" != "backing_capacity" ] || aperture_size=0x100000000
   [ "$fault" != "allocation_pressure" ] || aperture_size=0x4000000
+  requested_aperture="$(cmdline_value mem_service_object_share_aperture_size auto)"
+  if [ "$requested_aperture" != "auto" ]; then
+    [ "$fault" = "none" ] || exit 2
+    aperture_size="$requested_aperture"
+  fi
+  echo "mem_service address-pool: aperture_size=$aperture_size policy=kernel-selected"
   cleanup_managed_share() {
     if [ -n "$capacity_pid" ]; then
       kill "$capacity_pid" 2>/dev/null || true
