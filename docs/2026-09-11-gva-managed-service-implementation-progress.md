@@ -3020,3 +3020,81 @@ kernel、QEMU、配置及 rootfs 各文件指纹保存在每轮 evidence 清单�
 该证据关闭本次一轮/两轮 CPU V2 writer-to-reader 用例，未关闭多 home、
 2/3/8-node 全矩阵、CPU/PTO V2 联合绑定、W5、AM3/AM4 或总目标。根仓库完整
 回归仍待执行，代码保持未提交；本批轻量/定向回归不替代根仓库完整回归。
+
+### r237/r238 根仓库完整回归与环境诊断
+
+根源码使用 `a43a229f5431c78499700f5c55c4085967249704` 的真实浅层 Git
+metadata/index，叠加开发修改，独立服务固定为 `d9b60ef`。容器复制源码到
+私有工作目录，保留精确 kernel/QEMU overlay，未更新父仓库的其他 gitlink。
+补齐真实 Git metadata 后，早期归档环境中的源码锁定等失败已消除。
+
+r237 完整 Python 发现并执行 529 个唯一测试：520 通过、5 跳过、3 失败、
+1 错误。4 项 W5 配置测试在 validate-only 阶段调用真实 Cargo，容器虽为
+network-none，Cargo 仍尝试解析 crates.io 并报告 DNS 失败。该内部依赖尝试
+已按 retrospective 补入网络审计；无法从日志获得准确连接/重试次数，不把
+隔离网络配置写成“未尝试联网”的证据。后续显式设置 Cargo offline 并复用
+已有 registry/cache，未下载依赖或改宿主配置。
+
+r238 同样执行 529 项，结果仍为 520 通过、5 跳过、3 失败、1 错误，首个
+异常已变为实际构建产物路径不一致：Cargo 按 CARGO_TARGET_DIR 输出，W5
+硬编码查找工作区 target/debug/sim-cli。全部 4 项失败均停在该路径检查。
+
+独立布局 pytest 首轮缺少 pytest，未执行测试；改用已有测试镜像后实际执行
+74 项，其中 2 项失败。已将只读探针计数限定到对应函数，并按已锁定、已验证
+服务 SDK 更新 package/wire/compat 清单的精确长度、checksum、字段和文件
+数量，显式覆盖 mapping/reference 操作；没有改动 SDK 清单或放宽比较。
+r238 完整布局测试 74/74 通过，容器 exit 0、无 OOM。
+
+完整 Rust r237 首次因离线 registry 未挂载而未进入测试。补齐缓存后的
+r237b 实际执行完整 workspace，3 个失败 target 为 sim-cli、sim-console、
+sim-uapi，涉及 Simpler/PTO-ISA 源码、已提交 pin 与原生工件准备。保持失败
+记录，不将缺少依赖改成跳过，也不以 Python 通过代替 Rust 通过。
+
+### r239/r240 W5 Cargo 产物定位与完整 Python 回归
+
+W5 自动构建改为读取 Cargo compiler-artifact JSON 中唯一的 sim-cli bin
+executable，兼容输出目录、target triple 和带空格路径；Cargo 非零退出、
+无产物、不同产物歧义或文件不可执行均拒绝。显式 SIM_CLI_BIN 仍跳过构建。
+CLI 入口不变，新增 7 项轻量隔离测试，不编译真实代码或加载模型。
+
+本地首次夹具的路径比较受 macOS /var 符号链接影响，改为解析后的路径。
+r239 的原 W5 配置失败用例已通过，但目标镜像的 Zsh 启动配置覆盖 PATH，
+导致两项夹具误调用真实 Cargo；完整回归因前置失败未执行。修正为在待测
+shell 内设置替身路径，并逐 shell 检查调用标记。保留原失败日志。
+
+r240 在指定远端缓存容器、network-none、Cargo offline 下执行：
+
+- 前置 7 项隔离测试及原 W5 配置失败用例，共 8 项通过。
+- 完整 `python3 -m unittest discover -s guest-linux/aarch64/tests` 等价发现
+  流程执行 536 个唯一 test ID：531 通过、5 环境跳过、零失败/错误。
+- 执行数量与预先枚举的唯一 ID 数量一致，无 loader error。5 项跳过均为
+  未提供 AArch64 交叉编译器的编译/链接测试；跳过不算通过。
+- 容器退出 0、无 OOM。此轮未启动模型推理，不替代 W5 真实推理验收。
+
+r240 八文件开发 overlay SHA-256：
+`fba5f32d21ac29c5a63a5a064db5aec50ba35ae0570cde746a4299fb42d9269c`。
+完整清单与日志已取回本地，逐项与远端 SHA 核对一致：
+
+| 本地证据 | SHA-256 |
+| --- | --- |
+| `out/root-results-r240.json` | `d3a326b3e6268b66c19d05e75c097c9c86f742270c5afa48231edc5bd4a755e4` |
+| `out/root-full-r240.log` | `adf5c7e1af8f0293b192ab7a3493d724fbb2cda59e280a430b1ff05349b099e0` |
+| `out/layout-r238.log` | `3a13e742757d21b0020012e700321c368e106f28457ddc0cdbe28e1a5a3390b6` |
+
+原生依赖准备继续使用准确 Simpler `3794c430`、根 PTO-ISA `6a9da1e1` 及
+Simpler 自身的嵌套 pin `594817f2`，三者用途分别登记。现有目标机 PTO 工作树
+含无关修改，仅从其 Git 对象克隆已提交 pin 到专用目录，不复制这些修改。
+目标镜像名为 g++-15 的入口实际指向 GCC 14，原生验证改用目标机已有的
+真实 GCC 15.3.0，只在临时容器内配置。首次 r240 原生准备因只读 Git 目录
+ownership 检查退出 128，尚未编译；补齐该明确目录的临时信任配置后以 r240b
+重试，host-vector 工件实际构建通过，容器 exit 0、无 OOM，manifest 位于远端
+`native-artifacts-r240b/host_vector_manifest.json`。没有安装宿主软件、修改
+宿主 Git 配置或发布其他仓库。该构建只证明原生准备路径，不替代算子执行。
+
+随后 r241 在同一依赖组合启动完整
+`cargo test --offline --locked --workspace --no-fail-fast --jobs 8 -- --test-threads=4`，
+在指定远端限制 8 CPU，最长 1,800 秒。观察到原生算子实际执行日志，整轮终态
+尚待取得，不预先记为通过；后续继续观察原作业 `gva-rust-workspace-r241`。
+
+本批代码继续保持未提交，等待完整 Rust 结果。AM2、V2 CPU/PTO 联合绑定、
+W5、故障矩阵和完整总目标仍未完成。
