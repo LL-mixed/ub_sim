@@ -2766,3 +2766,73 @@ raw mapping BEGIN 继续被拒绝；下一步须接通完整登记引用、当�
 实际 holder 和活动 home 的 reader mapping 准入，以及 SDK 的精确视图与失败清理。
 V2 provider 发布/可见性闭环、W5、AM3 与总目标均未完成。未 push，父仓库
 gitlink/lock 未更新，本批源码未用于根仓库 guest 构建。
+
+## 2026-09-14 续作：V2 reader 候选、失败定位与修复验证
+
+本批候选新增 `0x7e` 的 `map-begin` action，服务核对已登记的完整 V2、当前
+内容版本、home/incarnation 与实际 holder。pending/active mapping 保留原有
+内容换版和 holder release 限制，清理沿用原 mapping 事务；SDK 通过独立
+reference lifecycle 保留不确定 BEGIN 的完整引用和 operation ID。CLI 增加
+`acquire_reference` 与 `map_reference`，provider 获得精确只读子区间。
+以上实现已形成独立服务提交；完整 AM2 仍须由真实跨节点数据链路证明。
+
+r226/r227 的真实 CLI 用例在首个 `acquire_reference` 返回 `invalid_session`。
+定位到同一请求先填写 `logical/a` 再覆盖为 `obj-1`，固定宽度 key 的 NUL 后
+仍残留旧字节；SDK 规范字段检查在 dispatch 前拒绝该请求。修复为重新清零
+acquire 请求，保留原校验。r228 的原失败用例在指定远端缓存 AArch64 容器
+执行 97.037 秒，测试及容器 exit 0；覆盖 acquire、固定子区间映射、可见性、
+越界/只读拒绝、CPU 页只读探针、unmap/release 和最终映射计数归零。
+该用例的 payload 来自匿名 loopback，未证明真实跨 guest 共享。
+
+继续检查发现 loopback range callback 使用完整 reservation 的 base/len。
+这与非零子区间的可见性 offset 语义不一致，跨页时会访问前缀保护页。修复后
+reservation 仅用于 unmap，数据操作使用独立 view_base/view_len；新增同一
+封存 allocation 中 offset 128 和 4224 的两个视图顺序读取。真实 OBMM provider
+未改动。中间候选为 r229，源码归档 SHA-256：
+`4a823b60fac3f32d643788f2a1c76068836aa659b2742133405ee2fed28b8b77`；
+213 文件清单 SHA-256：
+`059d32da23666b4505c46b315883fc82e77a1e9b86e347ca590f8eed038db680`。
+16 个完整测试分片执行清单精确覆盖 260 项：254 通过、5 环境跳过、1 失败，
+无 error。两个子区间的 CLI 访问与清理通过；独立 sanitizer/安装/九份契约
+作业 exit 0。唯一失败为 TCP 夹具分配 4096 bytes，但扩展后的引用描述
+8192 bytes，服务在 stage 返回预期的身份不匹配拒绝。已将 Unix 分配、引用
+构造和 TCP 分配统一使用 `ALLOCATION_BYTES`，未修改服务端身份检查。
+最终候选 r230 的原失败用例在指定远端以 9.776 秒通过，完整回归精确覆盖
+260 个唯一 test ID：255 通过、5 环境跳过，零失败/错误。跳过项沿用三个
+ub_sim 专属源码契约、缺交叉工具链的 arm64 deb 门禁及隔离容器缺少
+non-loopback IPv4 的监听用例，均不计通过。sanitizer、安装态 SDK 和九份
+契约检查通过，定向作业、16 个完整分片与 artifact 作业共 18 个均 exit 0。
+远端实际页大小为 4096 bytes，offset 4224 的视图跨入第二页。
+其源码归档 SHA-256 为
+`0db08a1f833d9dc9252515cb27de2bcfde6f86b1981a07cab9b4b8ddb492580d`，
+213 文件清单 SHA-256 为
+`96131ae27ecb7217b0e106956c0b35054180011cfd8e24334ba5fc2a26902319`。
+原 r226/r227 的断言失败、编译超时及 r227 单项复验超时全部保留，不计通过。
+
+前后证据已回收为 `out/r226-r229-reference-reader-evidence.tar.gz`，大小
+4,110,518 bytes，SHA-256 为
+`5f37b12ffb4ce705dc1872a1e7b3671157cbd6892b1ea6d0fde5ba367a35913c`。
+本地验证 103 个 regular members 无重名，102 个 payload SHA 逐项一致；
+含 53 个已结束作业状态、原始失败、r228 定向通过与 r229 完整结果。
+该归档的完整性校验不改变其中失败测试的结论。
+
+最终证据 `out/verified-r230-reference-reader-evidence.tar.gz` 已回收本地，
+大小 1,132,818 bytes，38 个 regular members 无重名，37 个 payload SHA
+逐项一致。归档 SHA-256 为
+`ef1d7e4357e0e2468c302c559a2bd0b401a41f8cbd9a70623436b9ab672fe6ab`；
+完整回归摘要 SHA-256 为
+`ffe9df4deb36f5604f3f5aefccdee22d46a491bd462d26d2ca767dc527d4ff4d`。
+提交前 213 项本地源码 SHA 与最终冻结清单逐项一致。独立服务提交为
+`b5fff0d6d2a6fe0042fc0756c29b17d9312917a6`，tree 为
+`3fb3815d2afa062cc2e3bf5f3faa392f6e0d86fd`，提交后服务工作区干净。
+
+用户随后明确授权的推送只涉及独立服务的
+`origin/codex/gva-managed-service-completion`。普通推送创建该远端分支，
+远端核验为 `41886ad5a8ad2bd51a0409d1b0edd2a0ca1ffe1f`。未提交 reader
+修改未被上传；无 force push，无父仓库、其他子仓库、分支或标签推送。
+该次 push 与核验均经网络审计登记。reader 完整验证并提交后，用户再次明确
+授权同一独立服务分支推送及父仓库本地锁定更新。随后普通推送从 `41886ad`
+推进至 `b5fff0d`，远端完整 SHA 核验一致；父仓库 gitlink 与
+`guest-linux/aarch64/mem_service.lock` 同时锁定此提交。10 项轻量下游契约
+测试通过，父仓库未推送。根仓库完整回归和真实 guest 数据验证没有被本轮
+契约检查替代；V2 writer/provider 发布闭环、W5、AM3/AM4 与总目标均未完成。
