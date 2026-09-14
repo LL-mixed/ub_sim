@@ -3367,3 +3367,72 @@ r231 来源清单一致，原组件 README 由本次 overlay 显式替换。
 持久化顺序也须补齐后才能据此回收缓存。未配置 store 仍应保留容量拒绝，
 不能对已存在的 managed identity 提供未经验证的恢复或 snapshot 替换。
 当前 daemon 尚未采用新历史层，第三轮容量限制、地址重用和真实百轮均未解决。
+
+### r263-r269：daemon 历史接入与独立服务验证
+
+daemon 已接入持久历史：先同步已完成应答和 snapshot 前缀 checkpoint，再清除
+相应缓存。内存表仍为 64 项，无 store 时保持容量拒绝。历史 store 使用独立
+magic，拒绝缺失/损坏历史和不完整备份恢复；重启报告
+`managed_recovery_required=1`、`data_plane_ready=0`，等待实际资源对账。
+旧 cleanup 应答可重放，新 managed 数据工作保持关闭。新增四项
+`allocation-stats` 字段，九份契约清单均由实际 CLI 渲染并逐字节核对。
+
+r263 首轮六项 daemon 测试为五通过、一失败：恢复门禁拦住旧 release 应答。
+修正后 r264 六项全部通过，65.794 秒，`host-artifact-smoke` 通过；原容器
+12:57:47 至 12:59:03 UTC，exit 0、无 OOM。100 次映射控制事务保留旧请求
+原始应答且不新增 holder/mapping；该用例使用单个活动对象，不证明实际 guest
+分配/回收百轮通过。还覆盖 checkpoint 写入失败保留缓存、损坏/缺失历史拒绝、
+重启后的 cleanup 重放与资源恢复门禁、完整和分页 snapshot restore 拒绝。
+
+r265 在 n4-910c1 完整发现并执行 276 个唯一 Python test ID，271 通过、
+5 项环境跳过、零失败/错误；16 分片均 exit 0、无 OOM，无遗漏或重复。
+跳过仍为三个 ub_sim 源码契约、一个打包工具链要求和一个非回环 IPv4 环境要求。
+结果文件 `replay-results-r265.json` SHA-256：
+`c290c89c4c5b1875eb310316144d4e765d827e4392a4288fe3fed290ddc96967`。
+
+r266/r267 同时插桩短命 CLI 和 daemon 时六项均失败，原日志保留，失败表现为
+provider 就绪拒绝；未观察到 sanitizer 内存诊断。r269 保持原测试断言、30 秒
+provider 租约和刷新频率，改用原生客户端调用 ASan/UBSan daemon，六项全部
+通过，128.205 秒。完整检查捕获的客户端/daemon/退出阶段输出，无 sanitizer
+诊断；之后安装态 SDK、`install-smoke` 和九份清单比对通过。原容器
+13:10:03 至 13:12:49 UTC，exit 0、无 OOM；日志 SHA-256：
+`6d79ed1a43ea0accdfe1db6d902a9b2727205c68eaa8806abcf7b5aa475d5451`。
+r268 独立安装态验证也通过。上述对照支持插桩客户端开销影响租约的判断，
+不把失败轮次计为通过，也不宣称所有客户端路径均完成 sanitizer 验收。
+
+独立服务已提交 `3e5b35b`，仅推送获授权的同名 `codex/` 分支，远端完整 SHA
+核验一致。父仓库本地 gitlink/lock 同时更新为
+`3e5b35b0f1aeb6e50e84ec8024e2a9b886b214ae`，补齐直接链接 daemon 的三个
+构建入口及缓存签名。轻量源码/链接/manifest 契约通过，下游全量和实际 guest
+第三轮/百轮验证待执行；worker 仍禁用地址复用，AM3 及完整目标保持未完成。
+
+### r270-r273：下游锁定验证与真实下一处容量限制
+
+r270 在隔离容器从已发布 Git bundle 检出干净 `3e5b35b`，同时核对父仓库
+gitlink/lock，执行 543 个唯一 Python 用例：538 通过、5 项交叉编译器环境
+跳过、零失败/错误/加载错误；原容器 exit 0、无 OOM。r271 的完整 Rust
+workspace 原作业已完成，13:19:35 至 13:28:30 UTC，exit 0、无 OOM。
+逐个核对 43 个外层 harness 的最终结果：963 通过、16 ignored、零失败或
+filtered；harness 清单与上一轮一致，未重复计算嵌套输出。日志 SHA-256：
+`7cdd325ba154bf2bc6e2c4f4f63477e2dc466991f4f28e08ff4463c5703ce269`。
+Python 跳过和 Rust ignored 均不计为通过，父仓库本批不推送。
+
+r272 通过独立服务 Makefile 构建启用 OBMM 的 AArch64 静态 CLI，替换
+r259 initramfs 中的服务程序，其余平台输入保持原基线；构建和镜像检查均通过。
+新镜像 `managed-replay-r272.cpio.gz` SHA-256：
+`205c5a89b738cd976d88d202225e6e1d69c3894be91f60ba90478684d0b4eee0`。
+
+r273 实际两 guest 使用相同 64 KiB、三轮、seed=41、64 项幂等表及 16 MiB
+aperture。第三轮 generation=7 已完成真实映射、两段 V2 发布与 seal，越过
+r259 的 mapping BEGIN 容量失败点。随后同步对象 `ref-done-3` generation=9
+因 `address_capacity` 被拒绝，worker 记录 empty cancel 与确认后将其退役。
+整轮 13:23:06 至 13:24:21 UTC，exit 1、无 OOM；不能计为三轮或百轮通过。
+失败时实际统计为 `idempotency_used=23`、`cleanup_reserved=2`、`available=39`、
+`reservation_deficit=0`、`history_records=59`、`history_failed=0`，表容量仍为 64。
+worker 停止时保留 `reconciliation_required=1`，不能据此声称残留资源已回收。
+guest 的 init 随失败退出产生相应 panic，原始失败保留，未过滤为成功。
+
+失败证据归档 `replay-guest-evidence-r273-failed.tar.gz` 为 109,307 bytes，
+SHA-256：`6f3888583385bdad527d5ef1cbb4703ddf0f6ec04d710259f96057619f07e28e`。
+原作业结束后未发现遗留 QEMU。首个幂等历史限制已被实际越过，地址重用、
+完整恢复及全部后续验收仍需继续实现；不扩大 aperture 或改低百轮要求。
