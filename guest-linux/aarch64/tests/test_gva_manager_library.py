@@ -226,8 +226,6 @@ int main(void) {
     @unittest.skipUnless(platform.system() == "Linux", "requires Linux UAPI")
     def test_old_sdk_uapi_explicitly_rejects_inventory(self):
         sdk = ROOT / "mem_service/kernel_ub/include/uapi"
-        if "OBMM_CMD_GSVA_ENUMERATE" in (sdk / "ub/obmm.h").read_text():
-            self.skipTest("standalone SDK already includes inventory UAPI")
         program = '''
 #include "gva_manager.h"
 #include <assert.h>
@@ -239,8 +237,12 @@ int main(void) {
 '''
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "old-sdk-inventory"
+            # Keep exercising the missing-ioctl build profile after the SDK
+            # adopts enumeration. Header guards prevent its reintroduction.
+            profile = pathlib.Path(directory) / "old-profile.h"
+            profile.write_text('#include <ub/obmm.h>\n#undef OBMM_CMD_GSVA_ENUMERATE\n')
             built = subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                "-I", str(LIB), "-I", str(sdk), "-x", "c", "-",
+                "-I", str(LIB), "-I", str(sdk), "-include", str(profile), "-x", "c", "-",
                 str(LIB / "gva_manager.c"), "-o", str(binary)], input=program,
                 capture_output=True, text=True, timeout=30)
             self.assertEqual(built.returncode, 0, built.stderr)

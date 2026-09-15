@@ -395,6 +395,16 @@ retired 库存仍可见。最终 Python 579 项、574 通过、5 跳过；Rust 9
 16 ignored。kernel 未发布，父仓库平台 pin 未更新；生产 reconciliation、
 fencing/rejoin 继续未完成。原失败和最终证据见实施记录 r419-r428。
 
+2026-09-15 执行补记：独立服务 `e4bc52a` 已持久化 worker 的内核实例身份，
+新增只读 `reconcile-allocation-state`，将日志与一致 kernel segment/export
+库存关联。r436 完整服务回归为 297 通过、5 跳过、零失败；修正前的 vendored
+指纹遗漏保留原失败证据。仅授权服务分支已发布，本地 gitlink/lock 已同步。
+r435 实际双 guest 在 worker 崩溃后核对成功，跨内核日志被明确拒绝，原日志
+不变；214 条原始回执已独立复核。r433 下游 Python 为 574 通过、5 跳过。
+r434 Rust workspace 为 963 通过、16 ignored，零失败，43 个目标与基线一致。
+本次核对仍不执行资源回收或解除隔离；生产 fencing/rejoin、worker 恢复和
+完整故障矩阵尚未完成，详见实施记录 r429-r436。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
@@ -1005,7 +1015,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
 | M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r331 正常 unmap、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2 整轮通过；当前锁定服务 1f39f2a | 多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | r380 实际隔离保留资源；e6f261e 补齐 checkpoint；1f39f2a 补齐 worker 持久身份；r418 实际 daemon 重启与 worker 崩溃后身份保留、直接重启拒绝通过 | 生产 reconciliation、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a 保存 worker 内核出生身份；r435 实际 worker 崩溃后 segment/export 核对、跨内核日志拒绝及隔离保留通过 | 生产恢复协调、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

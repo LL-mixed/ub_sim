@@ -105,6 +105,8 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
             result = subprocess.run([str(golden)], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("gva_worker_transaction=pass", result.stdout)
+            self.assertIn("gva_worker_kernel_reconcile=pass cases=8 descriptor_bytes=72 startup_guard=1",
+                          result.stdout)
             self.assertIn("gva_worker_durable_ledger=pass identity=1 corruption=1 torn=1 writer_lock=1",
                           result.stdout)
             config = pathlib.Path(directory) / "worker.conf"

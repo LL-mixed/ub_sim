@@ -4592,3 +4592,80 @@ home 枚举出六条 retired 与一条 active 记录；peer 显式返回零条�
 本批补齐 kernel segment 库存接口与实际核对证据。worker 日志自动 reconciliation、
 映射和设备在途排空、生产 fencing、业务对象回收及重新加入继续未完成。
 不将 CLI 只读核对或单个无 backing segment 的退役计为完整 M3 恢复验收。
+
+## 2026-09-15：worker 内核出生身份与库存关联（r429-r436 子项验证）
+
+候选 worker 在创建首帧和刷新 provider 前，从平台枚举取得 kernel_instance。
+日志 v2 将该 16-byte 身份编码进每帧，拒绝零身份、跨帧变化与旧 v1 格式。
+同步的两份 UAPI 与 kernel `d9492ed29eb8` 逐字节一致。
+新增 `reconcile-allocation-state --config` 只读完整日志与一致内核库存，按
+generation 保留最后阶段及最后已知 segment/export，核对已发布绑定与退役记录。
+缺失、忙碌、未知操作阶段、跨内核及身份冲突拒绝；未认领库存单独计数。
+结果只涵盖 segment/export records，始终保留 fencing_verified=0 和
+reconciliation_required=1；未接通 worker 恢复、业务重新准入或物理回收。
+
+r429 的指定远端定向测试通过：4 项 worker 构建/事务及 4 项日志测试，覆盖
+8 种库存响应、72-byte segment 逐字节冲突及旧内核启动前拒绝。r431 的
+worker ASan/UBSan、原生 CLI、安装态 SDK、九份契约清单及存储边界检查
+exit 0。新增跨帧身份不匹配断言也包含在 r431 的受测源码中。
+
+r430 全部 302 个唯一 test ID 已执行，5 项既有环境跳过。唯一失败的测试为
+vendored checksum 检查，其两个子断言指出新 UAPI 未同步来源与固定指纹。
+这是本轮遗漏，原失败日志保留；不能按两个失败 test ID 扣减通过总数。
+补齐 VENDORED.md 的 kernel 来源提交和两份 SHA 后，本地仅运行已确认轻量的
+3 项 repository contract 测试，全部通过。最终源码的完整远端重跑为
+`gva-worker-kernel-full-r436-0` 至 `-15`，本段写入时已启动，尚未验收。
+此时尚未提交或推送新服务版本，父仓库 gitlink/lock 仍保持 `1f39f2a`。
+实际 guest 的 worker 崩溃核对与跨内核日志拒绝观察器已准备，尚未执行。
+
+随后候选实现本地提交为 `e4bc52a317aac47126ea7c77a2ea4a24684cebc2`，
+独立服务工作树干净；r436 尚在运行，因此未推送，也未更新父仓库锁定。
+
+最终 r436 全部 16 分片正常退出、无 OOM，302 个唯一 test ID 精确覆盖原
+301 项及新增日志出生身份测试；297 通过、5 项既有环境跳过，零失败/错误。
+结果 JSON SHA-256：
+`dd2d6dfc41bb22b0ff89a7697b71eaa639cb50ee1a6a7b39ad86740248cddfe9`。
+服务提交 `e4bc52a` 随后仅推送至已授权分支，ls-remote 核验完整 SHA 一致；
+父仓库本地 gitlink/lock 已同时更新，源码锁检查通过，父仓库未推送。
+
+r432 于 13:01:46 至 13:02:04 UTC 构建新 guest 镜像，exit 0、无 OOM。
+镜像 SHA-256 为
+`a6380e4447a8e0b60bb1a5777b38dfe93128ee74016a8acefb28dde96ab9e8cd`，
+worker 二进制 SHA-256 为
+`74cea72fe71cf80e4e68192460c9ca97281a370ae12237b5e97d93ed515e0a96`。
+内核与 driver 沿用匹配且已验证的 r422，QEMU 沿用 r359；未更换平台 gitlink。
+r433 下游 Python 全集 579 项精确覆盖基线，574 通过、5 项交叉编译器环境
+跳过，零失败/错误/加载错误。旧 SDK 缺少枚举的测试改为显式编译配置，
+SDK 升级不会使其自动跳过。
+
+r435 于 13:03:15 至 13:04:59 UTC 完成实际双 guest 用例，容器 exit 0、
+无 OOM。保留正常共享、两次 daemon 重启隔离与 worker 崩溃拒绝直接重启
+断言；新增两个节点的只读核对：home 的已发布对象匹配实际 export，peer
+明确零库存，home 另外六条历史 retired 记录计为未认领，未执行回收。
+同一节点日志的 kernel_instance 与实际枚举完全相同，两个 guest 的身份不同。
+把 peer 的真实 worker-start 日志复制到 home 的独立诊断文件，用对应原配置
+核对时返回 kernel-instance-mismatch；业务日志未修改。
+
+214 条原始命令回执、15 个 descriptor 字段、日志前后 SHA 与失败退出码均
+独立复核通过；原额外无 backing segment 分配/退役断言继续通过，库存修订
+53、54、55，旧 query 拒绝且 retired 记录保留。observer_exit=0，正常诊断
+清理的 runner_exit=143，结束后无遗留 QEMU。结果 JSON SHA-256：
+`4e6fea73a91856aecb9a7ad2c4bbcc75fbf3a36d7754ce1987dfd4df1fb4b5e8`。
+结果明确 full_recovery_verified=false、production_fencing_verified=false。
+r434 Rust workspace 于 13:10:43 UTC 正常结束，exit 0、无 OOM。43 个
+harness 的名称与逐项计数匹配基线：963 通过、16 ignored、零失败。
+Rust 原日志 SHA-256：
+`df078398e1465c0ccdd8b6ca552d8ba66abe245a0c3872ebd43407ba274b3ac3`。
+
+核对 38 个原作业终态，并将 17 份当前源文件与 guest 构建目录逐字节核对。
+159 项源码、完整测试执行清单、原失败、guest 原始回执和终态元数据归档为
+`worker-kernel-evidence-r436.tar.gz`，3,604,802 bytes，SHA-256：
+`4a4222b121a4ea37394744e69eed06c4e9a3d04928195f29aac00635b2fbb70e`。
+清单 SHA-256：
+`842b8bef6c7a63cd10e268e648fc9454237e4a7f57eaafa1371b621d248b3449`。
+原 r430 汇总按子断言数量扣减通过数；独立补充计数明确为 296 个测试通过、
+1 个测试失败（两个子断言）、5 个跳过，原文件保留。最终 r436 无该失败。
+
+本批完成 worker 出生身份和只读物理记录核对子项。后续必须继续接通 service
+恢复协调、映射与计算排空证明、worker 恢复及失联节点重新加入；不将匹配成功
+当作资源可释放、payload 可恢复或完整 M3 完成的证明。

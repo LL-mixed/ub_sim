@@ -22,6 +22,8 @@ static uint64_t kernel_address = 0x700000000000ULL;
 static bool fail_next_sync;
 static const struct mem_service_client_allocation *direct_work;
 static struct mem_service_client_allocation polled_work;
+static struct obmm_cmd_gsva_enumerate_v1 kernel_record;
+static unsigned inventory_mode, inventory_calls;
 
 int __real_fsync(int fd);
 int __wrap_fsync(int fd)
@@ -53,12 +55,35 @@ int __wrap_close(int fd)
 int __wrap_ioctl(int fd, unsigned long op, ...)
 {
     va_list args;
-    struct obmm_cmd_gsva_aperture *aperture;
-    assert(drive_worker_loop && fd == 42 && op == OBMM_CMD_GSVA_APERTURE_QUERY);
+    void *argument;
+    assert(drive_worker_loop && fd == 42);
     va_start(args, op);
-    aperture = va_arg(args, struct obmm_cmd_gsva_aperture *);
+    argument = va_arg(args, void *);
     va_end(args);
-    *aperture = (struct obmm_cmd_gsva_aperture){.base = 0x700000000000ULL,
+    if (op == OBMM_CMD_GSVA_ENUMERATE) {
+        struct obmm_cmd_gsva_enumerate_v1 *reply = argument;
+        uint64_t previous = reply->cursor;
+        inventory_calls++;
+        if (inventory_mode == 8 || (inventory_mode == 6 && previous)) {
+            errno = inventory_mode == 8 ? ENOTTY : ESTALE;
+            return -1;
+        }
+        memset(reply, 0, sizeof(*reply));
+        if (inventory_mode && inventory_mode != 3 && !previous) {
+            *reply = kernel_record;
+            reply->flags = OBMM_GSVA_ENUM_ENTRY;
+            reply->cursor = reply->desc.segment_id & ((1ULL << 48) - 1);
+            if (inventory_mode == 4) reply->export_token_id++;
+            if (inventory_mode == 5) reply->resource_flags |= OBMM_GSVA_RESOURCE_EXPORT_BUSY;
+            if (inventory_mode == 7) { reply->desc.segment_id++; reply->cursor++; }
+        } else { reply->flags = OBMM_GSVA_ENUM_END; reply->cursor = previous; }
+        reply->version = 1;
+        reply->revision = 1;
+        reply->kernel_instance[0] = inventory_mode == 2 ? 2 : 1;
+        return 0;
+    }
+    assert(op == OBMM_CMD_GSVA_APERTURE_QUERY);
+    *(struct obmm_cmd_gsva_aperture *)argument = (struct obmm_cmd_gsva_aperture){.base = 0x700000000000ULL,
         .size = 0x1000000, .node_count = 2, .flags = OBMM_GSVA_APERTURE_F_ACTIVE};
     return 0;
 }
@@ -230,7 +255,8 @@ int __wrap_mem_service_client_retire_object(
 int main(void)
 {
     struct worker_config config = {.node = "nodeA", .incarnation = 7,
-                                  .allocation_granularity_bytes = 2097152};
+                                  .allocation_granularity_bytes = 2097152,
+                                  .kernel_instance = {1}};
     struct mem_service_client client = {0};
     struct obmm_cmd_gsva_aperture aperture = {.base = 0x700000000000ULL, .size = 0x10000000};
     struct mem_service_client_allocation work = {
@@ -513,6 +539,11 @@ int main(void)
         drive_worker_loop = true;
         empty_cancel = true;
         mode = GOOD;
+        inventory_mode = 8;
+        assert(mem_service_provider_obmm_serve_allocations(config_path) == 1);
+        assert(access(state_path, F_OK) < 0 && errno == ENOENT);
+        assert(allocated == before && !loop_polls);
+        inventory_mode = 0;
         assert(!mem_service_provider_obmm_serve_allocations(config_path));
         assert(allocated == before + 1);
         drive_worker_loop = false;
@@ -534,10 +565,48 @@ int main(void)
                     assert(entry.reservation.segment.segment_id && entry.reservation.segment.epoch);
                     assert(entry.reservation.exported.mem_id && entry.reservation.exported.tokenid);
                     assert(entry.reservation.descriptor.len == 96);
+                    kernel_record = (struct obmm_cmd_gsva_enumerate_v1){
+                        .desc = entry.reservation.segment,
+                        .resource_flags = OBMM_GSVA_RESOURCE_ADDRESS_RESERVED,
+                        .export_mem_id = entry.reservation.exported.mem_id,
+                        .export_token_id = entry.reservation.exported.tokenid};
+                    assert(reconcile_resource(&entry, &entry.reservation, &kernel_record));
+                    for (size_t n = 0; n < sizeof(kernel_record.desc); n++) {
+                        struct obmm_cmd_gsva_enumerate_v1 bad = kernel_record;
+                        ((unsigned char *)&bad.desc)[n] ^= 1;
+                        assert(!reconcile_resource(&entry, &entry.reservation, &bad));
+                    }
+                    {
+                        struct worker_ledger_entry retired = entry;
+                        struct obmm_cmd_gsva_enumerate_v1 actual = kernel_record;
+                        strcpy(retired.phase, "reclaimed");
+                        actual.desc.flags = (actual.desc.flags & ~OBMM_GSVA_SEG_F_ACTIVE) |
+                                             OBMM_GSVA_SEG_F_RETIRED;
+                        actual.resource_flags = actual.export_mem_id = actual.export_token_id = 0;
+                        assert(reconcile_resource(&retired, &entry.reservation, &actual));
+                        actual.resource_flags = OBMM_GSVA_RESOURCE_ADDRESS_RESERVED;
+                        assert(!reconcile_resource(&retired, &entry.reservation, &actual));
+                        strcpy(retired.phase, "release-intent");
+                        assert(!reconcile_resource(&retired, &entry.reservation, &kernel_record));
+                    }
                     found_published = true;
                 }
             }
             assert(found_published);
+            assert(lseek(fd, 0, SEEK_SET) == 0 && !ledger_read_entry(fd, 1, &saved, &entry));
+            saved.kernel_instance[15] ^= 1;
+            assert(ledger_read_entry(fd, 2, &saved, &entry));
+            saved.kernel_instance[15] ^= 1;
+            drive_worker_loop = true;
+            for (inventory_mode = 1; inventory_mode <= 8; inventory_mode++) {
+                inventory_calls = 0;
+                int reconciled = mem_service_provider_obmm_reconcile_allocation_state(config_path);
+                assert(reconciled == (inventory_mode == 1 ? 0 : 1));
+                assert(inventory_calls);
+            }
+            inventory_mode = 0;
+            drive_worker_loop = false;
+            puts("gva_worker_kernel_reconcile=pass cases=8 descriptor_bytes=72 startup_guard=1");
             saved.incarnation++;
             assert(lseek(fd, 0, SEEK_SET) == 0 && ledger_read_entry(fd, 1, &saved, &entry));
             assert(!fcntl(fd, F_SETLK, &lock));
