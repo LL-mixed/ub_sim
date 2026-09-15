@@ -2,7 +2,32 @@
 #define LLM_INFER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+struct llm_infer_range_identity {
+    uint64_t node, layer_start, layer_end, next_node;
+    uint64_t pipeline_nodes, total_layers, hidden_bytes;
+};
+
+struct llm_infer_result_view {
+    uint64_t offset, bytes, model_checksum, service_checksum;
+};
+
+struct llm_infer_range_result {
+    struct llm_infer_result_view hidden, kv;
+    uint64_t input_checksum, output_tensor_checksum, range_checksum, real_layers;
+};
+
+/* Decode an already completed and CPU-visible result under the caller's SDK
+ * lease. Offsets are relative to the allocation, not this CPU view. Never
+ * copies payloads, maps memory, publishes references or grants access. An
+ * error clears out. The serialized metadata layout is shared by both models.
+ * The caller verifies whole-result integrity. Numerical layer/tensor checksum
+ * metadata may differ from the serialized hidden payload's model_checksum. */
+int llm_infer_decode_range_result(const void *result, size_t result_bytes,
+    uint64_t allocation_offset, const struct llm_infer_range_identity *expected,
+    struct llm_infer_range_result *out);
 
 uint64_t llm_infer_qwen3_pipeline_nodes(void);
 uint64_t llm_infer_qwen3_total_layers(void);

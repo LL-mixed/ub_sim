@@ -6,6 +6,7 @@
 #include "lingqu_shmem_pto_endpoint.h"
 #include "lingqu_shmem_sim.h"
 #include "w5_managed_model_guest.h"
+#include "components/llm_infer/llm_infer.h"
 #include "components/mem_service/mem_service_client.h"
 #include "components/mem_service/mem_service_mapping_owner.h"
 #include "components/mem_service/mem_service_object_contract.h"
@@ -1382,6 +1383,22 @@ static int model_output_callback(void *opaque,
     if (rc) return rc;
     if (mem_service_provider_checksum64(bytes + MODEL_OUTPUT_OFFSET, length) != checksum)
         return -EIO;
+    const struct llm_infer_range_identity expected = {
+        .node = 0, .layer_start = 1, .layer_end = 2, .next_node = 1,
+        .pipeline_nodes = 2, .total_layers = 28, .hidden_bytes = MODEL_HIDDEN_BYTES,
+    };
+    struct llm_infer_range_result result;
+    rc = llm_infer_decode_range_result(bytes + MODEL_OUTPUT_OFFSET, length,
+        MODEL_OUTPUT_OFFSET, &expected, &result);
+    if (rc) return rc;
+    if (!result.kv.bytes) return -EPROTO;
+    printf("MANAGED_MODEL_VIEWS node=%u hidden_offset=%" PRIu64
+        " hidden_bytes=%" PRIu64 " hidden_checksum=%016" PRIx64
+        " kv_offset=%" PRIu64 " kv_bytes=%" PRIu64 " kv_checksum=%016" PRIx64
+        " real_layers=%" PRIu64 " payload_copies=0 status=pass\n",
+        state->config.node, result.hidden.offset, result.hidden.bytes,
+        result.hidden.service_checksum, result.kv.offset, result.kv.bytes,
+        result.kv.service_checksum, result.real_layers);
     /* No write is permitted in the gap or beyond the serialized result. */
     for (uint64_t i = W5_MANAGED_MODEL_CONTROL_BYTES; i < MODEL_OUTPUT_OFFSET; ++i)
         if (bytes[i] != 0xa5) return -EIO;

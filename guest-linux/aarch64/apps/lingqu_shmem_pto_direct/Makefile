@@ -28,8 +28,10 @@ ifeq ($(MANAGED),1)
 MEM_SERVICE_COMPONENT := $(MEM_SERVICE_ROOT)/components/mem_service
 HEADERS += lingqu_shmem_pto_managed.h lingqu_shmem_pto_cpu_probe.h
 HEADERS += $(LIB_DIR)/w5_managed_model_guest.h
+HEADERS += $(AARCH64_ROOT)/components/llm_infer/llm_infer.h
 SOURCES += \
 	lingqu_shmem_pto_managed.c \
+	$(AARCH64_ROOT)/components/llm_infer/llm_infer.c \
 	$(LIB_DIR)/w5_managed_model_guest.c \
 	$(LIB_DIR)/lingqu_shmem_mem_service.c \
 	$(LIB_DIR)/lingqu_shmem_mem_service_obmm.c \

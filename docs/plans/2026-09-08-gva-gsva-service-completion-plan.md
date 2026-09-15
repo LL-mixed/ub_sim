@@ -478,6 +478,18 @@ consumer 0、ND 262144-byte backing、只读 V2 输入、单请求及无故障�
 逻辑模型配置为两节点、range `[1,2)`、非 terminal 输出。r500 已通过实际双
 guest 的 V2 映射、模型调用、原 completion、双端输出校验与对象回收；runner
 配置透传及独立日志验收已接通。此单层诊断不关闭 W5 serving/PP/decode 门禁。
+
+受管理结果解析续作：公共 `llm_infer_decode_range_result` 从完成后的 CPU
+视图解析 hidden/KV，返回原 allocation 内的 offset、长度及两类 payload
+checksum；不复制 payload，不授予引用访问权限。接口核对显式表指针、完整
+entry checksum、预期 range 身份和边界，并保留模型数值 metadata。数值层
+checksum 与序列化 payload checksum 的含义分开，禁止强制二者相等。实际
+model probe 在 SDK CPU lease 内调用该接口；V2 stage/seal、下游 reader
+重新 acquire/map 以及 W5 serving-loop 接入仍为后续必要工作。
+r511 实际双 guest 及原日志独立复核通过：hidden 2048 bytes、KV 8232 bytes
+均来自原 allocation，校验值与数值 oracle 一致，原 completion 和回收门禁
+保持通过。r513 Python 全集 585 通过、5 环境跳过；r510 Rust 全集 973 通过、
+16 ignored，均零失败。失败记录与当前验收边界详见实施记录，本项不关闭 M2。
 实际接入修正了两个夹具未覆盖的问题：SDK adopt 清空原 mapping 后，检查必须
 经 owner 的活动 lease 执行；provider 回调地址使用 `ub_gm_base + view_offset`，
 与 runtime tensor aperture 分开校验，不能假设两种地址相等。

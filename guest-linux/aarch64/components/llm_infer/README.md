@@ -13,6 +13,24 @@ Qwen3 ownership:
 - `mem_service` consumes these helpers through `mem_service_qwen3.c`; it should
   not parse Qwen3 model/topology environment variables directly.
 
+Managed model-result ownership:
+
+- `llm_infer.h/.c` decode the existing Rust range-result serialization into
+  allocation-relative hidden/KV subviews, without copying payloads or selecting
+  a provider. The caller supplies the completed result's bounded CPU view and
+  the expected dispatch coordinates, and retains its SDK CPU lease while
+  decoding. Returned offsets alone grant no mapping or publication authority.
+- Check the authoritative range-table pointer, entry checksum, coordinates,
+  payload lengths and serialized KV checksum before returning either subview.
+  Whole-result integrity remains the caller's provider/completion obligation;
+  the probe checks its independently generated whole-result oracle first.
+  Numerical layer/tensor checksums depend on the execution path. Keep those
+  numerical metadata checksums separate from serialized payload checksums. Keep
+  positional model checksums separate from byte-only Memory Service checksums.
+- The existing `lingqu_shmem_pto_direct --managed-config` model probe consumes
+  this decoder under its output owner's CPU lease. This is output decoding;
+  V2 staging/sealing and the W5 serving-loop handoff remain separate operations.
+
 Build and validation entrypoints:
 
 - `scripts/build_initramfs.sh` links `llm_infer.c` into `/bin/linqu_llm_infer`.

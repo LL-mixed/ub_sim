@@ -5008,3 +5008,46 @@ serving loop、跨 range 输出发布、两模型 PP/decode、多 home 及总计
 114 项，包含 13 个作业终态、原始失败/成功日志、测试执行清单、配置及源码；
 不含模型权重或网络审计原日志。SHA-256：
 `d3ddd1dcbdc4e96f72a874a7afeb28a92abf4b2fafd7c77102ce68f18181cf41`。
+
+## 2026-09-16：受管理模型结果的 hidden/KV 子视图
+
+公共 `llm_infer_decode_range_result` 已接入现有 managed model probe 的 SDK
+CPU lease 回调。它直接解析完成后的有界结果，返回原 allocation 内的 hidden/KV
+offset、长度、positional payload checksum 和 Memory Service checksum；
+没有创建 payload 副本、legacy arena 或新的 provider 选择入口。显式 range
+表指针、18-word entry checksum、预期 range 坐标、尺寸和 KV checksum 均须
+通过后才返回子视图，失败时清空结果。数值层/tensor checksum 单独保留。
+构建入口增加公共组件链接，组件头文件纳入依赖及 initramfs 构建签名。
+
+真实运行 r511 于 2026-09-15 17:42:34 至 17:44:16 UTC 完成，容器和原 runner
+均 exit 0、无 OOM，容器内未遗留 QEMU。沿用 r500 同一权重、QEMU 和 callable
+指纹；更新的 r509 guest image SHA-256 为
+`4801021989f9a317dc2c0dd0f26fc2e7beb135a8b3c69785b46de475b92896f3`。
+完整输出保持 54680 bytes、checksum `1bb986f7936fb3c0`。home 与 consumer
+分别在有效 CPU lease 内得到同一组 allocation-relative 子视图：
+
+| 输出 | offset | bytes | Memory Service checksum |
+| --- | ---: | ---: | --- |
+| hidden | 60784 | 2048 | `189eaef393d6a4f5` |
+| KV | 62832 | 8232 | `cc5e4f424d8ac3e5` |
+
+独立复核用 r484 留存数值产物逐字节重算这两个 checksum，并检查 completion、
+解析、可见性、owner 排空的顺序。原 V2 输入、两次 LOAD、一次 STORE/FENCE、
+控制面零 payload 计数及最终资源归零门禁继续通过；6 个关键源码 SHA 与本地
+一致。此结果仅关闭模型结果子视图解析子项，未验证 V2 输出 stage/seal、下游
+acquire/map 或完整 W5 serving/PP/decode。总计划及 M2 保持进行中。
+
+失败与回归记录：r505 因错误要求 final-layer checksum 等于 output-tensor
+checksum，拒绝真实产物；修复保留不同数值语义并增加回归。r508 全集发现两个
+原生夹具缺少公共组件 include path，原记录保留；仅补齐测试构建路径后，r513
+先通过原失败夹具，再完成全部 590 个唯一 test ID：585 通过、5 环境跳过、
+零失败/错误/加载错误。相对 r502 无遗漏，新增 7 项结果解析测试；2/3/8 节点
+及 28/43 层参数覆盖使用合成 codec 夹具，不计为实际多模型推理验收。
+r510 Rust 完整 workspace 43 个测试目标为 973 通过、16 ignored、零失败；
+与 r497 的完整 workspace 清单一致，排除 r497 前置定向测试的 9 个 harness。
+
+证据归档 `out/w5-managed-result-evidence-r514.tar.gz` 为 16046629 bytes，
+包含 31 项有 SHA-256 的证据和 manifest：失败/成功日志、配置、源码 overlay、
+7 个作业终态及完整测试清单。归档 SHA-256：
+`c8360fc44862125a12ed053e05e07efd2d058098d2b91bdf50d7a8efbc39bb11`。
+权重与网络审计原日志未打包；父仓库及平台子模块均未推送。

@@ -375,6 +375,7 @@ current_initramfs_signature() {
   write_signature_line "mem_service_qwen3_engram_wait_flow_src" "$MEM_SERVICE_QWEN3_ENGRAM_WAIT_FLOW_SRC"
   write_signature_line "mem_service_qwen3_src" "$MEM_SERVICE_QWEN3_SRC"
   write_signature_line "llm_infer_src" "$LLM_INFER_SRC"
+  write_signature_line "llm_infer_header" "$ROOT_DIR/components/llm_infer/llm_infer.h"
   write_signature_line "run_app_src" "$RUN_APP_SRC"
   write_signature_line "init_script_src" "$INIT_SCRIPT_SRC"
   write_signature_line "rdinit_interactive_src" "$RDINIT_INTERACTIVE_SRC"
@@ -756,6 +757,7 @@ mkdir -p "$OBMM_ASYNC_COROUTINE_BUILD_DIR"
   "$LINGQU_SHMEM_PTO_DIRECT_WIRE_SRC" \
   "$LINGQU_SHMEM_PTO_DIRECT_ENDPOINT_SRC" \
   "$LINGQU_SHMEM_PTO_MANAGED_SRC" \
+  "$LLM_INFER_SRC" \
   "$W5_MANAGED_MODEL_GUEST_SRC" \
   "$MEM_SERVICE_MAPPING_OWNER_SRC" \
   "$LINGQU_SHMEM_MEM_SERVICE_SRC" "$LINGQU_SHMEM_MEM_SERVICE_OBMM_SRC" \
