@@ -1,0 +1,282 @@
+"""Compile the actual home registry; no VM, model, network or large allocation."""
+import pathlib
+import re
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+ROOT = pathlib.Path(__file__).resolve().parents[3]
+QEMU = ROOT / "vendor/qemu_8.2.0_ub"
+
+
+class GsvaHomeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        compiler = shutil.which("cc")
+        if not compiler:
+            raise unittest.SkipTest("requires C compiler")
+        cls.directory = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.directory.cleanup)
+        directory = pathlib.Path(cls.directory.name)
+        (directory / "qemu").mkdir()
+        (directory / "qemu/osdep.h").write_text(r"""
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <inttypes.h>
+#define QEMU_PACKED __attribute__((packed))
+#define g_try_new0(type, n) ((type *)calloc(n, sizeof(type)))
+#define g_free free
+""")
+        (directory / "qemu/log.h").write_text("#define qemu_log(...) ((void)0)\n")
+        cls.binary = directory / "gsva-home"
+        program = r"""
+#include "hw/ub/gsva_home.h"
+_Static_assert(sizeof(GsvaHomeIdentity) == 88, "identity wire size");
+_Static_assert(sizeof(GsvaHomeRequest) == 112, "registration wire size");
+static GsvaHomeRequest original(void) {
+    return (GsvaHomeRequest){.version = 1, .operation = GSVA_HOME_BIND,
+        .identity = {.key = {.version = 1, .segment_id = 1,
+            .home_va = 0x700000000000ULL, .size = 65536, .epoch = 1},
+            .home_cna = 7, .token_id = 2, .token_value = 3,
+            .backing_token_id = 97}, .export_mem_id = 2,
+        .access_flags = GSVA_HOME_ACCESS_READ | GSVA_HOME_ACCESS_WRITE};
+}
+static int acquire(GsvaHomeTable *t, const GsvaHomeIdentity *i, bool write,
+                   GsvaHomeBinding **pin) {
+    return gsva_home_acquire(t, 7, i, i->key.home_va, 8, write, pin);
+}
+int main(int argc, char **argv) {
+    assert(argc == 2);
+    GsvaHomeTable table = {0};
+    GsvaHomeRequest old = original(), next = old, bad;
+    GsvaHomeBinding *pin = NULL, *second = NULL;
+    next.identity.key.segment_id = 4;
+    next.identity.token_id = 5;
+    next.identity.token_value = 6;
+    assert(acquire(&table, &old.identity, false, &pin) != GSVA_OK && !pin);
+    assert(gsva_home_update(&table, 7, &old) == GSVA_OK);
+    if (!strcmp(argv[1], "reuse")) {
+        assert(acquire(&table, &old.identity, false, &pin) == GSVA_OK);
+        old.operation = GSVA_HOME_REVOKE;
+        assert(gsva_home_update(&table, 7, &old) == GSVA_ERR_COH_PENDING);
+        assert(acquire(&table, &old.identity, false, &second) == GSVA_ERR_SEGMENT_RETIRED);
+        assert(!second);
+        assert(gsva_home_update(&table, 7, &next) == GSVA_ERR_COH_PENDING);
+        gsva_home_release(pin);
+        assert(gsva_home_update(&table, 7, &old) == GSVA_OK);
+        assert(gsva_home_update(&table, 7, &next) == GSVA_OK);
+        assert(acquire(&table, &old.identity, false, &pin) == GSVA_ERR_SEGMENT_RETIRED);
+        assert(!pin);
+        assert(acquire(&table, &next.identity, true, &pin) == GSVA_OK);
+        gsva_home_release(pin);
+        assert(gsva_home_update(&table, 7, &old) == GSVA_OK);
+        old.operation = GSVA_HOME_BIND;
+        assert(gsva_home_update(&table, 7, &old) == GSVA_ERR_SEGMENT_RETIRED);
+        assert(acquire(&table, &next.identity, true, &pin) == GSVA_OK);
+        gsva_home_release(pin);
+    } else if (!strcmp(argv[1], "identity")) {
+        /* Every packed identity byte is authoritative, including size/epoch. */
+        for (size_t i = 0; i < sizeof(old.identity); ++i) {
+            bad = old;
+            ((uint8_t *)&bad.identity)[i] ^= 1;
+            assert(acquire(&table, &bad.identity, false, &pin) != GSVA_OK);
+            assert(!pin);
+        }
+        bad = old; bad.export_mem_id++;
+        assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_KEY_MISMATCH);
+        bad.operation = GSVA_HOME_REVOKE;
+        assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_KEY_MISMATCH);
+        bad = old; bad.identity.key.epoch++;
+        assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_KEY_MISMATCH);
+        assert(acquire(&table, &old.identity, false, &pin) == GSVA_OK);
+        gsva_home_release(pin);
+    } else if (!strcmp(argv[1], "bounds")) {
+        assert(gsva_home_acquire(&table, 8, &old.identity,
+            old.identity.key.home_va, 8, false, &pin) == GSVA_ERR_TOKEN_DENIED);
+        const uint64_t ranges[][2] = {{UINT64_MAX, 8}, {0, 0},
+            {old.identity.key.home_va - 1, 8},
+            {old.identity.key.home_va + 65535, 2}};
+        for (size_t i = 0; i < sizeof(ranges) / sizeof(ranges[0]); ++i) {
+            assert(gsva_home_acquire(&table, 7, &old.identity,
+                ranges[i][0], ranges[i][1], false, &pin) == GSVA_ERR_STRICT_ADDRESS);
+            assert(!pin);
+        }
+        assert(gsva_home_acquire(&table, 7, &old.identity,
+            old.identity.key.home_va + 65535, 1, false, &pin) == GSVA_OK);
+        gsva_home_release(pin);
+        assert(gsva_home_overlaps(&table, old.identity.key.home_va - 1, 2));
+        assert(!gsva_home_overlaps(&table, old.identity.key.home_va - 8, 8));
+        assert(gsva_home_overlaps(&table, UINT64_MAX, 8));
+        old.operation = GSVA_HOME_REVOKE;
+        assert(gsva_home_update(&table, 7, &old) == GSVA_OK);
+        assert(gsva_home_overlaps(&table, old.identity.key.home_va, 8));
+    } else if (!strcmp(argv[1], "registration")) {
+        assert(gsva_home_update(&table, 7, &old) == GSVA_OK);
+        assert(gsva_home_update(&table, 8, &old) == GSVA_ERR_TOKEN_DENIED);
+        assert(gsva_home_update(&table, 7, &next) == GSVA_ERR_COH_PENDING);
+        next.identity.key.home_va += 131072;
+        next.access_flags = GSVA_HOME_ACCESS_READ;
+        assert(gsva_home_update(&table, 7, &next) == GSVA_OK);
+        assert(acquire(&table, &next.identity, true, &pin) == GSVA_ERR_TOKEN_DENIED);
+        assert(acquire(&table, &next.identity, false, &pin) == GSVA_OK);
+        gsva_home_release(pin);
+        bad = next; bad.access_flags = GSVA_HOME_ACCESS_READ | GSVA_HOME_ACCESS_WRITE;
+        assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_KEY_MISMATCH);
+        bad = next; bad.identity.key.segment_id++; bad.operation = GSVA_HOME_REVOKE;
+        assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_ROUTE_MISSING);
+        bad = next; bad.reserved = 1;
+        assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_BAD_VERSION);
+    } else {
+        assert(!"unknown test case");
+    }
+    gsva_home_destroy(&table);
+    assert(!table.bindings);
+    return 0;
+}
+"""
+        result = subprocess.run(
+            [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror",
+             "-I", str(directory), "-I", str(QEMU), "-x", "c", "-",
+             str(QEMU / "hw/ub/gsva_home.c"), str(QEMU / "hw/ub/gsva_key.c"),
+             "-o", str(cls.binary)], input=program, text=True,
+            capture_output=True, timeout=15)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+
+    def run_case(self, case):
+        result = subprocess.run([str(self.binary), case], capture_output=True,
+                                text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_same_backing_token_reuse_and_inflight_revoke(self):
+        self.run_case("reuse")
+
+    def test_every_identity_byte_and_export_lifetime(self):
+        self.run_case("identity")
+
+    def test_bounds_wrong_home_and_legacy_tombstone(self):
+        self.run_case("bounds")
+
+    def test_registration_conflicts_and_read_only(self):
+        self.run_case("registration")
+
+    def test_kernel_export_publication_and_revoke_failures(self):
+        kernel = ROOT / "guest-linux/kernel_ub"
+        source = (kernel / "drivers/ub/obmm/obmm_core.c").read_text()
+        uapi = (kernel / "include/uapi/ub/gsva.h").read_text()
+        declarations = "\n".join(re.search(
+            r"struct " + name + r" \{.*?\n\};", uapi, re.S)[0]
+            for name in ("obmm_gsva_segment_desc_v1", "obmm_cmd_gsva_export_segment_v1"))
+        functions = "static int obmm_gsva_export_segment(" + source.split(
+            "static int obmm_gsva_export_segment(", 1)[1].split(
+            "static int obmm_gsva_retire_segment(", 1)[0]
+        program = r"""
+#include <stdint.h>
+#include <stdbool.h>
+#include <assert.h>
+#include <string.h>
+#include <errno.h>
+typedef uint32_t u32, __u32;
+typedef uint64_t u64, __u64;
+typedef int32_t __s32;
+#define OBMM_GSVA_ABI_VERSION 1
+#define OBMM_GSVA_EXPORT_F_FAST 1
+#define OBMM_GSVA_EXPORT_UNKNOWN 0
+#define OBMM_GSVA_EXPORT_CREATED 1
+#define OBMM_GSVA_EXPORT_NO_BACKING 2
+#define OBMM_GSVA_SEG_F_ACTIVE 4
+#define OBMM_GSVA_SEG_F_RETIRED 8
+#define OBMM_EXPORT_FLAG_ALLOW_MMAP 1
+#define OBMM_EXPORT_FLAG_GSVA_FIXED_UBA 2
+#define OBMM_EXPORT_FLAG_FAST 4
+#define SIM_DEC_GSVA_HOME_BIND 1
+#define SIM_DEC_GSVA_HOME_REVOKE 2
+""" + declarations + r"""
+struct obmm_gsva_segment {
+    struct obmm_gsva_segment_desc_v1 desc;
+    bool export_busy;
+    u64 managed_export_id;
+    u32 managed_export_token;
+};
+struct obmm_cmd_export { u64 length, size[1], uba, flags, mem_id; u32 tokenid; };
+static struct obmm_gsva_segment segment;
+static int obmm_gsva_segment_lock, pool_error, home_error;
+static bool locked, unbacked;
+static unsigned calls;
+static void mutex_lock(int *lock) { (void)lock; assert(!locked); locked = true; }
+static void mutex_unlock(int *lock) { (void)lock; assert(locked); locked = false; }
+static struct obmm_gsva_segment *obmm_gsva_find_segment_by_id(u64 id)
+{ assert(locked); return id == segment.desc.segment_id ? &segment : NULL; }
+static struct obmm_gsva_segment *obmm_gsva_find_segment_by_va(u64 address)
+{ assert(locked); return address == segment.desc.home_va ? &segment : NULL; }
+static int obmm_export_from_pool_checked(struct obmm_cmd_export *request, bool *no_backing)
+{
+    assert(!locked && segment.export_busy);
+    assert(request->size[0] == segment.desc.size && request->uba == segment.desc.home_va);
+    *no_backing = unbacked;
+    if (!pool_error) { request->mem_id = 2; request->tokenid = 97; }
+    return pool_error;
+}
+static int obmm_gsva_home_update(const struct obmm_gsva_segment_desc_v1 *desc,
+                                u64 mem_id, u32 token, u32 operation)
+{
+    assert(!locked && segment.export_busy && segment.managed_export_id == 2);
+    assert(!memcmp(desc, &segment.desc, sizeof(*desc)) && mem_id == 2 && token == 97);
+    assert(operation == 1 || operation == 2);
+    calls++;
+    return home_error;
+}
+""" + functions + r"""
+int main(void) {
+    for (int failure = 0; failure < 3; ++failure) {
+        segment = (struct obmm_gsva_segment){.desc = {.version = 1,
+            .flags = OBMM_GSVA_SEG_F_ACTIVE, .segment_id = 1,
+            .home_va = 0x700000000000ULL, .size = 2097152}};
+        struct obmm_cmd_gsva_export_segment_v1 cmd = {.version = 1, .segment = segment.desc};
+        calls = 0; home_error = failure ? -EIO : 0;
+        pool_error = failure == 2 ? -ENOMEM : 0; unbacked = failure == 2;
+        assert(obmm_gsva_export_segment(&cmd) == 0);
+        assert(!locked && !segment.export_busy);
+        if (failure == 2) {
+            assert(cmd.outcome == OBMM_GSVA_EXPORT_NO_BACKING && !calls);
+            assert(!segment.managed_export_id && !cmd.export_mem_id);
+            continue;
+        }
+        assert(calls == 1 && segment.managed_export_id == 2);
+        assert(segment.managed_export_token == 97 && cmd.export_mem_id == 2);
+        assert(cmd.outcome == (failure ? OBMM_GSVA_EXPORT_UNKNOWN : OBMM_GSVA_EXPORT_CREATED));
+        assert(cmd.error == (failure ? EIO : 0));
+        assert(obmm_gsva_export_segment(&cmd) == -EBUSY);
+        home_error = -EBUSY;
+        assert(obmm_gsva_export_revoke(segment.desc.home_va, 2) == -EBUSY);
+        assert(segment.managed_export_id == 2 && !segment.export_busy);
+        assert(obmm_gsva_export_revoke(segment.desc.home_va, 3) == -ESTALE);
+        home_error = 0;
+        assert(obmm_gsva_export_revoke(segment.desc.home_va, 2) == 0);
+        assert(segment.managed_export_id == 2);
+        obmm_gsva_export_released(segment.desc.home_va, 3);
+        assert(segment.managed_export_id == 2);
+        obmm_gsva_export_released(segment.desc.home_va, 2);
+        assert(!segment.managed_export_id && !segment.managed_export_token);
+        segment.export_busy = true;
+        assert(obmm_gsva_export_revoke(segment.desc.home_va, 2) == -EBUSY);
+    }
+    return 0;
+}
+"""
+        binary = pathlib.Path(self.directory.name) / "kernel-export"
+        result = subprocess.run(
+            [shutil.which("cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+             "-x", "c", "-", "-o", str(binary)], input=program, text=True,
+            capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

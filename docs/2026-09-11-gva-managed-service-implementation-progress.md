@@ -3988,3 +3988,77 @@ CPU/PTO 的受管理数据请求携带并核对该身份；不扩大地址池掩
 告警调查及 SSH/SCP 握手超时的记录与功能失败分开；只重试观察/传输，
 r337/r338/r339 未重复启动。诊断能力已有测试，实际旧身份拒绝仍失败，
 M2/AM3 和完整目标保持未完成，其他模型、故障、恢复及性能门禁未缩减。
+
+### r340-r348：home 权威 export 绑定与旧 descriptor CPU 拒绝
+
+修复在 kernel/QEMU 平台边界完成，独立服务保持已发布 ff2d50c，CLI 与
+旧 descriptor 探针不变。home kernel 用新增本机 SIM_DEC 0x10/v1 登记
+112-byte 请求：完整 GSVA key、home、token ID/value、backing token、实际
+export mem ID 与 READ/WRITE 权限。确认登记才返回 CREATED；不确定登记
+保留真实 export 和 UNKNOWN。unexport 先关闭绑定，再排空访问和撤销 backing。
+QEMU strict CPU/PTO 使用 128-byte v2 帧逐次核对 home 绑定，失败不回退
+token-only；旧 v1/普通 SIM_DEC 拒绝访问已登记区间。退役身份保持 tombstone，
+同址重用必须获得新 segment。长期历史容量、设备 reset 和跨进程恢复仍待补齐。
+
+新增轻量测试编译真实 home registry、kernel checked export/revoke 函数及
+实际 RX/CPU 边界，覆盖逐字节身份不匹配、同址/backing token 重用、在途排空、
+权限、范围、旧 wire、登记失败资源保留与撤销重试。最终 11 项 GSVA 定向用例
+通过。r340 容器因只读父目录上新增文件挂载失败，构建未开始；r340b 改为
+完整合并目录挂载后构建通过。首版测试 fixture 的权限位误用已纠正为实际
+READ=1、WRITE=2，最终源码及完整回归为 r344/r345，保留早期记录。
+
+远端验证结果（2026-09-15 UTC）：
+
+- r342：01:32:38 至 01:37:53，完整 kernel Image/modules 及配套 driver
+  构建 exit 0、无 OOM；在另一指定验证目标构建后传至 guest 验证目标。
+  未安装宿主内核。Image SHA-256：
+  `17f1bd2d7078e3d364412fac3263de0252e6c5d739be1f30fb0e003bfcae5194`。
+  完整构建日志 SHA-256：
+  `0cb793e7ce34fedf43061f5c4a7ba68b19d70891d257ae26485e7c3e81b62dab`。
+- r344：01:39:45 至 01:40:07，项目 QEMU 构建入口及 45 项底层测试通过，
+  exit 0。实际 QEMU SHA-256：
+  `2b11b3e63fb78dc11197b91a467213ff84ce8abf40312b6cf83373cd185c8b59`。
+- r345：01:39:46 至 01:41:16，父仓库完整 Python 精确覆盖 564 个唯一
+  test ID，559 通过、5 环境跳过、零失败/错误/加载错误，exit 0、无 OOM。
+  结果 SHA-256：
+  `37936d014d4ef3c372c96b751f98ec7a3b272b107addfb01f5e7859312d7590c`。
+- r343：01:36:37 至 01:45:32，完整 Rust workspace 的 43 个外层 harness
+  为 963 通过、16 ignored、零失败，exit 0、无 OOM。结果 SHA-256：
+  `b238cf6d018425b7fd9de66f0667b157e3833dc487a65a6e637e0a3151f387fe`。
+- r346：guest image 构建通过；CLI、worker、run_app、PTO 程序及 driver
+  六项文件与 r336 manifest 一致，CPU 诊断程序与验收条件未改变。
+  `managed-home-r346.cpio.gz` SHA-256：
+  `e89cbf92417643b839372d922799e6bb6b6a355279b866d34677f1371e7bc403`。
+
+r347 在 01:46:15 至 01:47:28 完成真实双 guest，exit 0、无 OOM。
+旧 generation/segment=1、新 generation/segment=4，同址且 backing token=97、
+export mem ID=2 再用。原探针得到 `map_result=0 signal=7 unmap_confirmed=1`，
+与 r339 的 signal=0 明确区分；随后重新映射新对象、完整 checksum 及双方
+session/provider/kernel 资源归零均通过。实际 6 次 BIND 与 6 次 REVOKE
+成功。原始日志独立 validator 复核通过；结束后确认无遗留 QEMU。
+报告 SHA-256：
+`dfc7be2f71a57d1476f54b120f7aa600eb92de2bd327fe87ef7cb8ec657efb0f`。
+原始日志及构建/测试证据归档 `home-evidence-r347.tar.gz` 为 2,476,077 bytes，
+SHA-256：
+`426b21230f1c18792c2f8a3e8226a3c89d800018bfe6e0aa27cebbe07332def0`。
+已核对远端与本地 out 指纹一致；kernel 构建日志另存 out/kernel-build-r342.log。
+
+r348 为反向 home、tail 65,024-byte、四线程、只读 V2 输入双请求正常 PTO
+回归。01:48:14 至 01:58:26 原容器 exit 1、无 OOM，runner 报 nodeA 启动
+等待超时；两台 guest 串口均为 0 bytes，尚未到达 home 绑定或对象访问。
+原作业自行结束，随后确认无遗留 QEMU；未因观察超时重启。旧通过 r286 的
+容器环境和挂载已对照，未发现缺项；启动根因待进一步诊断，该轮保持失败。
+旧 CPU 缺陷已有直接通过证据，正常 PTO、错误身份矩阵、reset/restart、
+W5、M3-M5 及完整计划仍未完成。平台子仓库未推送、父仓库平台 gitlink 未更新。
+
+本批 kernel 已本地提交 `817581416fe2d5e0309f89e6363a671d0c6f01c7`，
+QEMU 已本地提交 `ed0aef86e296e3e842a8a23c9cbeff20e5254564`。
+送测快照中的 13 个实现/测试文件与提交前工作树逐字节一致。提交未包含
+其他任务修改、嵌套子模块或构建产物；两个平台仓库均未推送。
+
+r349 仅增加 earlycon 诊断，双方串口明确出现
+`Kernel panic - not syncing: Too many boot env vars at linqu_node_idx`。
+Linux INIT_ENV_ARG_LIMIT=32；当前用户态 object-share 参数继续占用 init
+环境槽位，新增 aperture 参数后触及上限。此失败发生在对象服务启动前。
+下一修复将该组用户态参数放入带点的私有命名空间，从 /proc/cmdline 读取，
+保留旧参数读取兼容，增加组合参数容量及解析测试；不增加内核环境表容量。

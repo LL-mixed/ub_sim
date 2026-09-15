@@ -34,8 +34,11 @@ typedef int MemTxAttrs;
 #define MEMTX_ACCESS_ERROR 2
 #define GSVA_OK 0
 #define qemu_log(...) ((void)0)
+typedef struct { uint64_t size; } GsvaKeyV1;
+typedef struct { GsvaKeyV1 key; uint32_t home_cna, token_id, token_value,
+                 backing_token_id; } GsvaHomeIdentity;
 typedef struct {
-  struct { uint64_t size; } key;
+  GsvaKeyV1 key;
   struct { uint32_t token_id, token_value; } token;
   uint32_t home_cna, backing_token_id;
   uint64_t map_id, remote_uba;
@@ -48,8 +51,12 @@ static int gsva_route_validate_token(const GsvaRouteEntry *route, uint32_t cna,
 { (void)route; assert(cna == 7 && id == 2 && value == 3 && (access == 1 || access == 2));
   return token_error; }
 static MemTxResult ubc_sim_dec_remote_io(void *dev, uint64_t address, uint32_t token,
-    uint32_t cna, uint8_t *bytes, unsigned size, bool strict, bool write)
+    uint32_t cna, uint8_t *bytes, unsigned size, bool strict, bool write,
+    const GsvaHomeIdentity *identity)
 { assert(dev && address == 0x700000000000ULL && token == 97 && cna == 7 && strict);
+  assert(identity && identity->key.size == 4096 && identity->home_cna == 7 &&
+         identity->token_id == 2 && identity->token_value == 3 &&
+         identity->backing_token_id == 97);
   if (write) { writes++; assert(bytes[0] == 0x6b); }
   else { reads++; memset(bytes, 0x5a, size); }
   return io_error; }
@@ -100,7 +107,8 @@ int main(void) {
         source = (QEMU / "ub_ubc.c").read_text()
         header = (ROOT / "vendor/qemu_8.2.0_ub/include/hw/ub/ub_ubc.h").read_text()
         declarations = []
-        for name in ("UBCSimDecReadReqPld", "UBCGsvaIoReq", "UBCSimDecReadRespPldHdr"):
+        for name in ("UBCSimDecReadReqPld", "UBCGsvaIoReq", "UBCGsvaIoV2Req",
+                     "UBCSimDecReadRespPldHdr"):
             declarations.append(re.search(r"typedef struct QEMU_PACKED " + name +
                                          r" \{.*?\n\} " + name + ";", header, re.S)[0])
         function = source.split("void ubc_handle_gsva_io(", 1)[1].split(
@@ -123,7 +131,26 @@ int main(void) {
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 typedef int MemTxResult;
 #define MEMTX_OK 0
-typedef struct { bool ummu; } BusControllerDev;
+#define MEMTX_ACCESS_ERROR 2
+#define GSVA_OK 0
+typedef struct QEMU_PACKED { uint8_t key[72]; uint32_t home_cna, token_id, token_value,
+                 backing_token_id; } GsvaHomeIdentity;
+typedef struct { int unused; } GsvaHomeBinding;
+typedef struct { bool ummu; struct { uint32_t cna; } parent; int gsva_home; } BusControllerDev;
+static GsvaHomeBinding home_pin;
+static int home_error;
+static bool legacy_overlap;
+static unsigned acquired, released;
+static int gsva_home_acquire(int *table, uint32_t cna, const GsvaHomeIdentity *identity,
+                            uint64_t address, uint64_t length, bool write,
+                            GsvaHomeBinding **pin)
+{ (void)table; (void)address; (void)length; (void)write;
+  assert(cna == 7 && identity->token_id == 2); acquired++;
+  *pin = home_error ? NULL : &home_pin; return home_error; }
+static void gsva_home_release(GsvaHomeBinding *pin)
+{ assert(pin == &home_pin); released++; }
+static bool gsva_home_overlaps(int *table, uint64_t address, uint64_t length)
+{ (void)table; (void)address; (void)length; return legacy_overlap; }
 typedef struct { int unused; } UBLinkState;
 static UBLinkState link;
 static unsigned transfers, replies;
@@ -148,7 +175,7 @@ static int ubc_send_msg_over_link(BusControllerDev *dev, UBLinkState *active,
   replies++; memset(output, 0, sizeof(output)); memcpy(output, bytes, len); return 0; }
 """ + "\n".join(declarations) + "\n" + limits + "\nvoid ubc_handle_gsva_io(" + function + r"""
 int main(void) {
-  BusControllerDev dev = {.ummu = true};
+  BusControllerDev dev = {.ummu = true, .parent = {.cna = 7}};
   uint8_t bytes[sizeof(UBCGsvaIoReq) + 8] = {0};
   UBCGsvaIoReq *io = (UBCGsvaIoReq *)bytes;
   UBCSimDecReadRespPldHdr *response = (UBCSimDecReadRespPldHdr *)output;
@@ -207,7 +234,7 @@ int main(void) {
   }
   transfers = replies = 0;
   tensor->write = 0;
-  tensor->request.read_len = UBC_GSVA_IO_CHUNK_MAX + 1;
+  tensor->request.read_len = UBC_SIM_DEC_MAX_MSG_PAYLOAD - sizeof(*tensor) + 1;
   ubc_handle_gsva_io(&dev, packet, sizeof(*tensor), 8);
   tensor->request.read_len = 256;
   tensor->request.remote_uba = UINT64_MAX - 128;
@@ -216,6 +243,27 @@ int main(void) {
   tensor->write = 1;
   ubc_handle_gsva_io(&dev, packet, sizeof(*tensor) + 255, 8);
   assert(!transfers && !replies);
+  UBCGsvaIoV2Req *v2 = (UBCGsvaIoV2Req *)packet;
+  memset(packet, 0, sizeof(packet));
+  expected_len = 8;
+  v2->io = (UBCGsvaIoReq){.magic = UBC_GSVA_IO_MAGIC, .version = 2,
+      .request = {.req_id = 99, .token_id = 97,
+          .remote_uba = expected_address, .read_len = expected_len}};
+  v2->identity.token_id = 2;
+  v2->identity.backing_token_id = 97;
+  ubc_handle_gsva_io(&dev, packet, sizeof(*v2), 8);
+  assert(transfers == 1 && replies == 1 && acquired == 1 && released == 1);
+  home_error = 1;
+  ubc_handle_gsva_io(&dev, packet, sizeof(*v2), 8);
+  assert(transfers == 1 && replies == 2 && acquired == 2 && released == 1);
+  assert(response->status == 1 && !response->data_len);
+  home_error = 0;
+  v2->identity.backing_token_id++;
+  ubc_handle_gsva_io(&dev, packet, sizeof(*v2), 8);
+  assert(transfers == 1 && replies == 3 && acquired == 2);
+  v2->io.version = 1; legacy_overlap = true;
+  ubc_handle_gsva_io(&dev, packet, sizeof(v2->io), 8);
+  assert(transfers == 1 && replies == 4 && response->status == 1);
   return 0;
 }
 """
@@ -236,10 +284,13 @@ int main(void) {
         qemu = (QEMU / "ub_ubc.c").read_text()
         key = (QEMU / "gsva_key.h").read_text()
         declarations = []
-        for name in ("sim_dec_gsva_key_v1", "sim_dec_gsva_map_req", "sim_dec_gsva_map_v2_req"):
+        for name in ("sim_dec_gsva_key_v1", "sim_dec_gsva_map_req",
+                     "sim_dec_gsva_map_v2_req", "sim_dec_gsva_home_req"):
             declarations.append(re.search(r"struct " + name + r" \{.*?\n\};", kernel, re.S)[0])
         for name, source in (("GsvaKeyV1", key), ("SimDecGsvaMapReq", qemu),
-                             ("SimDecGsvaMapV2Req", qemu)):
+                             ("SimDecGsvaMapV2Req", qemu),
+                             ("GsvaHomeIdentity", (QEMU / "gsva_home.h").read_text()),
+                             ("GsvaHomeRequest", (QEMU / "gsva_home.h").read_text())):
             declarations.append(re.search(r"typedef struct QEMU_PACKED " + name +
                                          r" \{.*?\n\} " + name + ";", source, re.S)[0])
         program = """
@@ -247,6 +298,8 @@ int main(void) {
 #include <stddef.h>
 typedef uint32_t __u32;
 typedef uint64_t __u64;
+typedef uint32_t u32;
+typedef uint64_t u64;
 #define QEMU_PACKED __attribute__((packed))
 """ + "\n".join(declarations) + """
 _Static_assert(sizeof(SimDecGsvaMapReq) == 140, "old QEMU payload");
@@ -258,6 +311,14 @@ _Static_assert(offsetof(struct sim_dec_gsva_map_v2_req, export_token_id) == 144,
                "kernel export token");
 _Static_assert(offsetof(SimDecGsvaMapReq, token_id) ==
                offsetof(struct sim_dec_gsva_map_req, token_id), "lease token");
+_Static_assert(sizeof(GsvaHomeRequest) == 112, "home registration");
+_Static_assert(sizeof(struct sim_dec_gsva_home_req) == 112, "kernel registration");
+_Static_assert(offsetof(struct sim_dec_gsva_home_req, export_mem_id) == 96,
+               "export lifetime offset");
+_Static_assert(offsetof(GsvaHomeRequest, export_mem_id) == 96, "matching lifetime");
+_Static_assert(offsetof(GsvaHomeRequest, identity) +
+               offsetof(GsvaHomeIdentity, token_value) ==
+               offsetof(struct sim_dec_gsva_home_req, token_value), "matching credential");
 """
         with tempfile.TemporaryDirectory() as directory:
             result = subprocess.run([compiler, "-Wall", "-Wextra", "-Werror", "-x", "c",

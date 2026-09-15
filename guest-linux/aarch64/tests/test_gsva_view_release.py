@@ -21,14 +21,16 @@ class GsvaViewReleaseTests(unittest.TestCase):
 #include <assert.h>
 #define MEMTX_ACCESS_ERROR 9
 typedef int MemTxResult;
+typedef struct { int unused; } GsvaHomeIdentity;
 typedef struct { uint32_t gsva_strict_io_depth; bool gsva_unmap_in_progress; } BusControllerDev;
 static unsigned calls;
 static bool nested;
 static int result;
 static MemTxResult ubc_sim_dec_remote_io(BusControllerDev *, uint64_t, uint32_t,
-    uint32_t, uint8_t *, uint32_t, bool, bool);
+    uint32_t, uint8_t *, uint32_t, bool, bool, const GsvaHomeIdentity *);
 static MemTxResult ubc_sim_dec_remote_io_body(BusControllerDev *dev, uint64_t addr,
-    uint32_t token, uint32_t cna, uint8_t *data, uint32_t len, bool strict, bool write)
+    uint32_t token, uint32_t cna, uint8_t *data, uint32_t len, bool strict, bool write,
+    const GsvaHomeIdentity *identity)
 {
     calls++;
     assert(addr==4096 && token==97 && cna==7 && data && len==8);
@@ -37,7 +39,7 @@ static MemTxResult ubc_sim_dec_remote_io_body(BusControllerDev *dev, uint64_t ad
      * There is no per-response pending flag left at this point. */
     if (strict && !nested) {
         nested=true;
-        assert(ubc_sim_dec_remote_io(dev,addr,token,cna,data,len,true,write)==result);
+        assert(ubc_sim_dec_remote_io(dev,addr,token,cna,data,len,true,write,identity)==result);
         nested=false;
         assert(dev->gsva_strict_io_depth==1);
     }
@@ -49,20 +51,20 @@ int main(void) {
     BusControllerDev dev={0}; uint8_t data[8]={0};
     for (unsigned i=0;i<4;i++) {
         result=(i & 1) ? 17 : 0;
-        assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,true,i & 2)==result);
+        assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,true,i & 2,0)==result);
         assert(!dev.gsva_strict_io_depth);
     }
     assert(calls==8);
     dev.gsva_unmap_in_progress=true;
-    assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,true,false)==MEMTX_ACCESS_ERROR);
+    assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,true,false,0)==MEMTX_ACCESS_ERROR);
     assert(!dev.gsva_strict_io_depth && calls==8);
     dev.gsva_unmap_in_progress=false; dev.gsva_strict_io_depth=UINT32_MAX;
-    assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,true,false)==MEMTX_ACCESS_ERROR);
+    assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,true,false,0)==MEMTX_ACCESS_ERROR);
     assert(dev.gsva_strict_io_depth==UINT32_MAX && calls==8);
     dev.gsva_strict_io_depth=0;
-    assert(ubc_sim_dec_remote_io(0,4096,97,7,data,8,true,false)==MEMTX_ACCESS_ERROR);
+    assert(ubc_sim_dec_remote_io(0,4096,97,7,data,8,true,false,0)==MEMTX_ACCESS_ERROR);
     assert(calls==8);
-    assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,false,false)==result);
+    assert(ubc_sim_dec_remote_io(&dev,4096,97,7,data,8,false,false,0)==result);
     assert(calls==9 && !dev.gsva_strict_io_depth);
     return 0;
 }

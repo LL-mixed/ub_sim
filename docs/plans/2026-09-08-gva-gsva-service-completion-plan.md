@@ -221,6 +221,26 @@ r332-r339：上述诊断已接通并实际运行。服务 `ff2d50c` 已验证、
 在途请求还需真实运行验证，不能仅加本地 descriptor 自校验。原失败日志、
 测试清单及源码指纹见实施记录 r332-r339。
 
+home 绑定接口约定：新增本机 SIM_DEC `0x10` / v1 控制操作，112-byte
+请求登记完整 72-byte key、home CNA、GSVA token ID/value、backing token、
+export mem ID 和 GSVA READ/WRITE 权限位。仅 home kernel 的 checked export
+成功登记后返回 CREATED；登记确认丢失保留实际 export 身份与 UNKNOWN。
+unexport 在物理撤销前先关闭该绑定，在途访问未排空时返回 busy 并保留 backing。
+CPU/PTO strict I/O 使用 128-byte v2 请求头，保留旧 v1 前缀，逐次核对当前
+home 绑定；旧 v1 和普通 SIM_DEC token-only 请求不得访问已登记的 managed
+区间。binding tombstone 保留在当前 QEMU 生命周期内，原身份不能重新激活。
+此接口仍需实际旧 descriptor、正常 CPU/PTO 与故障矩阵验证；跨进程重启、
+设备 reset 的绑定 reconciliation、token rotation 和长期历史容量仍待完成。
+
+r340-r348：home 权威绑定及 strict I/O v2 已实现。r347 保持 r339 的原
+CLI、探针和判据，实际双 guest 中旧 descriptor 读取产生 SIGBUS（signal=7），
+随后新对象重新映射、完整数据校验及最终资源回收通过。当前 kernel 完整构建、
+45 项 QEMU 单元、父仓库 Python 559 通过/5 跳过及 Rust 963 通过/16 ignored
+均完成。r348 正常 V2/PTO 回归在 guest 启动阶段超时，两个串口日志为空，
+尚未进入对象访问；原作业已结束且无遗留 QEMU，继续诊断，未计为通过。
+该结果关闭本次旧 descriptor CPU 访问缺陷，不关闭正常 PTO 回归、完整身份
+故障矩阵、重启/reset、W5 或总目标。来源与指纹见实施记录 r340-r348。
+
 r323-r331 已补齐上述正常 unmap 子项：独立服务 `4236654` 已按授权
 发布并本地锁定；独立 Python 281 通过、5 跳过，父仓库 Python 548
 通过、5 跳过，完整 Rust 963 通过、16 ignored，均零失败。真实双 guest
@@ -874,7 +894,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 控制面拒绝及 r331 正常 unmap 故障通过；当前服务 ff2d50c；r339 暴露旧 descriptor 实际 CPU 访问未被拒绝 | home 完整身份与 export 绑定校验待修复；多 home、两模型 2/3/8 节点及故障矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r331 正常 unmap、r347 home 绑定后的旧 descriptor CPU 拒绝通过；当前服务 ff2d50c | r348 正常 PTO 启动超时待诊断；多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
 | M3 回收与恢复 | 进行中 | 正常回收及意图保留已实现；持久幂等历史与批量归档有测试 | 重启 reconciliation、故障 fencing、失联节点重新加入矩阵未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
