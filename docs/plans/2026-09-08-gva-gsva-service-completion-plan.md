@@ -274,6 +274,12 @@ reset，关闭 2 个活动绑定，随后远端 CPU 读失败并报告 reconcili
 原正常 PTO runner 保持 exit 1；该诊断未证明故障后的回收、重新加入或推理恢复。
 完整 M3、其他身份故障矩阵及总目标保持未完成，来源见实施记录 r359-r363。
 
+故障对账观测约定：managed 客户端失败时，在停止本节点 worker 前后分别
+通过既有 CLI 读取 allocation stats、provider directory 和 kernel region
+统计，再停止测试控制面。每项查询使用独立的 5 秒上限并记录退出码；
+查询失败表示未知，不能改写为零资源或掩盖原客户端失败。快照为非原子观察，
+不输出 descriptor/token，不执行 reclaim 或其他恢复变更，不构成恢复完成证明。
+
 r323-r331 已补齐上述正常 unmap 子项：独立服务 `4236654` 已按授权
 发布并本地锁定；独立 Python 281 通过、5 跳过，父仓库 Python 548
 通过、5 跳过，完整 Rust 963 通过、16 ignored，均零失败。真实双 guest

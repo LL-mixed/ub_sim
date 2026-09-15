@@ -1421,6 +1421,23 @@ mem_service_object_share_retired() (
   /bin/linqu_mem_service object-session --config "$config"
 )
 
+mem_service_object_share_failure_snapshot() (
+  connect="$1"
+  node="$2"
+  phase="$3"
+  echo "mem_service failure-snapshot: node=$node phase=$phase consistency=non_atomic"
+  for operation in allocation-stats provider-directory-status; do
+    query_result=0
+    /bin/busybox timeout 5 /bin/linqu_mem_service "$operation" --connect "$connect" \
+      || query_result=$?
+    echo "mem_service failure-query: node=$node phase=$phase operation=$operation exit_code=$query_result"
+  done
+  query_result=0
+  /bin/busybox timeout 5 /bin/linqu_gva_manager --dump-obmm-regions \
+    || query_result=$?
+  echo "mem_service failure-query: node=$node phase=$phase operation=kernel-regions exit_code=$query_result"
+)
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -1453,6 +1470,10 @@ mem_service_object_share_managed() (
   fi
   echo "mem_service address-pool: aperture_size=$aperture_size policy=kernel-selected"
   cleanup_managed_share() {
+    client_result=$?
+    if [ "$client_result" -ne 0 ]; then
+      mem_service_object_share_failure_snapshot "$connect" "$node" before-worker-stop
+    fi
     if [ -n "$capacity_pid" ]; then
       kill "$capacity_pid" 2>/dev/null || true
       wait "$capacity_pid" 2>/dev/null || true
@@ -1461,10 +1482,14 @@ mem_service_object_share_managed() (
       kill "$worker_pid" 2>/dev/null || true
       wait "$worker_pid" 2>/dev/null || true
     fi
+    if [ "$client_result" -ne 0 ]; then
+      mem_service_object_share_failure_snapshot "$connect" "$node" after-worker-stop
+    fi
     if [ -n "$daemon_pid" ]; then
       kill "$daemon_pid" 2>/dev/null || true
       wait "$daemon_pid" 2>/dev/null || true
     fi
+    return "$client_result"
   }
   trap cleanup_managed_share EXIT
   # Self-connections to the node's configured address use the local route.

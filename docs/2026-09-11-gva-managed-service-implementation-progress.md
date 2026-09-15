@@ -4172,3 +4172,56 @@ bytes，SHA-256：
 `19c830b4c7643a486b176fddbfc96e7d9c430c624f2f9c45f533faff6b9bee7f`。
 平台改动已在 QEMU 本地提交 `91b4cc305d`；未推送、未改父仓库平台
 gitlink。独立服务继续锁定已发布 ff2d50c，未修改服务或模型执行代码。
+
+### r364-r368：失败退出前保留实际资源对账快照
+
+managed 测试客户端失败后，run_app 在停止本节点 worker 前后各执行一次
+allocation-stats、provider-directory-status 和 kernel region census。
+每项经既有 CLI 调用，独立上限 5 秒，记录实际退出码；未知查询不会生成
+零资源快照。正常路径不额外查询，原失败退出码保留。13 项定向测试通过，
+包含 CLI 查询失败/超时、正常退出无快照及 worker/daemon 停止顺序。
+
+r364 镜像构建在 2026-09-15 07:31:41 至 07:31:43 UTC 完成，exit 0，
+沿用 r342 kernel/r359 QEMU，只更新 run_app。镜像 SHA-256：
+`ad7591a5be19db9d080c9d4466fca2eac9a138300385f405a525638b3135c490`。
+两文件源码快照 SHA-256：
+`248c5a1a8a200c08dc61d782be6afede99ef557ce09692e72b43253ab5ae322a`。
+r365 完整 Python 在 07:31:41 至 07:33:11 UTC 完成，570 个唯一用例，
+565 通过、5 项环境跳过、零失败/错误/加载错误；结果 SHA-256：
+`372191a8fcd096a2689fb2696e2e28193bc073f4bdf12a9c9d411554805ff6d9`。
+r366 完整 Rust 原作业于 07:40:33 UTC 结束，exit 0、无 OOM；逐项核对
+43 个外层 harness 与 r361 的名称和计数一致，963 通过、16 ignored、零失败。
+结果 SHA-256：
+`d1f348ab33038dce483a68f20b0399b3720a71e40b5bde49752a74cf1e59cacd`；
+原始日志 SHA-256：
+`fd28b97fd76ea704544266d69845c0e75e8f02d56d3ccd667d944235543ae74d`。
+
+r367 实际 reset 在 07:33:36 至 07:34:02 UTC 完成，正常 runner 保持
+exit 1；观察器确认关闭两条活动 home 绑定，随后客户端 Bus error。
+两组快照共六次查询均 exit 0：服务保留 2 个对象、4 MiB backing/address、
+2 个 export、4 个 import 事务与 4 个引用；compute kernel 保留 2 个 import
+共 4 MiB，另有一条 2 MiB canary export。目录就绪和 data_plane_ready 均为 0。
+quarantined_objects/bytes、managed_recovery_required 仍为 0，不能称为已
+隔离或恢复。worker 已在首组快照期间因控制请求超时退出；两个快照阶段名
+表示查询相对停止调用的顺序，不证明 worker 在第一组查询完成时仍存活。
+完整读取与字段核对结果 SHA-256：
+`618cada2779c28e6ea61033bae560308cb794d9831410ed1051403fcd829f671`。
+
+r368 正常 CPU 对照在 07:34:40 至 07:35:53 UTC 完成，exit 0；旧 descriptor
+故障、新对象数据与最终回收通过。当前新能力提供故障资源证据，尚未实现
+provider 失联、holder 所属节点与 allocation 隔离状态的持久联动；这项缺口
+已由实际运行暴露，后续需补 M3 reconciliation、重新加入与重启矩阵。
+
+归档前独立核对全部五个容器终态、Python 唯一测试清单、正常对照报告及
+reset 快照与原日志的绑定。既有 CPU 校验器的 SHA 针对 read_text() 换行
+规范化后的文本；首次采集按原始字节比较 guest 日志时拒绝，未生成归档。
+随后按实际校验器语义逐项核对，并在归档清单单独保存全部原始文件 SHA，
+没有修改原日志或原报告。r350/r364 镜像清单仅 bin/run_app 不同，正常路径
+没有失败快照；结束后进程列表中没有 QEMU。
+
+完整证据共 28 文件，`home-failure-evidence-r368.tar.gz` 为 2,627,263
+bytes，SHA-256：
+`475c74848c02694f499aa172bb49cdacb4091754e0521c2f248aab5bfa1f8dfc`。
+清单 SHA-256：
+`fe6f880c6e325ef08844f889469b9905f7618b932dd97aeecb1b49cb3c583907`。
+本批仅变更故障观测与测试，不构成 provider 失联恢复或完整 M3 验收。

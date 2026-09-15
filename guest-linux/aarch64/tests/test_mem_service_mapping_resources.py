@@ -109,6 +109,63 @@ def allocation_pressure_sample(size=65536):
 
 
 class MappingResourceValidationTests(unittest.TestCase):
+    def test_failure_snapshot_is_bounded_and_preserves_query_errors(self):
+        runner = (SCRIPT.parents[1] / "initramfs/run_app").read_text()
+        helper = "mem_service_object_share_failure_snapshot() (" + runner.split(
+            "mem_service_object_share_failure_snapshot() (", 1)[1].split(
+            "\nmem_service_object_share_managed() (", 1)[0]
+        self.assertNotIn("inspect-allocation", helper)
+        self.assertNotIn("reclaim", helper)
+        for code in (0, 7, 124):
+            with self.subTest(code=code):
+                mock = ("fake_busybox() { [ \"$1\" = timeout ] && "
+                        "[ \"$2\" = 5 ] || return 99; "
+                        "printf 'invoked: %s\\n' \"$*\"; return " + str(code) + "; }\n")
+                script = mock + helper.replace("/bin/busybox", "fake_busybox")
+                script += "\nmem_service_object_share_failure_snapshot tcp:10.0.0.1:12347 0 failed\n"
+                result = subprocess.run(["sh", "-c", script], capture_output=True,
+                                        text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.count("invoked:"), 3)
+                for operation in ("allocation-stats", "provider-directory-status",
+                                  "kernel-regions"):
+                    self.assertIn(f"operation={operation} exit_code={code}", result.stdout)
+                self.assertIn("consistency=non_atomic", result.stdout)
+
+    def test_failure_cleanup_snapshots_bracket_worker_and_keep_client_exit(self):
+        runner = (SCRIPT.parents[1] / "initramfs/run_app").read_text()
+        managed = runner.split("mem_service_object_share_managed() (", 1)[1]
+        cleanup = "cleanup_managed_share() {" + managed.split(
+            "cleanup_managed_share() {", 1)[1].split(
+            "\n  trap cleanup_managed_share EXIT", 1)[0]
+        mocks = """
+connect=tcp:10.0.0.1:12347
+node=0
+capacity_pid=
+worker_pid=42
+daemon_pid=43
+mem_service_object_share_failure_snapshot() { echo "snapshot:$3"; }
+kill() { echo "kill:$*"; }
+wait() { echo "wait:$*"; }
+"""
+        for code in (0, 1, 37, 135):
+            with self.subTest(code=code):
+                result = subprocess.run(
+                    ["sh", "-c", mocks + cleanup +
+                     "\ntrap cleanup_managed_share EXIT\nexit " + str(code)],
+                    capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, code, result.stderr)
+                if code:
+                    lines = result.stdout.splitlines()
+                    self.assertLess(lines.index("snapshot:before-worker-stop"),
+                                    lines.index("kill:42"))
+                    self.assertLess(lines.index("wait:42"),
+                                    lines.index("snapshot:after-worker-stop"))
+                    self.assertLess(lines.index("snapshot:after-worker-stop"),
+                                    lines.index("kill:43"))
+                else:
+                    self.assertNotIn("snapshot:", result.stdout)
+
     def test_provider_descriptor_checks_are_complete_and_preserve_mapping(self):
         fields = ("magic version length reserved export_id uba size export_token home_cna "
                   "segment epoch segment_flags owner nodes cache access_empty access_unknown "
