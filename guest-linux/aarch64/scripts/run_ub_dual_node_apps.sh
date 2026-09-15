@@ -3003,30 +3003,30 @@ run_iteration() {
   fi
   if [[ "$mem_service_object_share_enabled" -eq 1 ]]; then
     append_cmdline_if_missing \
-      "mem_service_object_share_backend=${MEM_SERVICE_OBJECT_SHARE_BACKEND}"
+      "mem_service.object_share_backend=${MEM_SERVICE_OBJECT_SHARE_BACKEND}"
     append_cmdline_if_missing \
-      "mem_service_object_share_access=${MEM_SERVICE_OBJECT_SHARE_ACCESS}"
+      "mem_service.object_share_access=${MEM_SERVICE_OBJECT_SHARE_ACCESS}"
     append_cmdline_if_missing \
-      "mem_service_object_share_size=${MEM_SERVICE_OBJECT_SHARE_SIZE}"
+      "mem_service.object_share_size=${MEM_SERVICE_OBJECT_SHARE_SIZE}"
     append_cmdline_if_missing \
-      "mem_service_object_share_fault=${MEM_SERVICE_OBJECT_SHARE_FAULT}"
+      "mem_service.object_share_fault=${MEM_SERVICE_OBJECT_SHARE_FAULT}"
     append_cmdline_if_missing \
-      "mem_service_object_share_iterations=${MEM_SERVICE_OBJECT_SHARE_ITERATIONS}"
+      "mem_service.object_share_iterations=${MEM_SERVICE_OBJECT_SHARE_ITERATIONS}"
     append_cmdline_if_missing \
-      "mem_service_object_share_seed=${MEM_SERVICE_OBJECT_SHARE_SEED}"
+      "mem_service.object_share_seed=${MEM_SERVICE_OBJECT_SHARE_SEED}"
     append_cmdline_if_missing \
-      "mem_service_object_share_port=${MEM_SERVICE_OBJECT_SHARE_PORT}"
+      "mem_service.object_share_port=${MEM_SERVICE_OBJECT_SHARE_PORT}"
     append_cmdline_if_missing \
-      "mem_service_object_share_incarnation=${MEM_SERVICE_OBJECT_SHARE_INCARNATION}"
+      "mem_service.object_share_incarnation=${MEM_SERVICE_OBJECT_SHARE_INCARNATION}"
     append_cmdline_if_missing \
-      "mem_service_object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}"
+      "mem_service.object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}"
     if [[ -n "$MEM_SERVICE_OBJECT_SHARE_ADDRESS" ]]; then
       append_cmdline_if_missing \
-        "mem_service_object_share_address=${MEM_SERVICE_OBJECT_SHARE_ADDRESS}"
+        "mem_service.object_share_address=${MEM_SERVICE_OBJECT_SHARE_ADDRESS}"
     fi
     if [[ -n "$MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX" ]]; then
       append_cmdline_if_missing \
-        "mem_service_object_share_descriptor_hex=${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX}"
+        "mem_service.object_share_descriptor_hex=${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX}"
     fi
     nodea_mem_service_object_share_append="linqu_node_idx=0 linqu_node_count=2"
     nodeb_mem_service_object_share_append="linqu_node_idx=1 linqu_node_count=2"
@@ -3910,6 +3910,7 @@ run_iteration() {
         --layout "$LINGQU_SHMEM_PTO_LAYOUT" \
         --access-threads "$LINGQU_SHMEM_PTO_ACCESS_THREADS" \
         --concurrent-requests "$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS" \
+        --strict-io-version 2 \
         "${recovery_args[@]}" \
         --output "${nodea_guest_log:h}/managed-pto-validation.json" || return 1
     elif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-retired" ]]; then

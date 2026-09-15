@@ -4062,3 +4062,63 @@ Linux INIT_ENV_ARG_LIMIT=32；当前用户态 object-share 参数继续占用 in
 环境槽位，新增 aperture 参数后触及上限。此失败发生在对象服务启动前。
 下一修复将该组用户态参数放入带点的私有命名空间，从 /proc/cmdline 读取，
 保留旧参数读取兼容，增加组合参数容量及解析测试；不增加内核环境表容量。
+
+### r350-r358：启动槽位修复与 strict v2 分片验收续作
+
+当前候选将全部 11 个 object-share 用户态参数改为
+`mem_service.object_share_*`，配置文件字段保持不变。guest 优先读取新键，
+兼容旧下划线键；两种顺序均有执行测试。编译实际 kernel unknown_bootoption
+验证全组新键不占 init 环境槽位、原 aperture 键在边界触发失败。launcher
+按其 zsh shebang 做语法检查，run_app 按 sh 检查，均通过。
+
+r350 镜像构建 exit 0，02:09:01 至 02:09:03 UTC，仅替换 run_app，
+平台沿用 r342/r344。镜像 SHA-256：
+`52579441fdf1955ddf891662c5b48906e674097cb200cbd71a467694583817b0`。
+启动修复快照 `managed-boot-r350.tar.gz` SHA-256：
+`bf5f49e3c31dae126751b40acaed49a38450fbb4c72331dffa85eb862c01bf29`。
+r351 完整 Python 为 565 个唯一用例，560 通过、5 环境跳过、零失败/错误，
+02:09:01 至 02:10:31 UTC，exit 0。r352 完整 Rust 原作业在 02:09:01 至
+02:17:51 UTC 结束，exit 0、无 OOM；最终汇总计数待独立收集。
+
+r353 使用新启动键运行原反向 tail 四线程 V2 双请求 PTO，02:09:39 至
+02:15:28 UTC，两个 guest 均报告 status=ok，计算、checksum 和最终资源回收
+完成；整轮 runner exit 1，原因是 validator 仍按 v1 的 4055-byte 上限
+生成分片序列。原始 QEMU 日志实际为 96 个 3967-byte 分片及 6 个 1552-byte
+尾片，符合 v2 请求头长度；原失败报告保留，不能直接改为整轮通过。
+
+r355 候选为 validator 增加显式 `--strict-io-version 1|2`；默认 v1 保留
+历史复核，当前 runner 传 v2。逐片 offset、长度、请求应答、backing/peer
+与回调总范围核对保持启用；不自动猜版本。31 项校验器测试通过，包含 v1/v2
+互相拒绝、未知版本、错位、超长、短应答和重放。快照 SHA-256：
+`9daa9a2b37917104ff64625edc8b047c9d29dd8d92e2df40b6343001d34ae036`。
+原 r353 日志已由显式 v2 配置独立复核通过：68 个读分片、34 个写分片、
+6 次回调，逐片请求应答及四线程/只读 V2/双请求/实际 home export 全部核对。
+整轮原失败状态保留。r356 最终完整 Python 在 02:20:06 至 02:21:36 UTC
+结束，567 个唯一用例，562 通过、5 环境跳过、零失败/错误/加载错误，exit 0。
+r357 完整 Rust 在 02:20:06 至 02:28:55 UTC 结束，exit 0、无 OOM。
+独立逐个核对 43 个外层 harness，963 通过、16 ignored、零失败，与前次
+预期测试目标精确一致。结果 SHA-256：
+`6ba29570b6795eb3890ed6fbee3d5b32f7567cb8b93f28970bd9c447b537f517`；
+原始日志 SHA-256：
+`3fa33dfb546520b047adf44b1b66fa7a1239e49d84b08169de4c88b48cbe0882`。
+r356 Python 结果 SHA-256：
+`c79bccdb735cdb7b8d1e1399e79ff4a29fa85d21e204f9ff76fca514f488ff2c`。
+
+r354 已用 r350 启动键和镜像重跑旧 descriptor CPU 场景，02:17:48 至
+02:19:01 UTC，原容器 exit 0、无 OOM。之后确认无遗留 QEMU，才启动 r358。
+r358 最终整轮 PTO 在 02:21:06 至 02:27:12 UTC 完成，runner/container
+均 exit 0、无 OOM，无遗留 QEMU。反向 home 1 / compute 0、tail 65,024-byte、
+四线程、只读 V2 双请求保持原配置；两请求及六条 lease、102 个 v2 分片、
+独立结果数据、CPU 写保护、实际 home export 和最终资源回收全部通过。
+报告 SHA-256：
+`36e4330ebd201e0ba73db25a5ba83f5533a65dd0b8c858c63a6554bf7da1b6e8`。
+原 r353 的独立复核报告 SHA-256：
+`fbb561f7cf0b1cf9ae1243ddf45bf04394e15942f67a6098d9c4818f9d77de78`。
+
+原始 r348/r349 启动失败、r353 校验失败、r354 CPU 成功及 r358 PTO 成功
+的全部 guest/QEMU 日志、配置和测试证据合计 45 文件，远端归档为
+`home-boot-evidence-r358.tar.gz`，128,567,665 bytes，SHA-256：
+`d51ef13395938d79588593a62a5ee532baee65cb05bc3ed769172fd5df7ac460`。
+完整原日志保留；r357 Rust 原日志与汇总单独保存。本批最终七个源码/测试
+文件与送测快照逐字节一致。启动和校验器修复达到本批提交条件，不关闭
+完整身份、重启/reset、多 home、W5、混合压力或 M3-M5，完整目标继续进行。

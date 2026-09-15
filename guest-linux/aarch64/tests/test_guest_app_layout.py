@@ -1509,8 +1509,8 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "MEM_SERVICE_OBJECT_SHARE_PORT" in apps_runner
     assert "MEM_SERVICE_OBJECT_SHARE_INCARNATION" in apps_runner
     assert "MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX" in apps_runner
-    assert "mem_service_object_share_backend=" in apps_runner
-    assert "mem_service_object_share_descriptor_hex=" in apps_runner
+    assert "mem_service.object_share_backend=" in apps_runner
+    assert "mem_service.object_share_descriptor_hex=" in apps_runner
     assert 'nodea_mem_service_object_share_append="linqu_node_idx=0 linqu_node_count=2"' in apps_runner
     assert 'nodeb_mem_service_object_share_append="linqu_node_idx=1 linqu_node_count=2"' in apps_runner
     assert '"mem_service object-share: status=ok node=0"' in apps_runner

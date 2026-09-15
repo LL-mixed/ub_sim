@@ -95,7 +95,9 @@ def validate_home_exports(text, mappings, qemu):
 
 def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
              require_negative_checks=False, require_readonly_inputs=False, layout="cross-page",
-             home_node=None, concurrent_requests=1, require_reference_inputs=False):
+             home_node=None, concurrent_requests=1, require_reference_inputs=False,
+             strict_io_version=1):
+    require(strict_io_version in (1, 2), "unsupported strict I/O wire version")
     require(not require_reference_inputs or require_readonly_inputs,
             "V2 inputs require separate read-only input objects")
     require(concurrent_requests in (1, 2), "unsupported concurrent request count")
@@ -278,7 +280,8 @@ def validate(guests, qemu, require_timeout_recovery=False, access_threads=None,
     validate_readonly_inputs(guests, maps, output_maps, requests, require_readonly_inputs, geometry,
                              reference_bytes)
     reference = validate_reference_inputs(guests, maps, require_reference_inputs, GEOMETRIES[layout])
-    transport = validate_transport_chunks(qemu, requests, geometry, concurrent_requests) if layout != "cross-page" else None
+    transport = validate_transport_chunks(qemu, requests, geometry, concurrent_requests,
+                                          strict_io_version) if layout != "cross-page" else None
     if access_threads is not None:
         if require_readonly_inputs:
             validate_readonly_owners(guests, maps, output_maps, requests,
@@ -819,7 +822,8 @@ def validate_callbacks(text, mapping, requests, output_mapping=None,
                 "TSTORE output is not the next TLOAD input")
 
 
-def validate_transport_chunks(text, requests, geometry, concurrent_requests=1):
+def validate_transport_chunks(text, requests, geometry, concurrent_requests=1,
+                              strict_io_version=1):
     """Match existing strict I/O trace pairs to the following completed callback.
 
     CPU MMIO traffic is at most eight bytes. Legacy bootstrap page reads also
@@ -830,7 +834,9 @@ def validate_transport_chunks(text, requests, geometry, concurrent_requests=1):
     The existing sender labels both reads and writes 'read send'. Classify
     direction using the matched LOAD/STORE callback, never that label.
     """
-    limit = 4055  # 4095-byte payload minus the 40-byte UBCGsvaIoReq header.
+    require(strict_io_version in (1, 2), "unsupported strict I/O wire version")
+    # Explicit build profile; never infer a version from the observed chunk size.
+    limit = 4095 - {1: 40, 2: 128}[strict_io_version]
     _, _, offsets = geometry
     peers = {(row["request"], row["binding"]): number(row, "peer_cna")
              for role in ("INPUT", "OUTPUT")
@@ -931,7 +937,8 @@ def validate_transport_chunks(text, requests, geometry, concurrent_requests=1):
             observed = []
     require(not active and pending is None and not observed and counts["callbacks"] >= 6,
             "unfinished or missing transport chunk sequence")
-    return {**counts, "chunk_limit_bytes": limit, "request_response_verified": True,
+    return {**counts, "chunk_limit_bytes": limit, "strict_io_version": strict_io_version,
+            "request_response_verified": True,
             "scope": "registered-pto-dispatches", "non_pto_bulk_sends": non_pto_bulk_sends}
 
 
@@ -950,6 +957,8 @@ def main():
     parser.add_argument("--require-readonly-inputs", action="store_true")
     parser.add_argument("--require-reference-inputs", action="store_true")
     parser.add_argument("--layout", choices=GEOMETRIES, default="cross-page")
+    parser.add_argument("--strict-io-version", type=int, choices=(1, 2), default=1,
+                        help="strict wire version of the recorded QEMU build (default: legacy v1)")
     args = parser.parse_args()
     qemu_path = args.qemu_a if args.home_node == 1 else args.qemu_b
     if qemu_path is None:
@@ -961,7 +970,8 @@ def main():
         result = validate(text[:2], text[2], args.require_timeout_recovery,
                           args.access_threads, args.require_negative_checks,
                           args.require_readonly_inputs, args.layout, args.home_node,
-                          args.concurrent_requests, args.require_reference_inputs)
+                          args.concurrent_requests, args.require_reference_inputs,
+                          args.strict_io_version)
     except (OSError, ValueError, KeyError, IndexError) as error:
         result = {"status": "fail", "error": str(error), "am2_complete": False}
     else:

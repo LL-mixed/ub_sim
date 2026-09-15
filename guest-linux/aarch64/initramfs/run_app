@@ -1446,7 +1446,7 @@ mem_service_object_share_managed() (
   esac
   [ "$fault" != "backing_capacity" ] || aperture_size=0x100000000
   [ "$fault" != "allocation_pressure" ] || aperture_size=0x4000000
-  requested_aperture="$(cmdline_value mem_service_object_share_aperture_size auto)"
+  requested_aperture="$(cmdline_value mem_service.object_share_aperture_size "$(cmdline_value mem_service_object_share_aperture_size auto)")"
   if [ "$requested_aperture" != "auto" ]; then
     [ "$fault" = "none" ] || exit 2
     aperture_size="$requested_aperture"
@@ -1697,16 +1697,16 @@ run_mem_service_object_share() {
 
   node_idx="$(cmdline_value linqu_node_idx 0)"
   node_count="$(cmdline_value linqu_node_count 2)"
-  backend="$(cmdline_value mem_service_object_share_backend loopback)"
-  access="$(cmdline_value mem_service_object_share_access cpu)"
-  size="$(cmdline_value mem_service_object_share_size 4096)"
-  fault="$(cmdline_value mem_service_object_share_fault none)"
-  iterations="$(cmdline_value mem_service_object_share_iterations 1)"
-  seed="$(cmdline_value mem_service_object_share_seed 41)"
-  port="$(cmdline_value mem_service_object_share_port 12347)"
-  incarnation="$(cmdline_value mem_service_object_share_incarnation 7)"
-  address="$(cmdline_value mem_service_object_share_address 17179869184)"
-  descriptor_hex="$(cmdline_value mem_service_object_share_descriptor_hex '')"
+  backend="$(cmdline_value mem_service.object_share_backend "$(cmdline_value mem_service_object_share_backend loopback)")"
+  access="$(cmdline_value mem_service.object_share_access "$(cmdline_value mem_service_object_share_access cpu)")"
+  size="$(cmdline_value mem_service.object_share_size "$(cmdline_value mem_service_object_share_size 4096)")"
+  fault="$(cmdline_value mem_service.object_share_fault "$(cmdline_value mem_service_object_share_fault none)")"
+  iterations="$(cmdline_value mem_service.object_share_iterations "$(cmdline_value mem_service_object_share_iterations 1)")"
+  seed="$(cmdline_value mem_service.object_share_seed "$(cmdline_value mem_service_object_share_seed 41)")"
+  port="$(cmdline_value mem_service.object_share_port "$(cmdline_value mem_service_object_share_port 12347)")"
+  incarnation="$(cmdline_value mem_service.object_share_incarnation "$(cmdline_value mem_service_object_share_incarnation 7)")"
+  address="$(cmdline_value mem_service.object_share_address "$(cmdline_value mem_service_object_share_address 17179869184)")"
+  descriptor_hex="$(cmdline_value mem_service.object_share_descriptor_hex "$(cmdline_value mem_service_object_share_descriptor_hex '')")"
   connect="tcp:10.0.0.1:$port"
 
   if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ] &&

@@ -567,7 +567,7 @@ class ReferenceGuestTests(unittest.TestCase):
                     "aperture-check", size, fault], capture_output=True,
                     text=True, timeout=5)
                 self.assertEqual(run.returncode, expected, run.stderr)
-        self.assertIn("mem_service_object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}", source)
+        self.assertIn("mem_service.object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}", source)
         guest = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
         self.assertIn("cmdline_value mem_service_object_share_aperture_size auto", guest)
         self.assertIn('aperture_size="$requested_aperture"', guest)

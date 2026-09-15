@@ -306,13 +306,15 @@ def queued_fixture(readonly=True, threads=4):
     return guests, "\n".join(headers + bodies["102"] + bodies["101"])
 
 
-def large_fixture(layout="nd", recovery=False, negative=False, readonly=True, concurrent_requests=1):
+def large_fixture(layout="nd", recovery=False, negative=False, readonly=True, concurrent_requests=1,
+                  strict_io_version=1):
     """Synthetic profile/chunk parser fixture; never actual transport evidence."""
     guests, qemu = (queued_fixture(readonly) if concurrent_requests == 2 else
                     readonly_fixture(recovery, negative) if readonly else
                     negative_fixture() if negative else owned_fixture(recovery))
     elements, object_bytes, offsets = validator.GEOMETRIES[layout]
     tensor_bytes = elements * 4
+    chunk_limit = {1: 4055, 2: 3967}[strict_io_version]
     old_offsets = validator.GEOMETRIES["cross-page"][2]
     for node, text in enumerate(guests):
         lines = []
@@ -359,9 +361,9 @@ def large_fixture(layout="nd", recovery=False, negative=False, readonly=True, co
             if prefix == "QEMU_UB_GM_GSVA_BIND":
                 bindings[key] = row
             if prefix in ("QEMU_UB_GM_LOAD", "QEMU_UB_GM_STORE"):
-                for done in range(0, tensor_bytes, 4055):
+                for done in range(0, tensor_bytes, chunk_limit):
                     chunk_id += 1
-                    size = min(4055, tensor_bytes - done)
+                    size = min(chunk_limit, tensor_bytes - done)
                     backing = bindings[key]
                     peer = authorizations[key]["peer_cna"]
                     address = int(backing["home_va"], 0) + offsets[vector] + done
@@ -696,6 +698,50 @@ class ManagedPtoValidatorTest(unittest.TestCase):
         no_chunks = "\n".join(line for line in lines if not line.startswith("ubc sim_dec "))
         with self.assertRaisesRegex(ValueError, "transport evidence"):
             validator.validate(guests, no_chunks, False, 4, True, True, "nd")
+
+    def test_v2_chunks_require_explicit_version_and_preserve_exact_ranges(self):
+        runner = (ROOT / "guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh").read_text()
+        self.assertIn("--strict-io-version 2", runner)
+        for layout in ("nd", "tail"):
+            guests, qemu = large_fixture(layout, strict_io_version=2)
+            result = validator.validate(guests, qemu, access_threads=4,
+                                        require_readonly_inputs=True, layout=layout,
+                                        strict_io_version=2)
+            self.assertEqual(result["transport_chunks"]["chunk_limit_bytes"], 3967)
+            self.assertEqual(result["transport_chunks"]["strict_io_version"], 2)
+            self.assertEqual(result["transport_chunks"]["load"], 68)
+            self.assertEqual(result["transport_chunks"]["store"], 34)
+            with self.assertRaises(ValueError):
+                validator.validate(guests, qemu, access_threads=4,
+                                   require_readonly_inputs=True, layout=layout)
+            mutations = (("len=3967 done=3967", "len=3967 done=3968"),
+                         ("len=3967 done=0", "len=4055 done=0"),
+                         ("wire_len=3967 copy_len=3967", "wire_len=3966 copy_len=3967"),
+                         ("read send req=1002", "read send req=1001"))
+            for before, after in mutations:
+                self.assertIn(before, qemu)
+                with self.subTest(layout=layout, mutation=before), self.assertRaises(ValueError):
+                    validator.validate(guests, qemu.replace(before, after, 1), access_threads=4,
+                                       require_readonly_inputs=True, layout=layout,
+                                       strict_io_version=2)
+        guests, qemu = large_fixture()
+        with self.assertRaises(ValueError):
+            validator.validate(guests, qemu, access_threads=4, require_readonly_inputs=True,
+                               layout="nd", strict_io_version=2)
+
+    def test_v2_chunk_cli_requires_selected_wire_profile(self):
+        guests, qemu = large_fixture("tail", strict_io_version=2)
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [pathlib.Path(directory) / name for name in ("a.log", "b.log", "q.log")]
+            for path, text in zip(paths, guests + [qemu]):
+                path.write_text(text)
+            command = [sys.executable, str(SCRIPT), "--node-a", str(paths[0]),
+                       "--node-b", str(paths[1]), "--qemu-b", str(paths[2]),
+                       "--require-readonly-inputs", "--access-threads", "4", "--layout", "tail"]
+            for version, expected in (("1", 1), ("2", 0), ("3", 2)):
+                checked = subprocess.run(command + ["--strict-io-version", version],
+                                         capture_output=True, text=True, timeout=5)
+                self.assertEqual(checked.returncode, expected, checked.stdout + checked.stderr)
 
     def test_large_cli_requires_profile_and_preserves_original_source_hashes(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -295,13 +295,14 @@ static const char *strnchr(const char *s, size_t n, int c) { return memchr(s, c,
 ''' + function + r'''
 int main(int argc, char **argv) {
     char fields[32][64];
-    assert(argc == 2);
+    assert(argc >= 2);
     envp_init[0] = "HOME=/"; envp_init[1] = "TERM=linux";
     for (int i = 0; i < 30; ++i) {
         snprintf(fields[i], sizeof(fields[i]), "field%d", i);
         unknown_bootoption(fields[i], "1", NULL, NULL);
     }
-    unknown_bootoption(argv[1], "1", NULL, NULL);
+    for (int i = 1; i < argc; ++i)
+        unknown_bootoption(argv[i], "1", NULL, NULL);
     snprintf(fields[30], sizeof(fields[30]), "linqu_node_idx");
     unknown_bootoption(fields[30], "0", NULL, NULL);
     if (panic_later) {
@@ -324,6 +325,42 @@ int main(int argc, char **argv) {
                                   ("lingqu_shmem_pto.reference_inputs", 0)):
                 checked = subprocess.run([str(binary), key], capture_output=True, text=True, timeout=5)
                 self.assertEqual(checked.returncode, expected, checked.stdout + checked.stderr)
+
+            # Exercise the entire emitted object-share group with the real
+            # kernel callback at its init environment capacity boundary.
+            fields = ("backend", "access", "size", "fault", "iterations", "seed",
+                      "port", "incarnation", "aperture_size", "address", "descriptor_hex")
+            keys = [f"mem_service.object_share_{field}" for field in fields]
+            for field, key in zip(fields, keys):
+                self.assertIn(f'"{key}=${{MEM_SERVICE_OBJECT_SHARE_{field.upper()}}}"', runner)
+                self.assertNotIn(f'"mem_service_object_share_{field}=', runner)
+            checked = subprocess.run([str(binary), *keys], capture_output=True, text=True, timeout=5)
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            checked = subprocess.run([str(binary), "mem_service_object_share_aperture_size"],
+                                     capture_output=True, text=True, timeout=5)
+            self.assertEqual(checked.returncode, 1, checked.stdout + checked.stderr)
+
+    def test_object_share_boot_options_preserve_legacy_and_prefer_new_keys(self):
+        guest = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
+        helper = "cmdline_value() {" + guest.split("cmdline_value() {", 1)[1].split(
+            "\n}", 1)[0] + "\n}\n"
+        assignments = [line.strip() for line in guest.splitlines()
+                       if '="$(cmdline_value mem_service.object_share_' in line]
+        self.assertEqual(len(assignments), 11)
+        for assignment in assignments:
+            variable = assignment.split("=", 1)[0]
+            key = assignment.split("cmdline_value ", 1)[1].split(" ", 1)[0]
+            old_key = key.replace("mem_service.", "mem_service_")
+            for cmdline, expected in ((f"{old_key}=old", "old"), (f"{key}=new", "new"),
+                                      (f"{old_key}=old {key}=new", "new"),
+                                      (f"{key}=new {old_key}=old", "new")):
+                script = ("read_cmdline() { :; }\n" + helper + f"cmdline='{cmdline}'\n"
+                          + assignment + f'\nprintf "%s" "${{{variable}}}"\n')
+                with self.subTest(key=key, cmdline=cmdline):
+                    checked = subprocess.run(["sh", "-c", script], capture_output=True,
+                                             text=True, timeout=5)
+                    self.assertEqual((checked.returncode, checked.stdout), (0, expected),
+                                     checked.stderr)
 
     def test_guest_preflight_accepts_exact_large_profiles_before_opening_service(self):
         source = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
