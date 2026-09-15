@@ -23,7 +23,7 @@ class W5ManagedModelGuestTest(unittest.TestCase):
             result = subprocess.run([str(binary)], capture_output=True, text=True,
                                     check=True, timeout=10)
             self.assertEqual(result.stdout.strip(),
-                "w5_managed_model_guest=pass cases=24 retained_until_original_completion=1")
+                "w5_managed_model_guest=pass cases=33 retained_until_original_completion=1")
             control = subprocess.check_output([str(binary), "--control"], timeout=10)
             expected = bytearray(64 + 8192 + 512)
             struct.pack_into("<QIIQQ8I", expected, 0, 0x314D474D3557514C, 1, 0,

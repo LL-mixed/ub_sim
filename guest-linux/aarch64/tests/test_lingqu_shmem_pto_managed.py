@@ -204,6 +204,30 @@ class ManagedPtoCliTest(unittest.TestCase):
             self.assertEqual(self.run_config({**CONFIG, "layout": layout}).returncode, 2)
         self.assertEqual(self.run_config(extra="layout=nd\nlayout=tail\n").returncode, 2)
 
+    def test_model_probe_requires_bounded_output_oracle_and_managed_reference(self):
+        values = {**CONFIG, "home_node": "1", "readonly_inputs": "1",
+                  "reference_inputs": "1", "layout": "nd", "model_probe": "1",
+                  "model_output_bytes": "54680", "model_output_checksum": "0x1234"}
+        for node in ("0", "1"):
+            result = self.run_config({**values, "node_id": node})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("callable=4 network_operations=0", result.stdout)
+            self.assertIn("model_probe=1", result.stdout)
+        invalid = {"model_probe": ("0", "2"), "home_node": ("0",),
+                   "readonly_inputs": ("0",), "reference_inputs": ("0",),
+                   "layout": ("cross-page", "tail"), "access_threads": ("1",),
+                   "concurrent_requests": ("2",), "negative_checks": ("1",),
+                   "submit_timeout_ms": ("5",),
+                   "model_output_bytes": ("0", "245761", "18446744073709551615")}
+        for key, options in invalid.items():
+            for value in options:
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(self.run_config({**values, key: value}).returncode, 2)
+        for key in ("model_output_bytes", "model_output_checksum"):
+            missing = dict(values)
+            missing.pop(key)
+            self.assertEqual(self.run_config(missing).returncode, 2)
+
 
 @unittest.skipUnless(shutil.which("cc"), "native C compiler required for isolated CPU probe")
 class ManagedPtoCpuProbeTest(unittest.TestCase):
@@ -250,6 +274,7 @@ class ManagedPtoOwnerGuardTest(unittest.TestCase):
                 "-Wl,--gc-sections", "-I", str(ROOT / "mem_service"),
                 "-I", str(ROOT / "crates/sim-qemu/include"),
                 "-I", str(ROOT / "guest-linux/aarch64/libs/lingqu_shmem_pto"),
+                str(ROOT / "guest-linux/aarch64/libs/lingqu_shmem_pto/w5_managed_model_guest.c"),
                 str(source), "-o", str(binary),
             ], capture_output=True, text=True, timeout=30)
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)

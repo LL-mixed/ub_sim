@@ -4902,3 +4902,51 @@ manifest SHA-256
 尚未完成：W5 serving loop 接入、真实 QEMU/provider read/write/fence、SDK
 物理 lease 与输出 publish/seal、2/3/8-node PP 的 4/8-step 及总计划其他
 故障/回收/压力门禁。本批不关闭 M2 或总目标；服务和平台子仓库未修改、未推送。
+
+## 2026-09-16：修正 SDK checksum 契约并接入 managed guest CLI
+
+接实际 SDK 时确认先前 managed-model fixture 使用了错误的 V2 校验算法：
+SDK 采用初值 1469598103934665603 的 byte-only hash，旧 W5 数值 metadata
+采用含位置的 checksum。Rust 输入现在先用真实 provider 契约验证 V2，保留
+完整原引用，另外保存模型数值 checksum。旧算法写入 V2 会被明确拒绝。
+新增 Linux 互操作单测直接编译已锁定 SDK 的 mem_service_provider.c，比较
+空输入、两种 64-byte 输入与 8191-byte 非零模式。先前 r464/r468 的数值结果
+保留，但它们不构成真实 SDK checksum 兼容性的证明。
+
+r474 于 2026-09-15 16:24:10 至 16:33:44 UTC 在指定远端运行，exit 0、无 OOM。
+完整 Rust workspace 的 43 个 harness 与 r467 精确匹配，972 通过、16 ignored、
+零失败；实际 SDK checksum 单测通过。最前的一次 exact 过滤未匹配测试，
+执行零项，不计入通过数；随后完整 workspace 确实执行了新增测试。
+7 个 CLI 用例通过，新增 wrong-hash-contract 负例 exit 1 且无输出文件。
+正常与 poisoned-inline 两次 Qwen3 单层输出 SHA-256 均保持
+`5c3d33e80566122d25c96022cb01beea446cf3903fd77526d0f176c513d96376`，
+回调计数均为 read=2、write=1、fence=1，数值契约没有随 V2 校验修正改变。
+
+guest helper 增加 owner-relative offsets；原零 offset API 保留，空 offsets
+与溢出在 acquire 前拒绝。C 测试增加三种输入数的非零 offset、同 owner
+不重叠控制/输出及错误范围组合，共 33 个组合通过。managed-config 新增
+model_probe=1 和有界输出 oracle 字段，接入实际 SDK reference 发布/读取、
+现有 compute endpoint、三份 lease、原 completion、输出 publish/visibility
+和既有关闭/退役流程。该调用点使用固定 token 42 的 Qwen `[1,2)` 单层诊断。
+
+r476 编译发现 callable ID 日志格式与 64-bit 类型不符；修正后 r478 实际 CLI
+及配置测试通过，旧 owner 单测漏链新增 release helper 导致一项链接失败。
+补链真实 helper 后，r480 于 16:34:11 至 16:35:59 UTC 整轮 exit 0、无 OOM：
+Python 全集 581 个唯一 test ID，576 通过、5 环境跳过、零失败/错误/加载错误。
+与 r470 比较仅增加 model probe 配置测试，原有 test ID 无遗漏。
+
+r481 的两节点离线 oracle 在 16:37:29 至 16:37:31 UTC 失败，错误为
+pto_ub_gm_bad_control_table。源码定位为 CLI 把逻辑 node 0 当作 provider CNA 0，
+后者被既有 nonzero CNA 契约拒绝。该问题仅在新零号节点用例显现；下一步
+分离离线 provider 身份与模型节点编号，并保持真实 guest 使用配置中的 CNA。
+作业在 oracle 处退出，未开始新静态库构建；r472 旧库包含错误 checksum，
+不得用于本批实际 guest 验证。
+
+本批仍未启动真实 QEMU guest。runner 参数透传、原日志独立验收、两节点
+数值 oracle、新静态库以及完整 W5 serving/PP/decode 矩阵继续实现。
+完整总计划和 M2 保持进行中，不将 CLI 编译或离线数值检查计为真实映射验收。
+
+证据归档为 `w5-managed-checksum-guest-evidence-r482.tar.gz`，473819 bytes、
+76 项，包含源文件、完整回归清单、五个作业终态和保留的失败记录；不含模型
+或网络审计原日志。SHA-256：
+`f60ceaff967b43ebe5906330395f4ed3fd4c8e4bbd08daf37093422296682106`。

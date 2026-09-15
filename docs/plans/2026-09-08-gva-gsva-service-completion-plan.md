@@ -457,6 +457,27 @@ r467-r471 已实现并验证上述执行适配层及 guest owner operation helpe
 当前实际模型证据仍使用离线 provider callback，未验证物理 SDK lease、QEMU
 guest 映射和受管理输出发布，不关闭 M2、PP 矩阵或总目标。
 
+真实 provider/model 接入诊断复用双 guest managed-config：home 发布一份 2048-byte
+Qwen hidden V2，consumer 使用实际 SDK reader owner。独立输出 allocation 的
+前 8768 bytes 放只读 compute 控制视图，结果区从 offset 16384 开始；两视图
+不重叠，共用该输出 owner，禁止新建 arena。新增有界 owner-relative offsets
+接口保留旧零 offset prepare。诊断以固定 token 42、Qwen3-0.6B 的 `[1,2)`
+range 核对同配置离线数值 oracle，必须记录真实 read/write/fence、原 completion、
+CPU 可见性与最终回收。该诊断只验证实际映射到模型调用的连接，不代替完整
+W5 serving loop、跨 range 发布/读取、PP 或 decode 矩阵。
+
+V2 的 `payload_checksum` 必须逐字节遵守已锁定 SDK 的
+`mem_service_provider_checksum64`：初值 `1469598103934665603`，按 byte XOR 后
+乘 `1099511628211`，采用 64-bit wrapping。W5 数值输出的 positional checksum
+保留原算法，两类校验值分别保存；不能修改完整 V2 来适配模型内部 metadata。
+Rust 互操作测试编译 SDK 的实际实现作为 oracle，拒绝填入旧 W5 checksum 的 V2。
+
+上述实际映射诊断的 CLI 参数为 `model_probe=1`、`model_output_bytes` 与
+`model_output_checksum`；后两者来自相同模型配置的离线 oracle。限定 home 1、
+consumer 0、ND 262144-byte backing、只读 V2 输入、单请求及无故障注入。
+逻辑模型配置为两节点、range `[1,2)`、非 terminal 输出。runner 配置透传、
+独立原日志验收及实际 QEMU 运行仍须完成，CLI 编译通过不能作为实际映射证据。
+
 本计划展开 [实现规格第 8 节](../sim_gva_gsva_implementation_spec.md#8-剩余工作与优先级)。
 机制基线为 ub_sim `39576eb`、mem_service `e4a8a58`、kernel `85fb35d`、
 QEMU `f201ebe`、libobmm `53011ee`。原稿编写时根仓库为 `80cb36f`。

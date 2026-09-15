@@ -27,8 +27,10 @@ CPPFLAGS += \
 ifeq ($(MANAGED),1)
 MEM_SERVICE_COMPONENT := $(MEM_SERVICE_ROOT)/components/mem_service
 HEADERS += lingqu_shmem_pto_managed.h lingqu_shmem_pto_cpu_probe.h
+HEADERS += $(LIB_DIR)/w5_managed_model_guest.h
 SOURCES += \
 	lingqu_shmem_pto_managed.c \
+	$(LIB_DIR)/w5_managed_model_guest.c \
 	$(LIB_DIR)/lingqu_shmem_mem_service.c \
 	$(LIB_DIR)/lingqu_shmem_mem_service_obmm.c \
 	$(MEM_SERVICE_COMPONENT)/mem_service_client.c \

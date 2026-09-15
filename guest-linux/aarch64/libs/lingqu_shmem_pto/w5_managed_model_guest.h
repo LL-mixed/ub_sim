@@ -35,6 +35,16 @@ int w5_managed_model_prepare(struct lingqu_shmem_mem_service_context *context,
     void *metadata, size_t metadata_bytes, uint64_t metadata_iova,
     struct w5_managed_model_operation **operation_out);
 
+/* Bounded owner-relative views; offsets has input_count + 2 entries. Distinct
+ * non-overlapping control/output views may share one output allocation owner.
+ * The zero-offset prepare above remains a compatibility convenience wrapper. */
+int w5_managed_model_prepare_views(struct lingqu_shmem_mem_service_context *context,
+    struct mem_service_mapping_owner *const *owners, const uint64_t *offsets,
+    const uint64_t *lengths, unsigned input_count, uint64_t op_id, uint64_t request_id,
+    uint64_t fingerprint, uint32_t requester_cna,
+    void *metadata, size_t metadata_bytes, uint64_t metadata_iova,
+    struct w5_managed_model_operation **operation_out);
+
 /* Submit once, then poll the SAME endpoint/op until a valid completion. A
  * timeout (-EAGAIN to poll), protocol fault or uncertain result retains every
  * lease and metadata pin. A failed completion permits cleanup, not publish. */

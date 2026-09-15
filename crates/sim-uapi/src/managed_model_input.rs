@@ -21,6 +21,7 @@ pub(super) fn kv_capacity_with_headers(data_bytes: usize, layers: u64) -> Result
 pub struct ManagedModelInput {
     reference: ManagedObjectRef,
     bytes: Arc<[u8]>,
+    model_checksum: u64,
 }
 
 impl ManagedModelInput {
@@ -35,12 +36,13 @@ impl ManagedModelInput {
             return Err("managed_model_input_length_mismatch".into());
         }
         if reference.payload_checksum()
-            != qwen3_dense_reference_range_object_payload_checksum(&bytes)
+            != sim_services::managed_object_ref::payload_checksum(&bytes)
         {
             return Err("managed_model_input_checksum_mismatch".into());
         }
         Ok(Self {
             reference,
+            model_checksum: qwen3_dense_reference_range_object_payload_checksum(&bytes),
             bytes: bytes.into(),
         })
     }
@@ -51,6 +53,10 @@ impl ManagedModelInput {
 
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    pub(super) fn model_checksum(&self) -> u64 {
+        self.model_checksum
     }
 
     fn into_operand(self) -> ModelObjectBackedOperandView {
@@ -182,7 +188,7 @@ mod tests {
             (48, payload.len() as u64),
             (
                 56,
-                qwen3_dense_reference_range_object_payload_checksum(payload),
+                sim_services::managed_object_ref::payload_checksum(payload),
             ),
             (72, 17),
             (80, 29),
@@ -205,6 +211,20 @@ mod tests {
         let bytes = vec![0x5a; 64];
         let reference = reference(QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT, &bytes);
         assert!(ManagedModelInput::from_provider_bytes(reference.clone(), bytes.clone()).is_ok());
+        let accepted =
+            ManagedModelInput::from_provider_bytes(reference.clone(), bytes.clone()).unwrap();
+        assert_ne!(accepted.model_checksum(), reference.payload_checksum());
+        assert_eq!(accepted.reference(), &reference);
+        let mut legacy_hash = *reference.as_le_bytes();
+        legacy_hash[56..64].copy_from_slice(&accepted.model_checksum().to_le_bytes());
+        assert_eq!(
+            ManagedModelInput::from_provider_bytes(
+                ManagedObjectRef::from_le_bytes(&legacy_hash).unwrap(),
+                bytes.clone()
+            )
+            .unwrap_err(),
+            "managed_model_input_checksum_mismatch"
+        );
         assert!(ManagedModelInput::from_provider_bytes(reference.clone(), vec![0; 64]).is_err());
         assert!(ManagedModelInput::from_provider_bytes(reference.clone(), vec![0x5a; 63]).is_err());
         let mut wire = *reference.as_le_bytes();
@@ -278,7 +298,7 @@ mod tests {
                 Some(&operands)
             )
             .unwrap(),
-            reference.payload_checksum()
+            qwen3_dense_reference_range_object_payload_checksum(&bytes)
         );
         // No inline payload exists: DeepSeek must consume the same managed bytes.
         assert_eq!(
@@ -389,7 +409,11 @@ mod tests {
         let header = &mut guest[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET..];
         write_u64_le_at(header, 0, QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER);
         write_u64_le_at(header, 8, kv.len() as u64);
-        write_u64_le_at(header, 16, kv_ref.payload_checksum());
+        write_u64_le_at(
+            header,
+            16,
+            qwen3_dense_reference_range_object_payload_checksum(&kv),
+        );
         let result =
             deepseek_v4_flash_decode_slice_inputs(100, 0, 1, &[42, 7], &guest, Some(&operands))
                 .unwrap();

@@ -5,8 +5,10 @@
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
 #include "lingqu_shmem_sim.h"
+#include "w5_managed_model_guest.h"
 #include "components/mem_service/mem_service_client.h"
 #include "components/mem_service/mem_service_mapping_owner.h"
+#include "components/mem_service/mem_service_object_contract.h"
 #include "components/mem_service/providers/mem_service_provider_obmm.h"
 
 #include <errno.h>
@@ -26,6 +28,8 @@
 #define METADATA_BYTES 4096U
 #define MAX_ACCESS_THREADS 8U
 #define NEGATIVE_CASES 6U
+#define MODEL_HIDDEN_BYTES 2048U
+#define MODEL_OUTPUT_OFFSET 16384U
 
 static const char *const negative_names[NEGATIVE_CASES] = {
     "bad-mapping-ref", "wrong-requester", "oob", "role-access-mismatch",
@@ -51,6 +55,8 @@ struct managed_config {
     bool negative_checks;
     bool readonly_inputs;
     bool reference_inputs;
+    bool model_probe;
+    uint64_t model_output_bytes, model_output_checksum;
     struct managed_geometry geometry;
 };
 
@@ -79,6 +85,7 @@ struct managed_state {
     struct lingqu_shmem_mem_service_lease *leases[3];
     struct lingqu_shmem_pto_endpoint *endpoint;
     struct lingqu_shmem_pto_inflight *inflight;
+    struct w5_managed_model_operation *model_operation;
     void *metadata;
     uint64_t metadata_iova;
     struct managed_batch *batch;
@@ -147,7 +154,8 @@ static int read_config(const char *path, struct managed_config *config)
     const char *names[] = {"connect", "key", "node_id", "generation",
         "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms",
         "access_threads", "negative_checks", "readonly_inputs", "layout", "elements", "size_bytes",
-        "home_node", "concurrent_requests", "reference_inputs"};
+        "home_node", "concurrent_requests", "reference_inputs", "model_probe",
+        "model_output_bytes", "model_output_checksum"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
@@ -215,6 +223,10 @@ static int read_config(const char *path, struct managed_config *config)
                      config->concurrent_requests = (uint32_t)number; break;
             case 16: if (number > 1) goto out;
                      config->reference_inputs = number != 0; break;
+            case 17: if (number > 1) goto out;
+                     config->model_probe = number != 0; break;
+            case 18: config->model_output_bytes = number; break;
+            case 19: config->model_output_checksum = number; break;
             default: goto out;
             }
         }
@@ -227,6 +239,14 @@ static int read_config(const char *path, struct managed_config *config)
         sizeof(config->key)) goto out;
     if (config->reference_inputs && !config->readonly_inputs) goto out;
     config->recovery_expected = (seen & 128) != 0;
+    if (config->model_probe) {
+        if (!config->reference_inputs || config->home_node != 1 ||
+            strcmp(config->geometry.name, "nd") || config->access_threads ||
+            config->concurrent_requests != 1 || config->negative_checks ||
+            config->recovery_expected || !config->model_output_bytes ||
+            config->model_output_bytes > config->geometry.object_bytes - MODEL_OUTPUT_OFFSET ||
+            !(seen & (1U << 19))) goto out;
+    } else if (seen & ((1U << 18) | (1U << 19))) goto out;
     if (config->concurrent_requests == 2 &&
         (config->negative_checks || config->recovery_expected)) goto out;
     if (config->negative_checks && (config->recovery_expected ||
@@ -346,6 +366,26 @@ static int seed_inputs_callback(void *opaque,
     struct managed_state *state = opaque;
     (void)lifecycle; (void)view;
     struct mem_service_visibility_completion completion;
+    if (state->config.model_probe) {
+        if (state->is_output) memset(mapping->base, 0xa5, mapping->len);
+        else {
+            if (mapping->len < MODEL_HIDDEN_BYTES) return -EINVAL;
+            memset(mapping->base, 0, mapping->len);
+            for (unsigned i = 0; i < MODEL_HIDDEN_BYTES / 2; ++i) {
+                int value = (int)(i % 31) - 15;
+                unsigned magnitude = (unsigned)(value < 0 ? -value : value);
+                unsigned bit = 0;
+                while ((1U << (bit + 1)) <= magnitude) ++bit;
+                uint16_t half = magnitude ? (uint16_t)(((bit + 10) << 10) |
+                    ((magnitude - (1U << bit)) << (10 - bit)) | (value < 0 ? 0x8000 : 0)) : 0;
+                ((uint8_t *)mapping->base)[2 * i] = (uint8_t)half;
+                ((uint8_t *)mapping->base)[2 * i + 1] = (uint8_t)(half >> 8);
+            }
+        }
+        return mem_service_provider_channel_publish_range(channel, &mapping->binding,
+            0, mapping->len, mem_service_provider_checksum64(mapping->base, mapping->len),
+            &completion);
+    }
     if (state->config.reference_inputs && !state->is_output)
         memset(mapping->base, 0, mapping->len);
     for (unsigned vector = 0; vector < 4; ++vector) {
@@ -505,6 +545,11 @@ static int publish_reference_input(struct managed_state *state)
         .object_kind = 1, .owner_entity = state->config.home_node,
         .producer_entity = state->config.home_node,
     };
+    if (state->config.model_probe) {
+        view.offset = 0;
+        view.len = MODEL_HIDDEN_BYTES;
+        view.object_kind = MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT;
+    }
     if (!rc) rc = mem_service_client_prepare_managed_reference(&state->client, &state->channel,
         &state->allocation, &state->mapping, &state->lifecycle, &view, &state->reference, &status);
     if (!rc) rc = reference_transition(state, MEM_SERVICE_REFERENCE_STAGE);
@@ -529,9 +574,11 @@ static int map_reference_input(struct managed_state *state)
         reference->allocation_generation != generation || reference->provider_incarnation != incarnation ||
         strcmp(reference->home_node, expected_home) ||
         reference->allocation_bytes != state->config.geometry.object_bytes ||
-        reference->object.payload_offset != vector_offset(state, 0) ||
-        reference->object.payload_bytes != vector_offset(state, 1) +
-            state->config.geometry.tensor_bytes - vector_offset(state, 0) ||
+        reference->object.payload_offset != (state->config.model_probe ? 0 : vector_offset(state, 0)) ||
+        reference->object.payload_bytes != (state->config.model_probe ? MODEL_HIDDEN_BYTES :
+            vector_offset(state, 1) + state->config.geometry.tensor_bytes - vector_offset(state, 0)) ||
+        (state->config.model_probe && reference->object.object_kind !=
+            MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT) ||
         reference->access != LINGQU_OBJECT_REF_V2_READ ||
         (state->held && memcmp(&published, reference, sizeof(published)))) return -ESTALE;
     if (!state->held) rc = reference_transition(state, MEM_SERVICE_REFERENCE_ACQUIRE);
@@ -611,6 +658,11 @@ mapped:
 static int release_compute(struct managed_state *state)
 {
     if (state->completion_unknown) return -EBUSY;
+    if (state->model_operation) {
+        int rc = w5_managed_model_release(state->model_operation);
+        if (rc) return rc;
+        state->model_operation = NULL;
+    }
     if (state->inflight) {
         lingqu_shmem_pto_dispatch_finish(state->inflight);
         state->inflight = NULL;
@@ -1279,12 +1331,135 @@ static int probe_readonly_input(struct managed_state *state)
     return mem_service_mapping_lease_apply(state->cpu_pin, readonly_cpu_probe, state);
 }
 
+struct model_access {
+    struct managed_state *state;
+    unsigned action; /* 0: prepare control, 1: publish output, 2: verify output. */
+};
+
+static int model_output_callback(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    struct model_access *access = opaque;
+    struct managed_state *state = access->state;
+    struct mem_service_visibility_completion completion;
+    unsigned char *bytes = mapping->base;
+    (void)lifecycle; (void)view;
+    if (mapping->len != state->config.geometry.object_bytes) return -EINVAL;
+    if (access->action == 0) {
+        unsigned char control[W5_MANAGED_MODEL_CONTROL_BYTES];
+        memset(control, 0xa5, sizeof(control));
+        int rc = mem_service_provider_channel_wait_range_visible(channel, &mapping->binding,
+            0, sizeof(control), mem_service_provider_checksum64(control, sizeof(control)),
+            state->config.timeout_ms, &completion);
+        if (rc) return rc;
+        unsigned char prefix[72] = {0};
+        memcpy(prefix, "Q3PROMPT", 8);
+        prefix[24] = 1; /* One prompt token, decode step zero. */
+        prefix[64] = 42;
+        const uint32_t levels[8] = {0x5133060b, 0, 1, 2, 1, 2, 28, MODEL_HIDDEN_BYTES};
+        rc = w5_managed_model_control_encode(control, sizeof(control),
+            state->config.generation + 1, state->config.generation + 1, levels,
+            prefix, sizeof(prefix), &state->reference, 1);
+        if (rc) return rc;
+        memcpy(bytes, control, sizeof(control));
+        return mem_service_provider_channel_publish_range(channel, &mapping->binding,
+            0, sizeof(control), mem_service_provider_checksum64(control, sizeof(control)),
+            &completion);
+    }
+    uint64_t length = state->config.model_output_bytes;
+    uint64_t checksum = state->config.model_output_checksum;
+    if (access->action == 1) {
+        if (mem_service_provider_checksum64(bytes + MODEL_OUTPUT_OFFSET, length) != checksum)
+            return -EIO;
+        return mem_service_provider_channel_publish_range(channel, &mapping->binding,
+            MODEL_OUTPUT_OFFSET, length, checksum, &completion);
+    }
+    int rc = mem_service_provider_channel_wait_range_visible(channel, &mapping->binding,
+        MODEL_OUTPUT_OFFSET, length, checksum, state->config.timeout_ms, &completion);
+    if (rc) return rc;
+    if (mem_service_provider_checksum64(bytes + MODEL_OUTPUT_OFFSET, length) != checksum)
+        return -EIO;
+    /* No write is permitted in the gap or beyond the serialized result. */
+    for (uint64_t i = W5_MANAGED_MODEL_CONTROL_BYTES; i < MODEL_OUTPUT_OFFSET; ++i)
+        if (bytes[i] != 0xa5) return -EIO;
+    for (uint64_t i = MODEL_OUTPUT_OFFSET + length; i < mapping->len; ++i)
+        if (bytes[i] != 0xa5) return -EIO;
+    printf("MANAGED_MODEL node=%u action=cpu-verify bytes=%" PRIu64
+        " checksum=%016" PRIx64 " bounds=pass status=pass\n", state->config.node, length, checksum);
+    return 0;
+}
+
+static int run_model_probe(struct managed_state *state)
+{
+    struct model_access access = {state, 2};
+    int rc;
+    if (state->config.node == state->config.home_node) {
+        rc = mem_service_mapping_lease_apply(state->output->cpu_pin,
+            seed_inputs_callback, state->output);
+        if (!rc) rc = mem_service_mapping_lease_apply(state->output->cpu_pin,
+            model_output_callback, &access);
+        if (!rc) rc = wait_allocation(state, "active", true);
+        if (!rc) rc = wait_allocation(state->output, "active", true);
+        return rc;
+    }
+    if (state->mapping.len != MODEL_HIDDEN_BYTES ||
+        state->mapping.flags != MEM_SERVICE_CLIENT_MAP_READ) return -EPROTO;
+    rc = open_compute(state);
+    struct lingqu_shmem_pto_endpoint_info info;
+    if (!rc) rc = lingqu_shmem_pto_endpoint_open(&state->endpoint, &info);
+    access.action = 0;
+    if (!rc) rc = mem_service_mapping_lease_apply(state->output->cpu_pin,
+        model_output_callback, &access);
+    if (!rc) rc = lingqu_shmem_sim_phys_for_virt(state->metadata, &state->metadata_iova);
+    if (rc) return rc;
+    struct mem_service_mapping_owner *owners[] = {state->output->owner, state->owner,
+                                                state->output->owner};
+    const uint64_t offsets[] = {0, 0, MODEL_OUTPUT_OFFSET};
+    const uint64_t lengths[] = {W5_MANAGED_MODEL_CONTROL_BYTES, MODEL_HIDDEN_BYTES,
+                               state->config.model_output_bytes};
+    uint64_t id = state->config.generation + 1;
+    rc = w5_managed_model_prepare_views(state->compute, owners, offsets, lengths, 1,
+        id, id, state->config.fingerprint, state->config.requester, state->metadata,
+        METADATA_BYTES, state->metadata_iova, &state->model_operation);
+    if (rc) return rc;
+    state->completion_unknown = true;
+    rc = w5_managed_model_submit(state->model_operation, state->endpoint);
+    if (rc) return rc;
+    printf("MANAGED_MODEL node=%u action=submitted op_id=%" PRIu64
+        " callable=4 compute_leases=%zu inputs=1\n", state->config.node, id,
+        (size_t)lingqu_shmem_mem_service_active_leases(state->compute));
+    struct lingqu_shmem_pto_completion completion;
+    uint64_t start = now_ms();
+    do {
+        rc = w5_managed_model_poll(state->model_operation, &completion);
+        if (rc != -EAGAIN) break;
+        if (now_ms() - start >= state->config.timeout_ms) return -ETIMEDOUT;
+        usleep(1000);
+    } while (true);
+    if (rc) return rc;
+    state->completion_unknown = false;
+    if (completion.status != 1 || completion.op_id != id) return -EIO;
+    printf("MANAGED_MODEL node=%u action=completed op_id=%" PRIu64
+        " status=success original_completion=1\n", state->config.node, id);
+    rc = release_compute(state);
+    if (rc || lingqu_shmem_mem_service_active_leases(state->compute)) return rc ? rc : -EPROTO;
+    access.action = 1;
+    rc = mem_service_mapping_lease_apply(state->output->cpu_pin, model_output_callback, &access);
+    access.action = 2;
+    if (!rc) rc = mem_service_mapping_lease_apply(state->output->cpu_pin, model_output_callback, &access);
+    return rc;
+}
+
 static int run_data(struct managed_state *state)
 {
     int rc = map_object(state);
     if (!rc) rc = adopt_mapping(state);
     if (!rc && state->config.readonly_inputs) rc = open_output_object(state);
     if (rc) return rc;
+    if (state->config.model_probe) return run_model_probe(state);
     if (state->config.node == state->config.home_node) {
         if (!state->config.reference_inputs)
             rc = mem_service_mapping_lease_apply(state->cpu_pin, seed_inputs_callback, state);
@@ -1343,14 +1518,15 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     }
     if (validate_only) {
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=%s "
-            "elements=%u callable=1 network_operations=0 submit_timeout_ms=%" PRIu64
+            "elements=%u callable=%u network_operations=0 submit_timeout_ms=%" PRIu64
             " recovery_expected=%u access_threads=%u negative_checks=%u readonly_inputs=%u home_node=%u"
-            " concurrent_requests=%u reference_inputs=%u\n",
+            " concurrent_requests=%u reference_inputs=%u model_probe=%u\n",
             config.node, config.geometry.object_bytes, config.geometry.name,
-            config.geometry.elements, config.submit_timeout_ms,
+            config.geometry.elements, config.model_probe ? (unsigned)W5_MANAGED_MODEL_CALLABLE_ID : 1,
+            config.submit_timeout_ms,
             config.recovery_expected ? 1 : 0, config.access_threads, config.negative_checks ? 1 : 0,
             config.readonly_inputs ? 1 : 0, config.home_node, config.concurrent_requests,
-            config.reference_inputs ? 1 : 0);
+            config.reference_inputs ? 1 : 0, config.model_probe ? 1 : 0);
         return 0;
     }
     state = calloc(1, sizeof(*state));

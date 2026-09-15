@@ -76,16 +76,30 @@ int w5_managed_model_prepare(struct lingqu_shmem_mem_service_context *context,
     void *metadata, size_t metadata_bytes, uint64_t metadata_iova,
     struct w5_managed_model_operation **operation_out)
 {
+    const uint64_t offsets[4] = {0};
+    return w5_managed_model_prepare_views(context, owners, offsets, lengths,
+        input_count, op_id, request_id, fingerprint, requester_cna,
+        metadata, metadata_bytes, metadata_iova, operation_out);
+}
+
+int w5_managed_model_prepare_views(struct lingqu_shmem_mem_service_context *context,
+    struct mem_service_mapping_owner *const *owners, const uint64_t *offsets,
+    const uint64_t *lengths, unsigned input_count, uint64_t op_id, uint64_t request_id,
+    uint64_t fingerprint, uint32_t requester_cna,
+    void *metadata, size_t metadata_bytes, uint64_t metadata_iova,
+    struct w5_managed_model_operation **operation_out)
+{
     struct lingqu_shmem_pto_memref_arg args[4];
     struct lingqu_shmem_pto_wire_result wire;
     int rc;
     if (!operation_out) return -EINVAL;
     *operation_out = NULL;
-    if (!context || !owners || !lengths || input_count > 2 || !op_id ||
+    if (!context || !owners || !offsets || !lengths || input_count > 2 || !op_id ||
         !request_id || !fingerprint || !metadata || !metadata_iova ||
         lengths[0] != W5_MANAGED_MODEL_CONTROL_BYTES) return -EINVAL;
     for (unsigned i = 0; i < input_count + 2; ++i)
-        if (!owners[i] || !lengths[i] || lengths[i] > W5_MANAGED_MODEL_MAX_VIEW_BYTES)
+        if (!owners[i] || !lengths[i] || lengths[i] > W5_MANAGED_MODEL_MAX_VIEW_BYTES ||
+            offsets[i] > UINT64_MAX - lengths[i])
             return -EINVAL;
     struct w5_managed_model_operation *op = calloc(1, sizeof(*op));
     if (!op) return -ENOMEM;
@@ -94,7 +108,7 @@ int w5_managed_model_prepare(struct lingqu_shmem_mem_service_context *context,
     *operation_out = op;
     for (unsigned i = 0; i < op->count; ++i) {
         struct lingqu_shmem_memref_spec spec = {
-            .byte_length = lengths[i], .rank = 1, .dtype = 4,
+            .byte_offset = offsets[i], .byte_length = lengths[i], .rank = 1, .dtype = 4,
             .shape = {(uint32_t)lengths[i]}, .strides = {1},
             .access = i + 1 == op->count ? LINGQU_SHMEM_ACCESS_WRITE : LINGQU_SHMEM_ACCESS_READ,
         };

@@ -12,13 +12,15 @@ static int fail_acquire = -1, fail_begin = -1, fail_complete = -1, fail_release 
 static int enqueue_error, poll_error = -EAGAIN;
 static uint64_t completion_id = 17;
 static uint8_t completion_status = 1;
+static uint64_t expected_offsets[4];
 
 int lingqu_shmem_mem_service_acquire_owned(struct lingqu_shmem_mem_service_context *c,
     struct mem_service_mapping_owner *o, const struct lingqu_shmem_memref_spec *s,
     struct lingqu_shmem_memref **m, struct lingqu_shmem_mem_service_lease **l)
 {
     unsigned i = acquired++;
-    CHECK(c && o && i < 4 && s->rank == 1 && s->dtype == 4 && !s->byte_offset);
+    CHECK(c && o && i < 4 && s->rank == 1 && s->dtype == 4);
+    CHECK(s->byte_offset == expected_offsets[i]);
     CHECK(s->shape[0] == s->byte_length && s->strides[0] == 1);
     leases[i].active = true;
     *l = (void *)&leases[i];
@@ -75,6 +77,7 @@ int lingqu_shmem_pto_endpoint_poll(struct lingqu_shmem_pto_endpoint *e, uint64_t
 static void reset(void)
 {
     memset(leases, 0, sizeof(leases)); acquired = released = polls = enqueues = begins = completes = guards = 0;
+    memset(expected_offsets, 0, sizeof(expected_offsets));
     fail_acquire = fail_begin = fail_complete = fail_release = -1;
     enqueue_error = 0; poll_error = -EAGAIN; completion_id = 17; completion_status = 1;
 }
@@ -140,6 +143,29 @@ int main(int argc, char **argv)
         else CHECK(!rc);
         CHECK(released == acquired && !guards);
     }
-    puts("w5_managed_model_guest=pass cases=24 retained_until_original_completion=1");
+    for (unsigned inputs = 0; inputs <= 2; ++inputs) {
+        reset();
+        struct mem_service_mapping_owner *owners[4] = {(void *)1, (void *)2, (void *)3, (void *)4};
+        uint64_t lengths[4] = {sizeof(control), 64, 128, 4096};
+        struct w5_managed_model_operation *op = NULL;
+        for (unsigned i = 0; i < inputs + 2; ++i) expected_offsets[i] = i * 16384;
+        /* Control and output are disjoint views of the same owner. */
+        owners[inputs + 1] = owners[0];
+        CHECK(!w5_managed_model_prepare_views((void *)1, owners, expected_offsets,
+            lengths, inputs, 17, 19, 23, 7, metadata, sizeof(metadata), 0x1000, &op));
+        CHECK(op && acquired == inputs + 2);
+        CHECK(!w5_managed_model_release(op) && released == acquired);
+        reset();
+        expected_offsets[inputs + 1] = UINT64_MAX - lengths[inputs + 1] + 1;
+        op = (void *)1;
+        CHECK(w5_managed_model_prepare_views((void *)1, owners, expected_offsets,
+            lengths, inputs, 17, 19, 23, 7, metadata, sizeof(metadata), 0x1000, &op) == -EINVAL);
+        CHECK(!op && !acquired && !guards);
+        op = (void *)1;
+        CHECK(w5_managed_model_prepare_views((void *)1, owners, NULL,
+            lengths, inputs, 17, 19, 23, 7, metadata, sizeof(metadata), 0x1000, &op) == -EINVAL);
+        CHECK(!op && !acquired && !guards);
+    }
+    puts("w5_managed_model_guest=pass cases=33 retained_until_original_completion=1");
     return 0;
 }

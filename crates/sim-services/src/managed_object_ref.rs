@@ -1,5 +1,16 @@
 //! Lossless Memory Service V2 references. Decoding does not grant access.
 
+/// The managed SDK's mem_service_provider_checksum64 contract. This seed and
+/// byte-only update differ from both the W5 positional checksum and FNV-1a's
+/// commonly quoted offset basis. Do not substitute a model checksum here.
+pub fn payload_checksum(bytes: &[u8]) -> u64 {
+    bytes
+        .iter()
+        .fold(1_469_598_103_934_665_603u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211)
+        })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ManagedObjectRef {
     bytes: [u8; Self::BYTE_LEN],
@@ -114,6 +125,91 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::process::{Command, Stdio};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_checksum_matches_actual_sdk_provider_function() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mem_service");
+        let directory = std::env::temp_dir().join(format!(
+            "managed-sdk-checksum-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let source = directory.join("checksum.c");
+        let binary = directory.join("checksum");
+        std::fs::write(
+            &source,
+            r#"
+#include "components/mem_service/mem_service_provider.h"
+#include <stdio.h>
+#include <inttypes.h>
+int main(void) {
+    unsigned char bytes[8192];
+    size_t length = fread(bytes, 1, sizeof(bytes), stdin);
+    if (ferror(stdin) || !feof(stdin)) return 2;
+    printf("%" PRIu64 "\n", mem_service_provider_checksum64(bytes, length));
+    return 0;
+}
+"#,
+        )
+        .unwrap();
+        let build = Command::new("cc")
+            .args([
+                "-std=c11",
+                "-D_GNU_SOURCE",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-ffunction-sections",
+                "-fdata-sections",
+                "-Wl,--gc-sections",
+                "-I",
+            ])
+            .arg(&root)
+            .arg(&source)
+            .arg(root.join("components/mem_service/mem_service_provider.c"))
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        for bytes in [
+            vec![],
+            vec![0; 64],
+            vec![0x5a; 64],
+            (0..8191).map(|i| ((i * 73 + 19) % 256) as u8).collect(),
+        ] {
+            let mut child = Command::new(&binary)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child.stdin.take().unwrap().write_all(&bytes).unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .trim()
+                    .parse::<u64>()
+                    .unwrap(),
+                payload_checksum(&bytes)
+            );
+        }
+        for path in [&binary, &source] {
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn matches_locked_c_sdk_codec_and_rejections() {

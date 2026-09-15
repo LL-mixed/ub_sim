@@ -2366,7 +2366,12 @@ impl ModelObjectBackedOperandView {
             ModelInputReference::Managed(value) => ModelInputMetadata {
                 object_kind: value.object_kind() as u16,
                 payload_bytes: value.payload_bytes(),
-                payload_checksum: value.payload_checksum(),
+                // Numeric runtime metadata uses its existing positional hash.
+                // The original V2/provider hash remains immutable in value.
+                payload_checksum: match &self.backing {
+                    ModelObjectPayloadBacking::Managed(input) => input.model_checksum(),
+                    _ => unreachable!("managed identity requires managed backing"),
+                },
             },
         }
     }
