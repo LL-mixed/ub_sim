@@ -474,7 +474,88 @@ def model_probe_fixture():
     return guests, "\n".join(qemu)
 
 
+def model_publication_fixture():
+    guests, qemu = model_probe_fixture()
+    guests = [text.replace("model_probe=1", "model_probe=1 model_publish=1")
+              .replace("bytes=64", "bytes=54680") for text in guests]
+    qemu = qemu.replace("length=64", "length=54680").replace("bytes=64", "bytes=54680")
+    refs = []
+    sizes = [(4, 16384, 54680, 0x1234), (5, 60784, 2048, 0x8888), (7, 62832, 8232, 0x9999)]
+    for kind, offset, length, checksum in sizes:
+        refs.append(struct.pack("<QHHHHIIQQQQQIIQQQ96s64s", 0x514f424d4d524546,
+            2, kind, 2, 0, 0, 0, 2, int(validator.checksum64(b"k-output"), 16), offset,
+            length, checksum, 256, 1, 8, 9, 262144, b"k-output", b"guest-node-1").hex())
+    def transition(node, action, view):
+        return (f"MANAGED_PTO_REFERENCE node={node} action={action} generation=8 version=2 "
+                f"status=ok object=output view={view}\n")
+    def mapped(index):
+        _, offset, length, _ = sizes[index]
+        return (f"MANAGED_MODEL_REFERENCE node=1 action=mapped view={index} reference={refs[index]} "
+                f"cpu_base={0x700000400000+offset:#x} logical_bytes={length} mapping_id={20+index}\n")
+    def read(index):
+        return (f"MANAGED_MODEL_REFERENCE node=1 action=read view={index} bytes={sizes[index][2]} "
+                f"checksum={sizes[index][3]:016x} access=1 status=pass\n")
+    for node in (0, 1):
+        marker = f"MANAGED_MODEL node={node} action=cpu-verify"
+        views = (f"MANAGED_MODEL_VIEWS node={node} hidden_offset=60784 hidden_bytes=2048 "
+                 "hidden_checksum=0000000000008888 kv_offset=62832 kv_bytes=8232 "
+                 "kv_checksum=0000000000009999 real_layers=1 payload_copies=0 status=pass\n")
+        guests[node] = guests[node].replace(marker, views + marker)
+    guests[0] = guests[0].replace("MANAGED_MODEL node=0 action=submitted",
+        transition(0, 1, 0) + "MANAGED_MODEL node=0 action=submitted")
+    staged = ''.join(transition(0, 2, i) +
+        f"MANAGED_MODEL_REFERENCE node=0 action=staged view={i} reference={refs[i]}\n" for i in range(3))
+    staged += "MANAGED_MODEL_PUBLICATION node=0 state=writer-unmapped holder_retained=1\n"
+    staged += transition(0, 3, 2)
+    staged += "MANAGED_MODEL_PUBLICATION node=0 state=sealed generation=8 version=2 views=3 payload_copies=0\n"
+    guests[0] = guests[0].replace("MANAGED_OWNER node=0 state=drained object=output",
+                                 staged + "MANAGED_OWNER node=0 state=drained object=output")
+    guests[1] = guests[1].replace("cpu_base=0x700000400000", "cpu_base=0x700000404000")
+    guests[1] = guests[1].replace("logical_bytes=262144 mapping_id=10 access=3",
+                                 "logical_bytes=54680 mapping_id=10 access=1")
+    guests[1] = guests[1].replace("MANAGED_MODEL_VIEWS node=1",
+        transition(1, 4, 0) + transition(1, 5, 0) + mapped(0) + "MANAGED_MODEL_VIEWS node=1")
+    drained = ("MANAGED_OWNER node=1 state=drained object=output cpu_pins=0 "
+               "compute_pins=0 in_flight_pins=0 mapping_pending=0 holder_pending=0")
+    sequence = read(0) + drained + '\n'
+    for i in (1, 2):
+        sequence += transition(1, 4, i) + transition(1, 5, i) + mapped(i) + read(i) + drained + '\n'
+    guests[1] = guests[1].replace(drained + '\n', sequence)
+    return guests, qemu
+
+
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_model_output_publication_requires_sealed_exact_views_and_readers(self):
+        guests, qemu = model_publication_fixture()
+        result = validator.validate_model_probe(guests, qemu, 54680, 0x1234, publication=True)
+        self.assertTrue(result["output_publication_verified"])
+        self.assertFalse(result["pp_decode_verified"])
+        for node, old, new in (
+                (0, "holder_retained=1", "holder_retained=0"),
+                (0, "state=writer-unmapped", "state=skipped"),
+                (0, "views=3", "views=2"),
+                (0, "action=staged view=2", "action=staged view=1"),
+                (0, "model_publish=1", "model_publish=0"),
+                (1, "mapping_id=21", "mapping_id=20"),
+                (1, "action=read view=2", "action=missing view=2"),
+                (1, "access=1 status=pass", "access=3 status=pass"),
+                (1, "cpu_base=0x700000404000", "cpu_base=0x700000404001"),
+                (1, "checksum=0000000000009999", "checksum=0000000000009998"),
+                (1, "kv_offset=62832", "kv_offset=62831")):
+            changed = list(guests)
+            self.assertIn(old, changed[node])
+            changed[node] = changed[node].replace(old, new)
+            with self.subTest(field=old), self.assertRaises(ValueError):
+                validator.validate_model_probe(changed, qemu, 54680, 0x1234, publication=True)
+        changed = list(guests)
+        lines = changed[0].splitlines()
+        unmap = next(i for i, line in enumerate(lines) if "state=writer-unmapped" in line)
+        seal = next(i for i, line in enumerate(lines) if "state=sealed" in line)
+        lines[unmap], lines[seal] = lines[seal], lines[unmap]
+        changed[0] = '\n'.join(lines)
+        with self.assertRaises(ValueError):
+            validator.validate_model_probe(changed, qemu, 54680, 0x1234, publication=True)
+
     def test_model_probe_requires_reference_mapping_callbacks_and_actual_layer(self):
         guests, qemu = model_probe_fixture()
         result = validator.validate_model_probe(guests, qemu, 64, 0x1234)

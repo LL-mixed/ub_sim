@@ -942,7 +942,94 @@ def validate_transport_chunks(text, requests, geometry, concurrent_requests=1,
             "scope": "registered-pto-dispatches", "non_pto_bulk_sends": non_pto_bulk_sends}
 
 
-def validate_model_probe(guests, qemu, output_bytes, output_checksum):
+def validate_model_output_publication(guests, mappings, output_bytes, output_checksum):
+    staged = records(guests[0], "MANAGED_MODEL_REFERENCE")
+    consumed = records(guests[1], "MANAGED_MODEL_REFERENCE")
+    require([(r.get("action"), r.get("view"), r.get("node")) for r in staged] ==
+            [("staged", str(i), "0") for i in range(3)], "missing or duplicate staged output")
+    require([(r.get("action"), r.get("view"), r.get("node")) for r in consumed] ==
+            [(action, str(i), "1") for i in range(3) for action in ("mapped", "read")],
+            "output reader did not map and read all three references")
+    views = [records(text, "MANAGED_MODEL_VIEWS") for text in guests]
+    require(all(len(rows) == 1 and rows[0].get("node") == str(node) and
+                rows[0].get("status") == "pass" and rows[0].get("payload_copies") == "0"
+                and rows[0].get("real_layers") == "1" for node, rows in enumerate(views)),
+            "model result views missing")
+    require({k: v for k, v in views[0][0].items() if k != "node"} ==
+            {k: v for k, v in views[1][0].items() if k != "node"},
+            "producer and reader decoded different views")
+    first = None
+    ids = []
+    for index, writer in enumerate(staged):
+        mapped, read = consumed[2 * index:2 * index + 2]
+        require(writer["reference"] == mapped["reference"], "output V2 changed in transit")
+        ref = decode_reference(writer["reference"])
+        require((ref["magic"], ref["layout"], ref["kind"], ref["state"], ref["flags"],
+                 ref["wire_bytes"], ref["access"], ref["owner"], ref["producer"]) ==
+                (0x514f424d4d524546, 2, (4, 5, 7)[index], 2, 0, 256, 1, 0, 0) and
+                ref["key"] == mappings[0][1]["key"] and ref["home"] == "guest-node-1" and
+                ref["size"] == 262144 and ref["generation"] == number(mappings[0][1], "generation") and
+                ref["version"] > 1 and ref["incarnation"] > 0, "output V2 identity mismatch")
+        if first is None:
+            first = ref
+        require(all(ref[k] == first[k] for k in
+                    ("key", "home", "generation", "version", "incarnation", "size")),
+                "output references do not share one sealed allocation version")
+        if index == 0:
+            expected = (16384, output_bytes, output_checksum)
+        else:
+            role = "hidden" if index == 1 else "kv"
+            expected = (number(views[0][0], role + "_offset"),
+                        number(views[0][0], role + "_bytes"),
+                        int(views[0][0][role + "_checksum"], 16))
+        require((ref["offset"], ref["length"], ref["checksum"]) == expected and
+                16384 <= ref["offset"] < ref["offset"] + ref["length"] <= 16384 + output_bytes,
+                "output reference subview mismatch")
+        require(number(mapped, "cpu_base") == number(mappings[1][1], "address") + ref["offset"] and
+                number(mapped, "logical_bytes") == ref["length"] and number(mapped, "mapping_id") > 0,
+                "output reader mapped wrong address or extent")
+        ids.append(number(mapped, "mapping_id"))
+        require(read.get("status") == "pass" and read.get("access") == "1" and
+                number(read, "bytes") == ref["length"] and int(read["checksum"], 16) == ref["checksum"],
+                "output reference was not read through its readonly view")
+    require(len(set(ids)) == 3, "output reader reused a mapping transaction")
+    require(number(views[0][0], "hidden_bytes") == 2048 and
+            number(views[0][0], "kv_offset") == number(views[0][0], "hidden_offset") + 2048,
+            "hidden and KV overlap or lose their serialized boundary")
+    for node, actions in ((0, ["1", "2", "2", "2", "3"]), (1, ["4", "5"] * 3)):
+        transitions = [r for r in records(guests[node], "MANAGED_PTO_REFERENCE")
+                       if r.get("object") == "output"]
+        require([r["action"] for r in transitions] == actions and
+                all(number(r, "version") == first["version"] and
+                    number(r, "generation") == first["generation"] for r in transitions),
+                "output publication lifecycle missing or reordered")
+    publication = records(guests[0], "MANAGED_MODEL_PUBLICATION")
+    require([r.get("state") for r in publication] == ["writer-unmapped", "sealed"] and
+            publication[0].get("holder_retained") == "1" and publication[1].get("views") == "3" and
+            publication[1].get("payload_copies") == "0" and
+            all(r.get("node") == "0" for r in publication) and
+            number(publication[1], "generation") == first["generation"] and
+            number(publication[1], "version") == first["version"],
+            "writer did not unmap while retaining the seal holder")
+    def position(text, prefix, **fields):
+        matches = [i for i, line in enumerate(text.splitlines()) if line.startswith(prefix + " ")
+                   and all(f"{key}={value}" in line.split() for key, value in fields.items())]
+        require(len(matches) == 1, "ambiguous publication ordering evidence")
+        return matches[0]
+    text = guests[0]
+    require(position(text, "MANAGED_MODEL", action="completed") <
+            position(text, "MANAGED_MODEL", action="cpu-verify") <
+            position(text, "MANAGED_MODEL_REFERENCE", action="staged", view=0) <
+            position(text, "MANAGED_MODEL_REFERENCE", action="staged", view=1) <
+            position(text, "MANAGED_MODEL_REFERENCE", action="staged", view=2) <
+            position(text, "MANAGED_MODEL_PUBLICATION", state="writer-unmapped") <
+            position(text, "MANAGED_PTO_REFERENCE", action=3, object="output") <
+            position(text, "MANAGED_MODEL_PUBLICATION", state="sealed") <
+            position(text, "MANAGED_OWNER", state="drained", object="output"),
+            "output published or holder released before writer unmap")
+
+
+def validate_model_probe(guests, qemu, output_bytes, output_checksum, publication=False):
     """The fixed two-node Qwen layer probe; not a complete W5/PP acceptance."""
     require(len(guests) == 2 and 0 < output_bytes <= 245760 and
             0 <= output_checksum < 1 << 64, "invalid model probe oracle")
@@ -960,11 +1047,16 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum):
         require(len(config) == 1 and config[0].get("model_probe") == "1" and
                 config[0]["callable"] == "4" and config[0]["home_node"] == "1",
                 "model probe configuration missing")
+        require(config[0].get("model_publish", "0") == str(int(publication)),
+                "model publication mode differs")
         mappings = [r for r in records(text, "MANAGED_PTO") if "cpu_base" in r]
         require(len(mappings) == 2 and [r["object"] for r in mappings] == ["input", "output"],
                 "model objects missing")
-        for row, length, rights in zip(mappings, (2048, 262144), (1, 3)):
-            require(number(row, "cpu_base") == number(row, "address") > 0 and
+        reader = publication and node == 1
+        for index, (row, length, rights) in enumerate(zip(mappings,
+                (2048, output_bytes if reader else 262144), (1, 1 if reader else 3))):
+            require(number(row, "address") > 0 and
+                    number(row, "cpu_base") == number(row, "address") + (16384 if reader and index else 0) and
                     number(row, "logical_bytes") == length and number(row, "access") == rights and
                     number(row, "generation") > 0 and number(row, "mapping_id") > 0 and
                     row["home_node"] == "1" and row["home_provider"] == "guest-node-1",
@@ -972,7 +1064,8 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum):
         require(mappings[1]["key"] == mappings[0]["key"] + "-output" and
                 mappings[0]["address"] != mappings[1]["address"], "model output aliases input")
         maps.append(mappings)
-        refs = records(text, "MANAGED_PTO_REFERENCE")
+        refs = [r for r in records(text, "MANAGED_PTO_REFERENCE")
+                if r.get("object", "input") != "output"]
         require([r["action"] for r in refs] ==
                 (["4", "5", "mapped"] if node == 0 else ["1", "2", "3", "4", "mapped"]),
                 "model reference lifecycle missing or reordered")
@@ -994,7 +1087,9 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum):
                 done[0]["compute_leases"] == "0" and done[0]["objects"] == "2",
                 "model resources not drained")
         drained = [r for r in records(text, "MANAGED_OWNER") if r["state"] == "drained"]
-        require(len(drained) == 2 and {r["object"] for r in drained} == {"input", "output"} and
+        require(len(drained) == (4 if reader else 2) and
+                [r["object"] for r in drained].count("input") == 1 and
+                {r["object"] for r in drained} == {"input", "output"} and
                 all(r[key] == "0" for r in drained for key in
                     ("cpu_pins", "compute_pins", "in_flight_pins", "mapping_pending", "holder_pending")),
                 "model owner obligations remain")
@@ -1086,11 +1181,14 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum):
     require(ordered == ["SIM_QEMU_UB_GM_BIND_REGISTER", "QEMU_UB_GM_LOAD", "QEMU_UB_GM_LOAD",
                         "qwen3-range-runtime-timing:", "QEMU_UB_GM_STORE", "QEMU_UB_GM_FENCE",
                         "QEMU_UB_GM_UNBIND"], "model callback/completion order differs")
+    if publication:
+        validate_model_output_publication(guests, maps, output_bytes, output_checksum)
     return {"status": "pass", "scope": "managed-two-guest-qwen-single-layer-probe",
             "nodes": 2, "objects": 2, "dispatches": 1, "load_callbacks": 2,
             "store_callbacks": 1, "fences": 1, "output_bytes": output_bytes,
             "output_checksum": f"{output_checksum:016x}", "reference": references[0],
-            "am2_complete": False, "pp_decode_verified": False}
+            "am2_complete": False, "pp_decode_verified": False,
+            "output_publication_verified": publication}
 
 
 def main():
@@ -1103,6 +1201,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--model-probe-bytes", type=lambda value: int(value, 0))
     parser.add_argument("--model-probe-checksum", type=lambda value: int(value, 0))
+    parser.add_argument("--require-model-publication", action="store_true")
     parser.add_argument("--require-timeout-recovery", action="store_true")
     parser.add_argument("--access-threads", type=int, choices=range(9))
     parser.add_argument("--concurrent-requests", type=int, choices=(1, 2), default=1)
@@ -1114,6 +1213,8 @@ def main():
                         help="strict wire version of the recorded QEMU build (default: legacy v1)")
     args = parser.parse_args()
     model_probe = args.model_probe_bytes is not None or args.model_probe_checksum is not None
+    if args.require_model_publication and not model_probe:
+        parser.error("model publication requires model probe oracle")
     if model_probe and (args.model_probe_bytes is None or args.model_probe_checksum is None or
                         args.home_node != 1 or args.layout != "nd" or args.access_threads != 0 or
                         args.concurrent_requests != 1 or not args.require_readonly_inputs or
@@ -1128,7 +1229,8 @@ def main():
         contents = [path.read_bytes() for path in paths]
         text = [data.decode("utf-8", errors="replace") for data in contents]
         result = validate_model_probe(text[:2], text[2], args.model_probe_bytes,
-                                      args.model_probe_checksum) if model_probe else validate(
+                                      args.model_probe_checksum,
+                                      args.require_model_publication) if model_probe else validate(
                           text[:2], text[2], args.require_timeout_recovery,
                           args.access_threads, args.require_negative_checks,
                           args.require_readonly_inputs, args.layout, args.home_node,

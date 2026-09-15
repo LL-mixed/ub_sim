@@ -1570,6 +1570,7 @@ mem_service_object_share_managed() (
       echo "reference_inputs=$(cmdline_value lingqu_shmem_pto.reference_inputs 0)"
       if [ "$(cmdline_value lingqu_shmem_pto.model_probe 0)" = "1" ]; then
         echo "model_probe=1"
+        echo "model_publish=$(cmdline_value lingqu_shmem_pto.model_publish 0)"
         echo "model_output_bytes=$(cmdline_value lingqu_shmem_pto.model_output_bytes '')"
         echo "model_output_checksum=$(cmdline_value lingqu_shmem_pto.model_output_checksum '')"
       fi

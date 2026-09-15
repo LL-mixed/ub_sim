@@ -5051,3 +5051,58 @@ r510 Rust 完整 workspace 43 个测试目标为 973 通过、16 ignored、零�
 7 个作业终态及完整测试清单。归档 SHA-256：
 `c8360fc44862125a12ed053e05e07efd2d058098d2b91bdf50d7a8efbc39bb11`。
 权重与网络审计原日志未打包；父仓库及平台子模块均未推送。
+
+## 2026-09-16：模型结果 V2 发布与只读消费
+
+现有 managed model probe 增加 `model_publish=1`。计算端在 BEGIN 后取得
+输出写映射，原 completion 成功并完成 CPU 校验后，从同一 allocation stage
+result、hidden、KV 三份只读 V2。SDK 的 `mem_service_mapping_owner_unmap()`
+排空映射并保留 holder；SEAL 确认后才释放 holder。home 为每份完整引用使用
+独立 session acquire/map、校验和释放，没有通过 raw acquire 绕过版本准入。
+CLI、配置透传和 validator 一并检查三份引用的身份、边界、权限及发布顺序。
+
+独立服务 `e21d1f4` 的 holder-preserving unmap 已通过 r520 原生/安装态、
+ASan/UBSan 和九份契约清单检查；r521 全集 306 项为 301 通过、5 环境跳过，
+零失败/错误，精确覆盖执行清单。证据为
+`out/sdk-owner-evidence-r523.tar.gz`，SHA-256：
+`695b8d797d909bcc25a64e8aece4c24607bcbb3c9049bfb07109810570721ba0`。
+
+实际 r534 暴露 provider 缺陷：home 的 READ 视图在 UPDATE_RANGE 中固定请求
+READWRITE，内核拒绝权限变更，数据 checksum 正确也无法通过可见性检查。
+r535 用新夹具在原生产代码上复现失败。`93f5dd8` 改为从当前 `view_access`
+选择 READONLY/READWRITE，禁止从 backing 的较宽权限推导视图权限。测试核对
+只读及读写刷新、跨页范围、越界拒绝和 ioctl 失败；原生、安装态 SDK、
+ASan/UBSan 及九份契约清单通过。r537 全集 306 项为 301 通过、5 环境跳过，
+零失败/错误，与 r521 的全部 test ID 精确一致。两个服务提交均仅推送获授权
+分支，远端 SHA 核验一致；父仓库 gitlink/lock 同步锁定 `93f5dd8`。
+只读修复证据 `out/sdk-readonly-evidence-r538.tar.gz` 共 836797 bytes，SHA-256：
+`59e4c09f38193b4fc10a167079486d38834aa87de9a4f6d2f5c5941580121b88`。
+
+r540 于 2026-09-15 19:19:51 至 19:24:48 UTC 在指定远端完成实际双 guest
+整轮验证，runner/container 均 exit 0、无 OOM、容器内未遗留 QEMU。沿用相同
+Qwen3-0.6B 权重、QEMU r499、callable 指纹和数值 oracle。新镜像 r539 SHA-256：
+`921687a8e59adf60caa997e963cf446ca495a8cb4ad24257a96e15546ef55ce0`。
+完整输出 54680 bytes、hidden 2048 bytes、KV 8232 bytes，校验值分别为
+`1bb986f7936fb3c0`、`189eaef393d6a4f5`、`cc5e4f424d8ac3e5`。独立复核确认
+三份发布/读取 V2 完全一致、只读权限、三个独立 mapping ID、writer unmap
+早于 SEAL、holder release 晚于 SEAL，以及最终服务/provider/kernel 资源回收。
+发布没有复制 payload；Rust 模型执行仍使用 host 临时张量，不宣称端到端零拷贝。
+
+失败记录保留：r524/r526 构建源展开影响依赖目录；r525 的 provider 构建未启用
+managed worker；r532 的 reader 等待预算先耗尽；r533 的外层运行期限先终止；
+r534 为上述只读刷新缺陷。r516 的冗余旧分片在完整 r521 通过后终止，exit 137，
+不计为通过。r527/r529 分别通过原候选 Rust/Python 全集。最终锁定版本的 r541
+Python 全集 592 项为 587 通过、5 环境跳过、零失败/错误，test ID 与 r529
+精确一致。r541 的 /work 为临时挂载，退出后不能直接散列；来源由不可变 archive、
+容器执行命令和成功的 lock 校验关联，r539 保留的七个对应文件直接散列与本地一致。
+
+r542 最终 Rust 全集于 19:27:33 UTC 完成，43 个测试目标与 r510 精确一致，
+973 通过、16 个既有 ignored、零失败，容器 exit 0、无 OOM。ignored 和上述
+环境跳过均不算通过。完整远端证据 `managed-publication-evidence-r543.tar.gz`
+保留 54 项日志、配置、源码包、测试清单及 13 个作业终态，共 192171544 bytes，
+SHA-256 为 `0799b411492432bb28dc990f468639f15d287d0a6b901676eba3066626175049`。
+归档不包含模型权重或网络审计原日志，原始成功和失败记录均保留。
+
+当前结果只关闭固定单层输出发布与只读消费子项。完整 W5 serving loop、
+跨 range/step 生命周期、两模型 PP/decode、多 home 及 M1/M3/M4/M5 的未完成
+验收继续保留；M2 和总目标保持进行中。

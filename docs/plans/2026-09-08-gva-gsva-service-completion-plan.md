@@ -490,6 +490,21 @@ r511 实际双 guest 及原日志独立复核通过：hidden 2048 bytes、KV 823
 均来自原 allocation，校验值与数值 oracle 一致，原 completion 和回收门禁
 保持通过。r513 Python 全集 585 通过、5 环境跳过；r510 Rust 全集 973 通过、
 16 ignored，均零失败。失败记录与当前验收边界详见实施记录，本项不关闭 M2。
+
+输出发布接入使用现有 model probe 的 `model_publish=1` 选项。计算端作为
+输出 allocation 的唯一 owner，先 BEGIN 再建立写映射；home 只在 SEAL 后
+获得只读 V2。计算完成后在原 CPU lease 内准备并 stage result、hidden、KV
+三个视图，解除写映射时保留 holder，SEAL 成功后再释放 owner。下游分别
+acquire/map 三份完整引用，每次使用独立 session；不得在同一进程保留重复
+holder 归属或使用旧 raw acquire。三份引用共享 backing，发布不复制 payload。
+该实际双 guest 发布诊断仍不代替 W5 serving-loop 及多步 PP 验收。
+
+r540 已完成上述实际发布闭环：三个视图在 writer unmap 后封存，home 分别以
+独立 session 和只读映射消费，完整输出、hidden、KV 校验与数值 oracle 一致，
+最终资源归零。服务 `e21d1f4` 提供保留 holder 的 unmap；`93f5dd8` 修复只读
+home cache refresh 错误请求写权限的问题，两笔均已验证并按授权发布。
+父仓库锁定 `93f5dd8`。本轮仍为固定 Qwen 单层验证，完整 W5 serving、两模型
+2/3/8-node 多步 PP、多 home 和后续阶段继续未完成，详见实施记录。
 实际接入修正了两个夹具未覆盖的问题：SDK adopt 清空原 mapping 后，检查必须
 经 owner 的活动 lease 执行；provider 回调地址使用 `ub_gm_base + view_offset`，
 与 runtime tensor aperture 分开校验，不能假设两种地址相等。
@@ -1113,7 +1128,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r331 正常 unmap、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2 整轮通过；当前锁定服务 1f39f2a | 多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；当前锁定服务 93f5dd8 | 完整 W5 serving、多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
 | M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a 保存 worker 内核出生身份；r435 实际 worker 崩溃后 segment/export 核对、跨内核日志拒绝及隔离保留通过 | 生产恢复协调、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |

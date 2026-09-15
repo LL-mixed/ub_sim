@@ -82,6 +82,7 @@ LINGQU_SHMEM_PTO_NEGATIVE_CHECKS="${LINGQU_SHMEM_PTO_NEGATIVE_CHECKS:-0}"
 LINGQU_SHMEM_PTO_READONLY_INPUTS="${LINGQU_SHMEM_PTO_READONLY_INPUTS:-0}"
 LINGQU_SHMEM_PTO_REFERENCE_INPUTS="${LINGQU_SHMEM_PTO_REFERENCE_INPUTS:-0}"
 LINGQU_SHMEM_PTO_MODEL_PROBE="${LINGQU_SHMEM_PTO_MODEL_PROBE:-0}"
+LINGQU_SHMEM_PTO_MODEL_PUBLISH="${LINGQU_SHMEM_PTO_MODEL_PUBLISH:-0}"
 LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES="${LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES:-0}"
 LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM="${LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM:-0}"
 LINGQU_SHMEM_PTO_HOME_NODE="${LINGQU_SHMEM_PTO_HOME_NODE:-0}"
@@ -500,6 +501,7 @@ validate_lingqu_shmem_pto_config() {
     "readonly-inputs:$LINGQU_SHMEM_PTO_READONLY_INPUTS" \
     "reference-inputs:$LINGQU_SHMEM_PTO_REFERENCE_INPUTS" \
     "model-probe:$LINGQU_SHMEM_PTO_MODEL_PROBE" \
+    "model-publish:$LINGQU_SHMEM_PTO_MODEL_PUBLISH" \
     "model-output-bytes:$LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES" \
     "model-output-checksum:$LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM" \
     "home-node:$LINGQU_SHMEM_PTO_HOME_NODE" \
@@ -596,6 +598,11 @@ validate_lingqu_shmem_pto_config() {
   fi
   if (( LINGQU_SHMEM_PTO_MODEL_PROBE > 1 )); then
     echo "model probe must be 0 or 1" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_MODEL_PUBLISH > 1 ||
+        (LINGQU_SHMEM_PTO_MODEL_PUBLISH == 1 && LINGQU_SHMEM_PTO_MODEL_PROBE != 1) )); then
+    echo "model-publish requires model-probe=1 and must be 0 or 1" >&2
     exit 2
   fi
   if (( LINGQU_SHMEM_PTO_MODEL_PROBE == 1 )); then
@@ -787,6 +794,7 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto.reference_inputs=$LINGQU_SHMEM_PTO_REFERENCE_INPUTS"
   if (( LINGQU_SHMEM_PTO_MODEL_PROBE == 1 )); then
     append_cmdline_if_missing "lingqu_shmem_pto.model_probe=1"
+    append_cmdline_if_missing "lingqu_shmem_pto.model_publish=$LINGQU_SHMEM_PTO_MODEL_PUBLISH"
     append_cmdline_if_missing "lingqu_shmem_pto.model_output_bytes=$LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES"
     append_cmdline_if_missing "lingqu_shmem_pto.model_output_checksum=$LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM"
   fi
@@ -3934,6 +3942,9 @@ run_iteration() {
       if (( LINGQU_SHMEM_PTO_MODEL_PROBE == 1 )); then
         recovery_args+=(--model-probe-bytes "$LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES"
           --model-probe-checksum "$LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM")
+        if (( LINGQU_SHMEM_PTO_MODEL_PUBLISH == 1 )); then
+          recovery_args+=(--require-model-publication)
+        fi
       fi
       if (( LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS > 0 )); then
         recovery_args+=(--require-timeout-recovery)

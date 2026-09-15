@@ -182,6 +182,21 @@ class ManagedPtoCliTest(unittest.TestCase):
         self.assertEqual(self.run_config({**CONFIG, "readonly_inputs": "1"},
             extra="reference_inputs=1\nreference_inputs=1\n").returncode, 2)
 
+    def test_model_publication_requires_the_managed_model_probe(self):
+        values = {**CONFIG, "home_node": "1", "readonly_inputs": "1",
+                  "reference_inputs": "1", "layout": "nd", "model_probe": "1",
+                  "model_output_bytes": "54680", "model_output_checksum": "0x1234",
+                  "model_publish": "1"}
+        for node in ("0", "1"):
+            result = self.run_config({**values, "node_id": node})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("model_publish=1", result.stdout)
+            self.assertIn("network_operations=0", result.stdout)
+        for invalid in ("2", "-1", "1x", "18446744073709551616"):
+            self.assertEqual(self.run_config({**values, "model_publish": invalid}).returncode, 2)
+        self.assertEqual(self.run_config({**CONFIG, "model_publish": "1"}).returncode, 2)
+        self.assertEqual(self.run_config(values, extra="model_publish=1\n").returncode, 2)
+
     def test_layout_profiles_derive_bounded_geometry_before_any_connection(self):
         profiles = (("cross-page", 64, 65536), ("nd", 16384, 262144),
                     ("tail", 16256, 262144))
@@ -465,7 +480,9 @@ int main(int argc, char **argv) {
                   "LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM": "0x1234", "LINGQU_SHMEM_PTO_HOME_NODE": "1",
                   "LINGQU_SHMEM_PTO_REFERENCE_INPUTS": "1", "LINGQU_SHMEM_PTO_READONLY_INPUTS": "1",
                   "LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT": "0x1234"}
-        changes = ({}, {"LINGQU_SHMEM_PTO_MODEL_PROBE": "2"},
+        changes = ({}, {"LINGQU_SHMEM_PTO_MODEL_PUBLISH": "1"},
+                   {"LINGQU_SHMEM_PTO_MODEL_PUBLISH": "2"},
+                   {"LINGQU_SHMEM_PTO_MODEL_PROBE": "2"},
                    {"LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES": "0"},
                    {"LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES": "245761"},
                    {"LINGQU_SHMEM_PTO_HOME_NODE": "0"}, {"SIM_QWEN3_DENSE_TP_NODES": "3"},
@@ -482,11 +499,14 @@ int main(int argc, char **argv) {
                 result = subprocess.run(["zsh", "-c", script, "probe-test", str(config)],
                                         capture_output=True, text=True, timeout=5)
                 with self.subTest(change=change):
-                    self.assertEqual(result.returncode, 2 if change else 0, result.stdout + result.stderr)
-                    if not change:
+                    valid = not change or change == {"LINGQU_SHMEM_PTO_MODEL_PUBLISH": "1"}
+                    self.assertEqual(result.returncode, 0 if valid else 2, result.stdout + result.stderr)
+                    if valid:
                         self.assertIn("lingqu_shmem_pto.model_probe=1", result.stdout)
                         self.assertIn("lingqu_shmem_pto.model_output_bytes=54680", result.stdout)
                         self.assertIn("lingqu_shmem_pto.model_output_checksum=0x1234", result.stdout)
+                        self.assertIn("lingqu_shmem_pto.model_publish=" +
+                                      change.get("LINGQU_SHMEM_PTO_MODEL_PUBLISH", "0"), result.stdout)
 
     def test_same_mapping_two_dispatches_and_fail_closed_lifetime(self):
         source = (APP / "lingqu_shmem_pto_managed.c").read_text()
