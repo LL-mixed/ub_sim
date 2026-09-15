@@ -1356,6 +1356,71 @@ mem_service_object_share_reference() (
   done
 )
 
+mem_service_object_share_retired_ops() {
+  local node="$1" size="$2" seed="$3" key marker
+  if [ "$node" = "0" ]; then
+    for key in retired-old retired-new; do
+      echo "op=allocate key=$key idempotency_key=alloc-$key size_bytes=$size capabilities=map"
+      echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
+      echo "op=acquire key=$key idempotency_key=write-acquire-$key"
+      echo "op=map key=$key flags=readwrite"
+      echo "op=write key=$key offset=0 len=$size seed=$seed"
+      echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
+      echo "op=read key=$key offset=0 len=$size seed=$seed"
+      echo "op=unmap key=$key probe_unmapped=1"
+      echo "op=release key=$key idempotency_key=write-release-$key"
+      echo "op=allocate key=$key-ready idempotency_key=ready-$key size_bytes=65536 capabilities=map"
+      echo "op=wait_state key=$key-done state=active timeout_ms=60000 poll_ms=50"
+      for marker in "$key" "$key-ready" "$key-done"; do
+        echo "op=retire key=$marker idempotency_key=retire-$marker"
+        echo "op=wait_state key=$marker state=retired timeout_ms=60000 poll_ms=50"
+      done
+      seed=$(((seed + 1) % 256))
+    done
+  else
+    for key in retired-old retired-new; do
+      echo "op=wait_state key=$key-ready state=active timeout_ms=60000 poll_ms=50"
+      echo "op=acquire key=$key idempotency_key=read-acquire-$key"
+      echo "op=map key=$key flags=read"
+      echo "op=wait_visible key=$key offset=0 len=$size seed=$seed"
+      echo "op=read key=$key offset=0 len=$size seed=$seed"
+      if [ "$key" = "retired-old" ]; then
+        echo "op=capture_mapping key=$key"
+      fi
+      echo "op=unmap key=$key probe_unmapped=1"
+      if [ "$key" = "retired-new" ]; then
+        echo "op=probe_retired_mapping key=retired-old"
+        echo "op=stats"
+        echo "op=map key=$key flags=read"
+        echo "op=wait_visible key=$key offset=0 len=$size seed=$seed"
+        echo "op=read key=$key offset=0 len=$size seed=$seed"
+        echo "op=unmap key=$key probe_unmapped=1"
+      fi
+      echo "op=release key=$key idempotency_key=read-release-$key"
+      echo "op=allocate key=$key-done idempotency_key=done-$key size_bytes=65536 capabilities=map"
+      echo "op=wait_state key=$key-done state=retired timeout_ms=60000 poll_ms=50"
+      seed=$(((seed + 1) % 256))
+    done
+  fi
+  echo "op=stats"
+}
+
+mem_service_object_share_retired() (
+  node="$1" size="$2" seed="$3" incarnation="$4" connect="$5"
+  config=/tmp/retired-session.conf
+  {
+    echo "session_id=retired-client-$node"
+    echo "connect=$connect"
+    echo "provider=obmm"
+    echo "provider_node_id=$node"
+    echo "provider_node_count=2"
+    echo "provider_generation=$((incarnation + 1))"
+    echo "provider_import_region_bytes=2097152"
+    mem_service_object_share_retired_ops "$node" "$size" "$seed"
+  } >"$config"
+  /bin/linqu_mem_service object-session --config "$config"
+)
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -1445,6 +1510,9 @@ mem_service_object_share_managed() (
   /bin/linqu_mem_service_provider_obmm serve-allocations \
     --config /tmp/managed-share.worker.conf &
   worker_pid=$!
+  if [ "$access" = "cpu-retired" ]; then
+    mem_service_object_share_retired "$node" "$size" "$seed" "$incarnation" "$connect" || exit 1
+  fi
   if [ "$access" = "cpu-reference" ]; then
     mem_service_object_share_reference "$node" "$size" "$iterations" "$seed" \
       "$incarnation" "$connect" || exit 1
@@ -1641,11 +1709,18 @@ run_mem_service_object_share() {
   descriptor_hex="$(cmdline_value mem_service_object_share_descriptor_hex '')"
   connect="tcp:10.0.0.1:$port"
 
-  if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ] && [ "$access" != "cpu-reference" ]; } ||
+  if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ] &&
+       [ "$access" != "cpu-reference" ] && [ "$access" != "cpu-retired" ]; } ||
       { [ "$access" = "cpu-pto" ] &&
         { [ "$backend" != "obmm" ] ||
           [ "$iterations" != "1" ] || [ "$fault" != "none" ]; }; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=access_config"
+    return 2
+  fi
+  if [ "$access" = "cpu-retired" ] &&
+      { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] ||
+        [ "$iterations" != "1" ] || [ "$fault" != "none" ]; }; then
+    log "mem_service object-share: status=fail node=$node_idx reason=retired_config"
     return 2
   fi
   if [ "$access" = "cpu-reference" ] &&

@@ -3910,3 +3910,81 @@ reader 200 次原地址访问均在正常 unmap 后发生预期 CPU 故障；每
 握手等待预算，guest 业务请求截止时间、测试内容和通过条件保持不变。
 完整计划仍未完成；上述正常 unmap 验收不关闭旧 provider 身份、强制
 撤销、恢复、W5 模型矩阵及 tokenless 联合失效的剩余要求。
+
+### r332-r339：保存旧 descriptor 的实际 CPU 访问检测
+
+独立服务 `ff2d50c35dc2153d5b0009fb2e5c53304a5c1af4` 新增
+`capture_mapping key=<old>` 与 `probe_retired_mapping key=<old>`。
+前者仅捕获当前进程已映射、持有且成功读校验的完整 allocation；后者要求
+旧对象已确认 retired、不同代新对象已在同址校验且仍持有 holder，并在
+新映射 unmap 后把原 descriptor 直接交给 provider。仅目标地址同步 CPU
+故障及确认清理才算通过，普通 map 错误保持未分类失败；清理失败保留归属。
+探针不接受外部任意地址/descriptor，不改变正常业务 SDK 的控制面准入。
+
+r332 五个定向用例通过：旧描述符仍可访问时失败、目标故障后重查新对象、
+普通 map 错误不算通过、清理失败保留及参数/前置条件检查。r333 完整服务
+291 个唯一 test ID 精确覆盖，286 通过、5 环境跳过、零失败/错误；运行于
+2026-09-14 23:38:19 至 23:45:16 UTC。结果 SHA-256：
+`5e4201bac10cf0b793e8d544409e7b0a8f9df0535f6a43c2b5c5fa5ef8b2077f`。
+r334 原生 provider/worker、ASan/UBSan、安装 SDK 与九份 manifest 比对均
+通过，23:38:21 至 23:41:29 UTC，exit 0；日志 SHA-256：
+`5579fa087e0bfb6832fe01a261148e3817ce66e1dcf41a8af174c04b211ddb3d`。
+候选六文件与最终服务提交逐字节一致；仅推送授权 mem_service 分支，远端
+SHA 已核对，父仓库 gitlink/lock 同步至 ff2d50c，父仓库未推送。
+
+下游沿用 `run_ub_dual_node_apps.sh --app mem_service_object_share
+--config <path>`，增加 `cpu-retired` 模式及独立 validator。两端各保持一个
+object-session，先完成旧对象、再完成同址新对象；reader 捕获旧描述符，
+新对象读校验/unmap 后访问旧描述符，最后应重新映射并读校验新对象。
+验收逐项绑定操作顺序、key/generation、地址、checksum、CPU 故障、QEMU
+route 和服务/provider/kernel 资源。配置限定 OBMM、64 KiB、1 轮、无外加
+fault；seed=41、新数据 seed=42、aperture=16 MiB，业务超时保持默认。
+
+r335 下游送测快照 `retired-root-r335.tar.gz` SHA-256：
+`cae500927aa685eaa6f3000f77ff403f4c07e0627fb2fd50fe46bb7e932b0f4a`。
+r336 AArch64 静态 CLI/worker 和 guest image 构建通过；实际 kernel r109、
+QEMU r281 保持不变。`managed-retired-r336.cpio.gz` SHA-256：
+`85a76fcf88f6b11884de2f424ca74bd1d0380f3c3d4bb450c96d132fab74ea1d`。
+r337 完整下游 Python 为 559 个唯一用例，554 通过、5 交叉编译环境跳过，
+零失败/错误/加载错误；23:47:47 至 23:49:16 UTC，exit 0、无 OOM。
+结果 SHA-256：
+`6b94f02f8a9b2b936ca38cbe30d2c66dbc8d709e960eb5c39a6bb957f4665af8`。
+r338 Rust workspace 的 43 个外层 harness 为 963 通过、16 ignored、
+零失败；23:47:48 至 23:56:34 UTC，exit 0、无 OOM。结果 SHA-256：
+`cf6b611e661eac175e60d91d8c7072a3919e55a8325e70483268837cb97327d1`。
+原始测试、构建及汇总归档 `retired-unit-evidence-r338.tar.gz` 为
+196,685 bytes，SHA-256：
+`cd0a54c5c938241a829385dc13dd9084531407b0d1b3d44940706c16c1551a40`。
+
+**r339 实际失败，旧 descriptor 隔离未通过。** 原作业在指定验证机于
+2026-09-15 01:02:35 至 01:04:06 UTC 运行，exit 1、无 OOM。
+实际结果：
+
+- 旧对象 generation=1、segment 尾号 1，GSVA token=2；新对象
+  generation=4、segment 尾号 4，GSVA token=5。二者 home VA 相同。
+- 两代 backing export token 均为 97，export mem ID 均复用为 2。
+  新数据完整 checksum 为 `0xbaadacabd8bb0383`，reader 已读校验通过。
+- reader 第 17 步用捕获的原 descriptor 重新建立 map_id=3、旧 segment
+  路由，返回 `map_result=0 signal=0 unmap_confirmed=1`；没有预期故障，
+  CLI 明确报 `retired_access_not_rejected`。探针只证明该读取仍然成功，
+  未打印读到的字节，不额外声称此字节的内容已经独立比对。
+- reader 保留新对象 holder 并失败退出。writer 第 28 步等待完成屏障超时
+  是后续结果，不能将其列为首个原因；该轮未达到新对象重查及最终资源归零。
+- 结束后精确进程匹配确认无遗留 QEMU；宽泛 pgrep 曾匹配诊断 shell，
+  未把该 shell 当成 QEMU，也未为此终止其他进程。
+
+源码定位：`sim_dec_gsva_cpu_window_read/write` 只以本地 route 中的 token
+自校验；`UBCGsvaIoReq` v1 仅传 export token 和 remote UBA，home 的
+`ubc_handle_gsva_io` 直接按该 token 做严格 DMA。完整 GSVA segment、epoch
+及 token value 未进入该数据请求，export token 被复用后无法区分新旧身份。
+单纯调用本地 coherence acquire 也不能证明 home 已校验权威绑定。
+下一修复需建立 home 侧完整 GSVA 身份与 export 生命周期的绑定，并让
+CPU/PTO 的受管理数据请求携带并核对该身份；不扩大地址池掩盖失败，不允许
+受管理请求回退 token-only，保留正常业务兼容和未知状态拒绝的边界。
+
+失败归档 `retired-evidence-r339.tar.gz` 为 1,581,915 bytes，SHA-256：
+`36d866748b45258adb2d4ff7898794d97448c771b8253b3fe5d66a307e590a74`。
+两份归档在既有远端 evidence 目录保存，回传到本地 out；完整原日志保留。
+告警调查及 SSH/SCP 握手超时的记录与功能失败分开；只重试观察/传输，
+r337/r338/r339 未重复启动。诊断能力已有测试，实际旧身份拒绝仍失败，
+M2/AM3 和完整目标保持未完成，其他模型、故障、恢复及性能门禁未缩减。

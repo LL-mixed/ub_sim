@@ -18,6 +18,23 @@ Conventions:
 
 ## App Validation Matrix
 
+Managed old-descriptor validation uses `scripts/run_ub_dual_node_apps.sh`
+with `--app mem_service_object_share --config <path>` and a config containing
+`MEM_SERVICE_OBJECT_SHARE_BACKEND=obmm`,
+`MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-retired`,
+`MEM_SERVICE_OBJECT_SHARE_SIZE=65536`,
+`MEM_SERVICE_OBJECT_SHARE_ITERATIONS=1`, and
+`MEM_SERVICE_OBJECT_SHARE_FAULT=none`. Two objects run in the same pair of
+sessions: capture a verified old allocation, retire it, verify its same-address
+replacement, probe the saved descriptor, then recheck the replacement. The
+runner checks both guest logs, reader QEMU routes, and final resource drain.
+Generic map failures do not pass this diagnostic. Use the designated remote
+validation host; this is not a local development-machine test.
+The initial actual run r339 fails at the saved-descriptor access check:
+reusing a backing export token currently permits the old CPU access. This
+scenario is a regression detector, not a claim that retirement isolation is
+complete; see `docs/2026-09-11-gva-managed-service-implementation-progress.md`.
+
 Each app must have a reusable CLI validation path. Use stable script entrypoints
 instead of env-prefixed one-off shell commands.
 

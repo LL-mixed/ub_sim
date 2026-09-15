@@ -1106,9 +1106,19 @@ if [[ "$MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE" != "auto" ]]; then
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-reference" &&
+      "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-retired" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-pto" ]]; then
   echo "unsupported Memory Service access mode: $MEM_SERVICE_OBJECT_SHARE_ACCESS" >&2
   exit 2
+fi
+if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-retired" ]]; then
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
+        "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
+        "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ]]; then
+    echo "cpu-retired requires OBMM, 65536 bytes, one round and no fault" >&2
+    exit 2
+  fi
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-reference" ]]; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
@@ -3902,6 +3912,11 @@ run_iteration() {
         --concurrent-requests "$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS" \
         "${recovery_args[@]}" \
         --output "${nodea_guest_log:h}/managed-pto-validation.json" || return 1
+    elif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-retired" ]]; then
+      python3 "${SCRIPT_DIR}/validate_mem_service_retired_guest.py" \
+        --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
+        --qemu-b "$nodeb_qemu_log" --seed "$MEM_SERVICE_OBJECT_SHARE_SEED" \
+        --output "${nodea_guest_log:h}/managed-retired-validation.json" || return 1
     elif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-reference" ]]; then
       python3 "${SCRIPT_DIR}/validate_mem_service_reference_guest.py" \
         --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
