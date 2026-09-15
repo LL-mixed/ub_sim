@@ -4381,3 +4381,63 @@ r401 于 09:41:49 UTC 完成下游 Python 全集，570 个唯一 test ID 与前�
 父仓库按限定四文件范围提交锁定与实施记录，父仓库及平台仓库不推送。
 实际 daemon 重启的资源保留诊断已按总计划的静止点约定开展，结果另行记录；
 本段不将镜像构建或回归通过计作物理恢复完成。
+
+### r403-r407：修复 managed guest 交互入口并核验完整回归
+
+r403 正常 CPU 退役前置用例通过，但 runner 宣告交互就绪时，guest 仍在等待
+常驻 worker；首条串口命令未执行，诊断 exit 1，daemon 重启尚未发生。
+修订现有 `--interactive-after-pass`：向 guest 传入明确选项，在客户端完成后
+保留 daemon/worker 并进入 shell；runner 等待两端实际 shell-ready 标记。
+默认 headless 继续等待 worker；shell 返回后仍执行原有基础设施清理。
+
+r404 于 2026-09-15 09:58:49 至 09:59:06 UTC 构建修订镜像，exit 0；
+独立服务仍锁定已发布 `e6f261e`，本批未修改服务源码。镜像 SHA-256：
+`2a47438ceb7a2de88d751ead65585c40717b88cffab27dce058d1ae20e482ebd`。
+r405 于 10:00:21 UTC 完成 Python 全集：572 个唯一 test ID，精确包含原有
+570 项及两项新增交互契约；567 通过、5 项交叉编译器环境跳过，零失败/错误。
+r406 于 10:07:42 UTC 完成 Rust workspace：43 个 harness 的名称与计数
+逐项匹配既有基线，963 通过、16 ignored，零失败、exit 0、无 OOM。
+Rust 原日志 SHA-256：
+`aa63a41a10743c002ed58f2a634dac0bd419135a6b3eb873aeb432b3505a4be3`。
+
+r407 已进入两端真实 shell，daemon/worker 启动与 kernel 区域查询成功。
+上传较长客户端配置时，guest shell 的命令末尾被截断，退出码回执产生
+`sh: invalid number ''`，observer 因缺少合法回执超时，整轮 exit 1。
+本轮尚未执行重启断言。后续诊断保持原资源断言，配置采用每块 192 bytes 的
+短行上传，并在 guest 内校验完整 SHA-256；本地轻量检查覆盖六种边界长度、
+每条命令长度上界及损坏上传拒绝。原 r403/r407 失败记录继续保留。
+
+### r408-r409：实际双 guest 的静止点 daemon 重启资源保留
+
+r408 已完成分块上传并启动真实客户端，后续因串口观察器只读取当前节点，
+另一节点的内核输出未被持续接收，出现 `console_emit_next_record` soft lockup
+及 OBMM 同步超时；写读未通过，10:11:01 UTC 终态 exit 1。修订诊断观察器，
+为两端分别持续接收串口输出，保留全部字节；接收队列有界，溢出明确失败。
+本地以真实 socketpair 验证一端不消费时仍完整接收 1 MiB、命令发送及线程退出。
+未关闭内核日志，未放宽超时或资源断言，未修改服务及 guest 镜像。
+
+r409 于 2026-09-15 10:13:24 至 10:15:06 UTC 完成，容器 exit 0、无 OOM。
+正常 CPU 退役前置用例通过；新服务的两个客户端以真实 OBMM 映射写读 65,536
+bytes 并校验 seed=71。暂停两个客户端及两个 worker，逐个读取 `/proc` 确认
+停止状态后，连续两次强制终止并重启控制服务：
+
+- 重启前 refs=2、服务 import mappings=2、export mappings=1、隔离对象=0。
+- 两次重启后均为隔离对象=1、隔离字节=2 MiB、managed_recovery_required=1；
+  引用与映射计数不变。active backing/address 计数归零，资源转入隔离计量。
+- 对象 key、generation、version、大小、home、provider incarnation、地址和
+  完整 96-byte descriptor 保留；两端 kernel 区域 ID、类型和字节逐项相同。
+- 两次新 acquire 均 exit 1，明确返回 managed_reconciliation_required。
+  supervisor 记录 observer_exit=0，随后主动结束 runner（exit 143）并清理
+  guest；该清理退出码不冒充 runner 自行正常结束。结束后无遗留 QEMU。
+
+此结果证明实际物理资源仍存在时，daemon checkpoint 重启保留并隔离其控制
+状态。它不证明暂停进程前的生产 fencing、worker 重启恢复、物理回收或重新
+加入；实际 V2 reader 重启也未纳入本轮。M3 和总目标继续保持未完成。
+
+独立复核逐条写读、四个进程停止、新 acquire 拒绝及身份/区域回执；结果 JSON
+SHA-256：`b8d973e56f8fc0933c239418eed3089d334e0d4df56aa0283855161ac903eacb`。
+原失败、最终原始日志、配置、测试清单、源码和七个容器终态共 64 文件归档为
+`interactive-checkpoint-evidence-r409.tar.gz`（10,398,484 bytes），SHA-256：
+`e4e432c1b8a9f098451e3df398909b5851a564bd7e4b6d56f85b59bd1a035525`；
+清单 SHA-256：
+`bfa4ffb9ce43d1bb5d662474414b57083eed482d7a05af2c6ca07a4c8c6d60cc`。

@@ -1421,6 +1421,15 @@ mem_service_object_share_retired() (
   /bin/linqu_mem_service object-session --config "$config"
 )
 
+mem_service_object_share_wait_infrastructure() {
+  if [ "$(cmdline_value mem_service.object_share_interactive 0)" = "1" ]; then
+    log "mem_service interactive-shell: ready node=$1 infrastructure=retained"
+    /bin/busybox sh
+    return $?
+  fi
+  wait "$2"
+}
+
 mem_service_object_share_failure_snapshot() (
   connect="$1"
   node="$2"
@@ -1702,7 +1711,7 @@ mem_service_object_share_managed() (
   log "mem_service object-share: status=ok node=$node role=$role backend=obmm"
   # The headless runner owns infrastructure shutdown after both clients pass.
   # Keep home exports and the daemon alive independently of client sessions.
-  wait "$worker_pid"
+  mem_service_object_share_wait_infrastructure "$node" "$worker_pid"
 )
 
 run_mem_service_object_share() {

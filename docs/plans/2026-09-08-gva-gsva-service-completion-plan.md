@@ -361,6 +361,17 @@ kernel 对账、fencing/rejoin 和完整 M3 仍待验收。详见实施记录 r3
 连续重启控制服务两次，核对隔离资源、holder/mapping 及 descriptor 未丢失，
 新数据准入被拒绝。该受控静止点只验证 daemon 重启的资源保留，不证明在途
 drain、worker 重启、物理回收或重新加入；测试结束必须清理本轮 guest 进程。
+该入口必须将显式交互选项传入 guest；正常客户端完成并报告资源后进入 shell，
+保留 daemon/worker，shell 退出时执行原基础设施清理。默认 headless 仍等待
+worker，由 runner 负责结束。仅存在串口 socket 或业务成功标记不代表 shell
+已经可接收命令，交互 runner 必须等到两端 guest 的实际 shell-ready 标记。
+
+r409 实际验证通过上述静止点：两个客户端写读后，暂停客户端与 worker，
+连续两次强制重启 daemon；保留 refs=2、服务 mappings=2、export=1，隔离
+2 MiB backing，完整对象身份/descriptor 和两端 kernel 区域不变，新 acquire
+明确拒绝。r405 Python 全集为 567 通过、5 跳过，r406 Rust 为 963 通过、
+16 ignored；原 r403/r407/r408 诊断失败保留。该结果不关闭 worker 恢复、
+生产 fencing/rejoin、物理回收和完整 M3。详见实施记录 r403-r409。
 
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
@@ -962,8 +973,8 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r331 正常 unmap、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2 整轮通过；当前服务 87e7a5a | 多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | 正常回收、持久幂等历史及运行期失联隔离有证据；r380 实际隔离保留资源，r383 复现小型 store 重启丢失 managed 状态 | 完整 managed 持久记录、重启 reconciliation、故障 fencing、失联节点重新加入矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r331 正常 unmap、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2 整轮通过；当前锁定服务 e6f261e | 多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M3 回收与恢复 | 进行中 | r380 实际隔离保留资源；e6f261e 补齐 checkpoint，r397-r399 覆盖完整 V2 保存；r409 实际 daemon 连续重启保留隔离资源 | 生产 reconciliation、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

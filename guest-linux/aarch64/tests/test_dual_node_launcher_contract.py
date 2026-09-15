@@ -62,6 +62,45 @@ class DualNodeLauncherContractTest(unittest.TestCase):
         self.assertIn("trap 'exit 143' TERM", self.launcher)
         self.assertNotIn("cleanup_serial_runtime' EXIT INT TERM", self.launcher)
 
+    def test_managed_interactive_waits_for_both_actual_guest_shells(self):
+        self.assertIn('mem_service.object_share_interactive=${INTERACTIVE_AFTER_PASS}',
+                      self.launcher)
+        start = self.launcher.index('echo "iteration ${iter}: dual-node apps pass"')
+        ready = self.launcher.index('echo "interactive shells ready;')
+        section = self.launcher[start:ready]
+        for node in (0, 1):
+            self.assertIn(f'mem_service interactive-shell: ready node={node} '
+                          'infrastructure=retained', section)
+        self.assertEqual(section.count('"$RUN_SECS" || return 1'), 2)
+        self.assertLess(section.index('wait_for_log_pattern'),
+                        section.index('cleanup_watchdog'))
+
+    def test_managed_shell_preserves_infrastructure_and_default_wait(self):
+        source = (ROOT / 'initramfs/run_app').read_text()
+        body = 'mem_service_object_share_wait_infrastructure() {' + source.split(
+            'mem_service_object_share_wait_infrastructure() {', 1)[1].split(
+            '\nmem_service_object_share_failure_snapshot()', 1)[0]
+        self.assertIn('mem_service_object_share_wait_infrastructure "$node" "$worker_pid"',
+                      source)
+        self.assertNotIn('kill ', body)
+        self.assertNotIn('exec ', body)
+        # Exercise the real shell branch with only its interactive shell mocked.
+        body = body.replace('/bin/busybox sh', 'interactive_shell')
+        for mode, code, expected in ((0, 7, 'worker_wait=123'),
+                                     (1, 4, 'interactive_shell=entered')):
+            with self.subTest(interactive=mode):
+                harness = (f'cmdline_value() {{ echo {mode}; }}\n'
+                           'log() { echo "$*"; }\n'
+                           'wait() { echo "worker_wait=$1"; return 7; }\n'
+                           'interactive_shell() { echo interactive_shell=entered; return 4; }\n'
+                           + body + '\nmem_service_object_share_wait_infrastructure 0 123')
+                result = subprocess.run(['sh', '-c', harness],
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertIn(expected, result.stdout)
+                self.assertEqual('interactive-shell: ready' in result.stdout, bool(mode))
+                self.assertEqual('worker_wait=' in result.stdout, not mode)
+
     def test_interactive_mode_is_exposed_by_the_launcher_cli(self):
         result = subprocess.run(
             [

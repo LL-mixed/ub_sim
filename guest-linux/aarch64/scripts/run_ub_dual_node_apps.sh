@@ -3003,6 +3003,8 @@ run_iteration() {
   fi
   if [[ "$mem_service_object_share_enabled" -eq 1 ]]; then
     append_cmdline_if_missing \
+      "mem_service.object_share_interactive=${INTERACTIVE_AFTER_PASS}"
+    append_cmdline_if_missing \
       "mem_service.object_share_backend=${MEM_SERVICE_OBJECT_SHARE_BACKEND}"
     append_cmdline_if_missing \
       "mem_service.object_share_access=${MEM_SERVICE_OBJECT_SHARE_ACCESS}"
@@ -3976,6 +3978,15 @@ run_iteration() {
 
   echo "iteration ${iter}: dual-node apps pass"
   if [[ "$INTERACTIVE_AFTER_PASS" -eq 1 ]]; then
+    if [[ "$mem_service_object_share_enabled" -eq 1 &&
+          "$MEM_SERVICE_OBJECT_SHARE_BACKEND" == "obmm" ]]; then
+      wait_for_log_pattern "$nodea_guest_log" \
+        'mem_service interactive-shell: ready node=0 infrastructure=retained' \
+        "$RUN_SECS" || return 1
+      wait_for_log_pattern "$nodeb_guest_log" \
+        'mem_service interactive-shell: ready node=1 infrastructure=retained' \
+        "$RUN_SECS" || return 1
+    fi
     cleanup_watchdog
     echo "interactive shells ready; use node input or Stop to terminate"
     echo "serial manifest: $SERIAL_ENV_FILE"
