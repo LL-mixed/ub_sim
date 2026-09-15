@@ -9,6 +9,8 @@ mod deepseek_v4_flash_official_runtime;
 mod deepseek_v4_flash_official_vector_runtime;
 mod deepseek_v4_flash_runtime;
 mod qwen3_pto_range;
+pub mod managed_model_input;
+use managed_model_input::{resolve_managed_operands, ManagedModelInput};
 pub use qwen3_pto_range::Qwen3PtoRangeGeometry;
 
 pub use deepseek_v4_flash_gguf_runtime::{
@@ -196,6 +198,10 @@ pub enum UapiDescriptor {
     Io(IoSubmitReq),
     DispatchUbGmV2(PtoUbGmDispatchV2Req),
     ModelRangeDispatch(ModelRangeDispatchReq),
+    ManagedModelRangeDispatch {
+        req: ModelRangeDispatchReq,
+        inputs: Vec<ManagedModelInput>,
+    },
     BlockWriteback {
         block: BlockHash,
         task: Option<TaskKey>,
@@ -1487,7 +1493,13 @@ impl LocalGuestUapiSurface {
                 Ok(handle.0)
             }
             UapiDescriptor::ModelRangeDispatch(req) => {
-                let event = self.run_model_range_dispatch(req)?;
+                let event = self.run_model_range_dispatch(req, None)?;
+                let op_id = event.op_id;
+                self.enqueue_to_cq(cq, event)?;
+                Ok(op_id)
+            }
+            UapiDescriptor::ManagedModelRangeDispatch { req, inputs } => {
+                let event = self.run_model_range_dispatch(req, Some(inputs))?;
                 let op_id = event.op_id;
                 self.enqueue_to_cq(cq, event)?;
                 Ok(op_id)
@@ -1780,6 +1792,7 @@ impl LocalGuestUapiSurface {
     fn run_model_range_dispatch(
         &mut self,
         req: ModelRangeDispatchReq,
+        managed_inputs: Option<Vec<ManagedModelInput>>,
     ) -> Result<CompletionEvent, SimError> {
         let now = self.next_service_time();
         let timing_enabled = qwen3_range_stage_timing_enabled();
@@ -1789,6 +1802,7 @@ impl LocalGuestUapiSurface {
         let mut validate_refs_ms = 0u128;
         let mut backend_ms = 0u128;
         let mut writeback_ms = 0u128;
+        let is_managed = managed_inputs.is_some();
         let deepseek_v4_flash = matches!(
             std::env::var("SIM_UAPI_W4_CHIPBACKEND_PROFILE").as_deref(),
             Ok("deepseek-v4-flash")
@@ -1798,7 +1812,7 @@ impl LocalGuestUapiSurface {
                 | Ok("deepseek-v4-flash-official")
                 | Ok("deepseek_v4_flash_official")
         );
-        let result = (|| {
+        let mut result = (|| {
             let started = Instant::now();
             let input = self
                 .segment_payloads
@@ -1807,7 +1821,9 @@ impl LocalGuestUapiSurface {
             payload_lookup_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
-            let operands = if deepseek_v4_flash {
+            let operands = if let Some(inputs) = managed_inputs {
+                Some(resolve_managed_operands(&req, input, inputs)?)
+            } else if deepseek_v4_flash {
                 resolve_deepseek_v4_flash_range_dispatch_operands(&req, input, self)?
             } else {
                 resolve_qwen3_range_dispatch_operands(&req, input, self)?
@@ -1815,7 +1831,7 @@ impl LocalGuestUapiSurface {
             resolve_operands_ms = qwen3_elapsed_ms(started);
 
             let started = Instant::now();
-            if !deepseek_v4_flash {
+            if !deepseek_v4_flash && !operands.as_ref().is_some_and(|value| value.managed) {
                 validate_qwen3_range_dispatch_object_refs(&req, input)?;
             }
             validate_refs_ms = qwen3_elapsed_ms(started);
@@ -1828,7 +1844,12 @@ impl LocalGuestUapiSurface {
         })();
         if let Ok(output) = &result {
             let started = Instant::now();
-            self.write_dispatch_result_to_segment(req.segment, output)?;
+            if let Err(error) = self.write_dispatch_result_to_segment(req.segment, output) {
+                if !is_managed {
+                    return Err(error);
+                }
+                result = Err(format!("managed_model_output_writeback_failed:{error}"));
+            }
             writeback_ms = qwen3_elapsed_ms(started);
         }
         if timing_enabled {
@@ -2175,6 +2196,7 @@ pub const SIM_QWEN3_GUEST_ENGRAM_TOKENIZER_PROJECTION: &str =
 
 #[derive(Clone, Debug, Default)]
 struct ModelRangeDispatchOperands {
+    managed: bool,
     hidden_input: Option<ModelObjectBackedOperandView>,
     input_token: Option<ModelObjectBackedOperandView>,
     previous_kv: Option<ModelObjectBackedOperandView>,
@@ -2260,7 +2282,7 @@ impl ModelRuntimeObjectPayload {
 
 #[derive(Clone, Debug)]
 struct ModelObjectBackedOperandView {
-    object_ref: LingquObmmObjectRefWire,
+    object_ref: ModelInputReference,
     backing: ModelObjectPayloadBacking,
     payload_range: Range<usize>,
 }
@@ -2279,7 +2301,7 @@ impl ModelObjectBackedOperandView {
             ));
         }
         Ok(Self {
-            object_ref,
+            object_ref: ModelInputReference::Legacy(object_ref),
             backing,
             payload_range,
         })
@@ -2314,7 +2336,9 @@ impl ModelObjectBackedOperandView {
     fn is_object_backed(&self) -> bool {
         matches!(
             self.backing,
-            ModelObjectPayloadBacking::MappedFile(_) | ModelObjectPayloadBacking::RuntimeObject(_)
+            ModelObjectPayloadBacking::MappedFile(_)
+                | ModelObjectPayloadBacking::RuntimeObject(_)
+                | ModelObjectPayloadBacking::Managed(_)
         )
     }
 
@@ -2323,6 +2347,7 @@ impl ModelObjectBackedOperandView {
         match &self.backing {
             ModelObjectPayloadBacking::MappedFile(file) => Some(file.path()),
             ModelObjectPayloadBacking::RuntimeObject(_) => None,
+            ModelObjectPayloadBacking::Managed(_) => None,
         }
     }
 
@@ -2330,15 +2355,40 @@ impl ModelObjectBackedOperandView {
         &self.backing.bytes()[self.payload_range.clone()]
     }
 
-    fn object_ref(&self) -> &LingquObmmObjectRefWire {
-        &self.object_ref
+    fn metadata(&self) -> ModelInputMetadata {
+        match &self.object_ref {
+            ModelInputReference::Legacy(value) => ModelInputMetadata {
+                object_kind: value.object_kind,
+                payload_bytes: value.payload_bytes,
+                payload_checksum: value.payload_checksum,
+            },
+            ModelInputReference::Managed(value) => ModelInputMetadata {
+                object_kind: value.object_kind() as u16,
+                payload_bytes: value.payload_bytes(),
+                payload_checksum: value.payload_checksum(),
+            },
+        }
     }
+}
+
+#[derive(Clone, Debug)]
+enum ModelInputReference {
+    Legacy(LingquObmmObjectRefWire),
+    Managed(sim_services::managed_object_ref::ManagedObjectRef),
+}
+
+#[derive(Clone, Copy)]
+struct ModelInputMetadata {
+    object_kind: u16,
+    payload_bytes: u64,
+    payload_checksum: u64,
 }
 
 #[derive(Clone, Debug)]
 enum ModelObjectPayloadBacking {
     MappedFile(Arc<Qwen3MappedFile>),
     RuntimeObject(Arc<ModelRuntimeObjectPayload>),
+    Managed(ManagedModelInput),
 }
 
 impl ModelObjectPayloadBacking {
@@ -2346,6 +2396,7 @@ impl ModelObjectPayloadBacking {
         match self {
             ModelObjectPayloadBacking::MappedFile(file) => file.bytes(),
             ModelObjectPayloadBacking::RuntimeObject(payload) => payload.bytes(),
+            ModelObjectPayloadBacking::Managed(payload) => payload.bytes(),
         }
     }
 }
@@ -2442,7 +2493,7 @@ fn resolve_qwen3_range_dispatch_operands(
                         operand.bytes().len()
                     ));
                 }
-                if operand.object_ref().object_kind
+                if operand.metadata().object_kind
                     != QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT
                 {
                     return Err("qwen3_range_dispatch_hidden_operand_kind_mismatch".to_string());
@@ -2473,7 +2524,7 @@ fn resolve_qwen3_range_dispatch_operands(
                         operand.bytes().len()
                     ));
                 }
-                if operand.object_ref().object_kind
+                if operand.metadata().object_kind
                     != QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT
                 {
                     return Err("qwen3_range_dispatch_token_operand_kind_mismatch".to_string());
@@ -2493,7 +2544,7 @@ fn resolve_qwen3_range_dispatch_operands(
                         operand.bytes().len()
                     ));
                 }
-                if operand.object_ref().object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
+                if operand.metadata().object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
                 {
                     return Err("qwen3_range_dispatch_kv_operand_kind_mismatch".to_string());
                 }
@@ -6568,27 +6619,18 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
     let input_hidden = if contract.layer_start == 0 {
         None
     } else {
-        let payload = guest_input
-            .get(
-                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
-                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
-            )
-            .ok_or_else(|| {
-                format!(
-                    "deepseek_v4_flash_hidden_input_missing:offset={QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET:#x}:bytes={expected_hidden_len}"
-                )
-            })?;
+        let (payload, hidden_ref) = managed_model_input::deepseek_input(
+            guest_input,
+            operands,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
+            expected_hidden_len,
+        )?;
         if payload.len() != expected_hidden_len {
             return Err(format!(
                 "deepseek_v4_flash_hidden_input_size_mismatch:actual={}:expected={expected_hidden_len}",
                 payload.len()
             ));
         }
-        let hidden_ref = deepseek_v4_flash_materialized_object_ref(
-            guest_input,
-            0,
-            QWEN3_DENSE_PROFILE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
-        )?;
         let payload_checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
         if hidden_ref.payload_bytes != payload.len() as u64
             || hidden_ref.payload_checksum != payload_checksum
@@ -6956,19 +6998,12 @@ fn deepseek_v4_flash_decode_slice_inputs(
         .copied()
         .ok_or_else(|| format!("deepseek_v4_flash_decode_history_missing:step={decode_step}"))?;
     let input_token = if layer_start == 0 {
-        let input_token_ref = deepseek_v4_flash_materialized_object_ref(
+        let (payload, input_token_ref) = managed_model_input::deepseek_input(
             guest_input,
-            0,
+            operands,
             QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT,
+            64,
         )?;
-        let payload = guest_input
-            .get(
-                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
-                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + 64,
-            )
-            .ok_or_else(|| {
-                format!("deepseek_v4_flash_decode_input_token_materialization_missing:step={decode_step}")
-            })?;
         let payload_checksum = qwen3_dense_reference_range_object_payload_checksum(payload);
         if input_token_ref.payload_bytes != payload.len() as u64
             || input_token_ref.payload_checksum != payload_checksum
@@ -7013,7 +7048,7 @@ fn deepseek_v4_flash_decode_slice_inputs(
         .ok_or_else(|| {
             format!("deepseek_v4_flash_decode_previous_kv_operand_missing:step={decode_step}")
         })?;
-    let previous_kv_ref = previous_kv_operand.object_ref();
+    let previous_kv_ref = previous_kv_operand.metadata();
     let previous_kv_header = guest_input
         .get(
             QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
@@ -7814,9 +7849,13 @@ fn qwen3_dense_profile_real_range_forward(
         u64::from(contract.layer_end),
     )?;
     kv_payload_ms = qwen3_elapsed_ms(started);
-    if kv_state_payload.len() > kv_state_len && token_count <= profile.decode_tokens as usize {
+    let kv_wire_capacity = managed_model_input::kv_capacity_with_headers(
+        kv_state_len,
+        u64::from(contract.layer_end - contract.layer_start),
+    )?;
+    if kv_state_payload.len() > kv_wire_capacity && token_count <= profile.decode_tokens as usize {
         return Err(format!(
-            "qwen3_dense_profile_kv_payload_too_large:bytes={}:limit={kv_state_len}",
+            "qwen3_dense_profile_kv_payload_too_large:bytes={}:limit={kv_wire_capacity}",
             kv_state_payload.len()
         ));
     }
@@ -8129,6 +8168,9 @@ fn qwen3_dense_profile_previous_kv_cache_from_operands(
             u64::from(contract.layer_end),
         )
         .map(Some);
+    }
+    if operands.is_some_and(|value| value.managed) {
+        return Ok(None);
     }
     qwen3_dense_profile_previous_kv_cache_from_guest_payload(profile, contract, guest_input)
 }
@@ -29674,7 +29716,8 @@ fn bytes_to_i32s(bytes: &[u8]) -> Vec<i32> {
 fn runtime_kind_for_descriptor(desc: &UapiDescriptor) -> RuntimeWorkKind {
     match desc {
         UapiDescriptor::Io(_) | UapiDescriptor::DispatchUbGmV2(_) => RuntimeWorkKind::GuestIo,
-        UapiDescriptor::ModelRangeDispatch(_) => RuntimeWorkKind::GuestIo,
+        UapiDescriptor::ModelRangeDispatch(_)
+        | UapiDescriptor::ManagedModelRangeDispatch { .. } => RuntimeWorkKind::GuestIo,
         UapiDescriptor::BlockWriteback { .. } => RuntimeWorkKind::BlockWriteback,
         UapiDescriptor::ShmemPut(_) => RuntimeWorkKind::ShmemPut,
         UapiDescriptor::ShmemGet(_) => RuntimeWorkKind::ShmemGet,
@@ -29698,7 +29741,8 @@ fn runtime_task_for_descriptor(desc: &UapiDescriptor) -> Option<TaskKey> {
             scope_depth: 0,
             task_id: req.request_id,
         }),
-        UapiDescriptor::ModelRangeDispatch(req) => Some(req.task.clone()),
+        UapiDescriptor::ModelRangeDispatch(req)
+        | UapiDescriptor::ManagedModelRangeDispatch { req, .. } => Some(req.task.clone()),
         UapiDescriptor::BlockWriteback { task, .. } => task.clone(),
         UapiDescriptor::ShmemPut(req) => req.task.clone(),
         UapiDescriptor::ShmemGet(req) => req.task.clone(),
@@ -42314,7 +42358,10 @@ mod tests {
                     operands
                         .hidden_input
                         .as_ref()
-                        .map(|operand| operand.object_ref()),
+                        .and_then(|operand| match &operand.object_ref {
+                            super::ModelInputReference::Legacy(value) => Some(value),
+                            super::ModelInputReference::Managed(_) => None,
+                        }),
                     Some(&hidden_ref)
                 );
                 validate_qwen3_range_dispatch_object_refs(&req, &segment_payload)

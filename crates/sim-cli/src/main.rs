@@ -125,6 +125,7 @@ use std::time::Instant;
 mod dataplane_microbench;
 mod lingqu_shmem_pto;
 mod managed_object_ref;
+mod managed_model_range;
 mod obmm_eval;
 mod obmm_remote;
 mod obmm_scale;
@@ -133,6 +134,9 @@ mod qwen3_simpler;
 
 fn main() -> anyhow::Result<()> {
     if managed_object_ref::run_if_requested()?.is_some() {
+        return Ok(());
+    }
+    if managed_model_range::run_if_requested()?.is_some() {
         return Ok(());
     }
     if qwen3_pto::run_if_requested()?.is_some() {

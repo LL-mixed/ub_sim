@@ -430,6 +430,14 @@ Rust V2 解码器、CLI 及锁定 C SDK 互操作测试已接入，最终完整�
 V2 到服务 acquire/map、模型消费与输出发布仍待接通，2/3/8-node PP 矩阵未
 验收；TP profile 的整除检查不能代替 PP 拓扑验收。完整目标保持未完成。
 
+同日 r462-r464 续作已将完整 V2 输入接入 W5 Rust 命令队列及 Qwen/DeepSeek
+消费函数，独立 C enqueue 与 CLI 保持 V1 路径分离。最终 Rust 全集 970 通过、
+16 ignored，Python 574 通过、5 跳过，均零失败。固定 Qwen3-0.6B 的真实单层
+计算两次通过，改变旧 inline 输入后完整输出逐字节一致；四项引用/数据负例
+被拒绝。该验证使用离线输入和单个 fixture token，不属于 PP/decode 矩阵。
+真实运行同时发现并修复 KV 容量漏算每层 40-byte 头部。SDK acquire/map、
+guest/provider 调用点、lease 保持及受管理输出发布仍待接通，完整 M2 未完成。
+
 本计划展开 [实现规格第 8 节](../sim_gva_gsva_implementation_spec.md#8-剩余工作与优先级)。
 机制基线为 ub_sim `39576eb`、mem_service `e4a8a58`、kernel `85fb35d`、
 QEMU `f201ebe`、libobmm `53011ee`。原稿编写时根仓库为 `80cb36f`。
@@ -761,6 +769,14 @@ W5 用新分配/访问链路完成连续 decode。
   版本、范围、权限与非规范 key；后续服务 acquire/map 和模型调用仍须独立接通。
 - 显式声明支持的节点数；移除本次路径中新出现的 8-node 假设。已有 helper
   上限如暂保留，必须作为具体路径限制公开，不能包装成协议上限。
+- W5 Rust 输入接入使用独立的 managed enqueue API，提交时将完整 V2 引用与
+  已读取的不可变 payload 一起转移给命令队列；普通 enqueue 保持 V1 语义。
+  managed 表按 256 bytes 解析，按完整引用精确匹配，验证 READ、长度、checksum、
+  输入角色及必需输入，禁止访问旧全局缓存、snapshot、registry 或 inline fallback。
+  命令持有输入至同步 backend 完成，失败/取消随命令释放，不建立跨请求 payload
+  注册表。API 只接收 provider 已授权读取的数据，不授予 holder；调用方仍须通过
+  SDK acquire/map 并维持实际 lease 至 completion。此接入不证明物理 pin、输出
+  发布或整套 W5 推理完成；真实 QEMU provider 与 serving 调用点须继续接通。
 - 将 M1 的单 home 分配扩展到 W5 配置中的多 home，对全局区间分配、各 home
   kernel registry 和 descriptor 归属做一致性验证。kernel retire 标志与 QEMU
   coherence/fencing 的完成必须相互核对，禁止把任一单边状态当成可重用证明。

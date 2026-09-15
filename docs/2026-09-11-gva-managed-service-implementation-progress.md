@@ -4801,3 +4801,51 @@ TP_NODES 的 pipeline 参数路径，不能把 TP=3 拒绝当作三节点 PP 的
 `2be515e5cd247f300bb71c19a7a4c307774e62533a6f41bde38d32bcfdc04875`。
 本批提交范围为 Rust V2 解码器、CLI、测试及实施记录；不改变现有 W5 执行
 路径，不将结构解码或模型元数据检查计为受管理 W5 推理验收。
+
+## 2026-09-15：W5 命令队列消费受管理输入
+
+新增独立 managed enqueue API，将完整 V2 与不可变 payload 随命令一起持有，
+在实际 range dispatch 中按完整身份匹配并校验 READ、长度、checksum、角色和
+必需输入。Qwen/DeepSeek 的 hidden、token、previous-KV 消费路径已接入；该路径
+不查询 V1 cache、snapshot、registry，不读取旧 inline payload 作为缺失输入。
+C 入口为 `linqu_ub_bridge_enqueue_managed_model_range_v2`，普通提交仍使用 V1。
+这里接收 provider 已读取的数据，不执行权威 acquire/map，也不授予 holder；
+SDK lease 保持、guest/provider 调用点和输出发布仍待接通，M2 与总目标未完成。
+
+CLI `managed-model-range-run --scenario <yaml> --descriptor <64-byte file>`
+`--segment <input file> --output <new file> --input <V2 file> <payload file>`
+可离线重放输入到实际命令队列，明确报告物理 lease 未验证，不作为实际 guest
+验收。此路径仅支持 plain Qwen 和 DeepSeek Rust/Simpler；Engram 输入显式拒绝。
+
+r457 编译与新增输入测试通过，全集出现 51 项自启动测试 ENOENT：同一构建目录
+中的 r459 重编译替换了 r457 仍在使用的测试程序。该验证调度错误和原失败日志
+保留。r459 随后全集通过：969 通过、16 ignored、43 个 harness 与基线一致。
+后续已等待现有 Rust 作业终结，再串行执行全集和 CLI 构建，禁止重叠重编译。
+
+r461 用固定 Qwen3-0.6B 权重执行真实单层，发现 KV 容量只计算 K/V 数据，漏计
+每层五个 u64 头部：真实 8,232 bytes 被 8,192-byte 上限拒绝。容量现按实际
+wire layout 增加每层 40 bytes，保留超限拒绝及 checked arithmetic；新增测试
+核对两层真实序列化长度与容量，并覆盖溢出。
+
+最终 r462 于 15:21:38 至 15:30:43 UTC 完成 Rust 全集及串行 CLI 构建/验证，
+容器 exit 0、无 OOM。Rust 970 通过、16 ignored、零失败；43 个 harness
+与 r454 逐项匹配，仅 sim-uapi 新增四项、sim-qemu 新增一项通过测试。
+r463 于 15:23:25 UTC exit 0：Python 精确覆盖同一 579 个 test ID，574 通过、
+5 项既有环境跳过、零失败/错误/加载错误。七份实际构建源码 SHA 与工作树一致。
+
+r464 实际 CLI 四负两正通过：checksum 错误、表项与输入 generation 不同、
+V1 表项和缺失引用均退出 1，未产生输出文件。固定 Qwen3-0.6B 权重、fixture
+token 42、层区间 `[1,2)` 的两次计算均实际执行一层；正常输入与全 0xff 的
+旧 inline 输入产生相同完整输出，SHA-256 均为
+`5c3d33e80566122d25c96022cb01beea446cf3903fd77526d0f176c513d96376`。
+两次进程用时为 3.459/3.468 秒，包含加载与校验，不是 decode 延迟或性能基线。
+原权重文件身份在运行前后不变，未重复散列或下载权重。此结果证明实际模型
+计算消费所提交的 V2 payload，不证明权威 acquire/map、物理 lease 或全链路 PP。
+
+最终源码、原失败、七个容器终态、全集清单和 CLI 输入/输出共 62 项已归档为
+`w5-managed-input-evidence-r464.tar.gz`，1,776,194 bytes；SHA-256：
+`8dde31a7486f94a74bf4610b19a3d87dda536ffa67b0b0b9bb54d2f4c56b7040`。
+清单 SHA-256：
+`1ba35f6eefbb935a6121313deef19bbdb77d9650f0bf5c9e42301fcd4dff96e8`。
+验证报告逐项比较 43 个 Rust harness、579 个 Python test ID、七份构建输入
+源码及六个实际 CLI case；归档不包含权重或网络审计原日志。

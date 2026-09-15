@@ -8,6 +8,25 @@
 
 typedef struct LinquUbBridge LinquUbBridge;
 
+/* Provider-read V2 view. reference points to exactly 256 bytes. Payload points
+ * to the referenced subrange, not the allocation base. Enqueue copies bytes;
+ * caller retains SDK mappings/leases until the original CQ completion. */
+typedef struct LinquManagedModelInputV2 {
+    const uint8_t *reference;
+    const uint8_t *payload;
+    size_t payload_len;
+} LinquManagedModelInputV2;
+
+/* Explicit managed API: kind-9, 64-byte header, 256-byte reference table.
+ * Ordinary submit_slot keeps its V1 table interpretation. No access grant. */
+int linqu_ub_bridge_enqueue_managed_model_range_v2(
+    LinquUbBridge *bridge,
+    uint16_t endpoint_id,
+    const uint8_t *slot,
+    size_t slot_len,
+    const LinquManagedModelInputV2 *inputs,
+    size_t input_count);
+
 LinquUbBridge *linqu_ub_bridge_new_from_yaml(const char *path);
 void linqu_ub_bridge_free(LinquUbBridge *bridge);
 

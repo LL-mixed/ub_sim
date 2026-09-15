@@ -7,7 +7,8 @@ use sim_services::{
 };
 use sim_topology::{SimTopology, TopologySnapshot};
 use sim_uapi::{
-    LocalGuestUapiSurface, PtoUbGmDispatchV2Req, UapiCommand, UapiDescriptor, UapiResponse,
+    managed_model_input::ManagedModelInput, LocalGuestUapiSurface, ModelRangeDispatchReq,
+    PtoUbGmDispatchV2Req, UapiCommand, UapiDescriptor, UapiResponse,
 };
 
 use crate::types::{GuestDescriptor, GuestEndpointSession, MachineProfile};
@@ -136,6 +137,20 @@ impl QemuBackendAdapter {
         req: PtoUbGmDispatchV2Req,
     ) -> Result<(usize, usize), SimError> {
         self.enqueue_uapi_descriptor(session, UapiDescriptor::DispatchUbGmV2(req))
+    }
+
+    /// Submit provider-read V2 inputs atomically with their consuming command.
+    /// The provider retains its SDK mappings/leases until the original completion.
+    pub fn enqueue_managed_model_range(
+        &mut self,
+        session: &GuestEndpointSession,
+        req: ModelRangeDispatchReq,
+        inputs: Vec<ManagedModelInput>,
+    ) -> Result<(usize, usize), SimError> {
+        self.enqueue_uapi_descriptor(
+            session,
+            UapiDescriptor::ManagedModelRangeDispatch { req, inputs },
+        )
     }
 
     fn enqueue_uapi_descriptor(

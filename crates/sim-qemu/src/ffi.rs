@@ -5,6 +5,7 @@ use std::os::raw::{c_char, c_int};
 
 use sim_config::ScenarioConfig;
 use sim_core::PtoUbGmAccessRegistration;
+use sim_services::managed_object_ref::ManagedObjectRef;
 use sim_services::object::LingquObmmObjectRefWire;
 use sim_services::shmem::DEFAULT_MAX_SEGMENT_BYTES;
 use sim_topology::SimTopology;
@@ -22,6 +23,91 @@ use crate::ub_gm_abi::{
 use crate::{GuestDescriptor, GuestEndpointSession, QemuBackendAdapter};
 
 const DEFAULT_SEGMENT_BYTES_FALLBACK: u64 = DEFAULT_MAX_SEGMENT_BYTES;
+
+/// Borrowed provider-read view. Reference is exactly 256 bytes; payload is the
+/// referenced view, not the allocation base. Both remain valid during enqueue.
+#[repr(C)]
+pub struct LinquManagedModelInputV2 {
+    pub reference: *const u8,
+    pub payload: *const u8,
+    pub payload_len: usize,
+}
+
+/// Enqueue V2 inputs with a compact model-range header (kind 9, 64 bytes).
+/// This explicit API selects a 256-byte reference table. Ordinary enqueue
+/// retains its V1 contract. No holder is granted here: the provider must retain
+/// SDK mappings/leases until the original operation's completion is observed.
+#[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_enqueue_managed_model_range_v2(
+    ptr: *mut LinquUbBridge,
+    endpoint_id: u16,
+    slot: *const u8,
+    slot_len: usize,
+    inputs: *const LinquManagedModelInputV2,
+    input_count: usize,
+) -> c_int {
+    if slot.is_null() || slot_len != 64 || input_count > 2 || (input_count != 0 && inputs.is_null())
+    {
+        return -1;
+    }
+    let Ok(bridge) = bridge_mut(ptr) else {
+        return -1;
+    };
+    let Some(endpoint) = bridge.sessions.get(&endpoint_id).cloned() else {
+        return -1;
+    };
+    let slot = unsafe { std::slice::from_raw_parts(slot, slot_len) };
+    let Ok(GuestDescriptor::ModelRangeDispatch(req)) = GuestDescriptor::decode(slot) else {
+        return -1;
+    };
+    if req.segment.0 != endpoint.default_segment || req.object_ref_count as usize != input_count {
+        return -1;
+    }
+    let views = if input_count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(inputs, input_count) }
+    };
+    let mut owned = Vec::with_capacity(input_count);
+    for view in views {
+        if view.reference.is_null()
+            || view.payload.is_null()
+            || view.payload_len > isize::MAX as usize
+        {
+            return -1;
+        }
+        let wire =
+            unsafe { std::slice::from_raw_parts(view.reference, ManagedObjectRef::BYTE_LEN) };
+        let Ok(reference) = ManagedObjectRef::from_le_bytes(wire) else {
+            return -1;
+        };
+        if reference.payload_bytes() != view.payload_len as u64 {
+            return -1;
+        }
+        let payload = unsafe { std::slice::from_raw_parts(view.payload, view.payload_len) };
+        let Ok(input) = sim_uapi::managed_model_input::ManagedModelInput::from_provider_bytes(
+            reference,
+            payload.to_vec(),
+        ) else {
+            return -1;
+        };
+        owned.push(input);
+    }
+    let req = sim_uapi::ModelRangeDispatchReq {
+        op_id: req.op_id,
+        segment: req.segment,
+        task: req.task,
+        object_ref_table_offset: req.object_ref_table_offset,
+        object_ref_count: req.object_ref_count,
+    };
+    match bridge
+        .adapter
+        .enqueue_managed_model_range(&endpoint.session, req, owned)
+    {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
 const DEFAULT_SEGMENT_BYTES_MIN: u64 = 1024 * 1024;
 
 fn parse_default_segment_bytes(value: Option<&str>) -> u64 {
@@ -570,6 +656,50 @@ pub extern "C" fn linqu_ub_bridge_poll_completion(
 
 #[cfg(test)]
 mod tests {
+    use super::{linqu_ub_bridge_enqueue_managed_model_range_v2, LinquUbBridge};
+
+    #[test]
+    fn managed_enqueue_rejects_invalid_abi_and_preserves_completion_identity() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/mvp_8host_single_domain.yaml");
+        let mut bridge = LinquUbBridge::from_yaml_path(path.to_str().unwrap()).unwrap();
+        bridge.register_endpoint(0, 0).unwrap();
+        let segment = bridge.default_segment(0).unwrap();
+        let mut slot = [0u8; 64];
+        slot[0] = 9;
+        slot[1..9].copy_from_slice(&459u64.to_le_bytes());
+        slot[9..17].copy_from_slice(&segment.to_le_bytes());
+        let call = |bridge: &mut LinquUbBridge, slot: &[u8]| {
+            linqu_ub_bridge_enqueue_managed_model_range_v2(
+                bridge,
+                0,
+                slot.as_ptr(),
+                slot.len(),
+                std::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(call(&mut bridge, &slot[..63]), -1);
+        let mut wrong = slot;
+        wrong[0] = 1;
+        assert_eq!(call(&mut bridge, &wrong), -1);
+        wrong = slot;
+        wrong[9..17].copy_from_slice(&(segment + 1).to_le_bytes());
+        assert_eq!(call(&mut bridge, &wrong), -1);
+        wrong = slot;
+        wrong[53..57].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(call(&mut bridge, &wrong), -1);
+        assert_eq!(call(&mut bridge, &slot), 0);
+        bridge.ring_doorbell(0, 1).unwrap();
+        let session = bridge.sessions.get(&0).unwrap().session.clone();
+        let events = bridge.adapter.drain_cq(&session).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].op_id, 459);
+        assert!(matches!(
+            events[0].status,
+            sim_core::CompletionStatus::FatalFailure { .. }
+        ));
+    }
     use super::{
         parse_default_segment_bytes, DEFAULT_SEGMENT_BYTES_FALLBACK, DEFAULT_SEGMENT_BYTES_MIN,
     };
