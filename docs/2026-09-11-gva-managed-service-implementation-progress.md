@@ -4669,3 +4669,59 @@ Rust 原日志 SHA-256：
 本批完成 worker 出生身份和只读物理记录核对子项。后续必须继续接通 service
 恢复协调、映射与计算排空证明、worker 恢复及失联节点重新加入；不将匹配成功
 当作资源可释放、payload 可恢复或完整 M3 完成的证明。
+
+## 2026-09-15：已排空 checkpoint 重启与旧授权重放（r437-r448）
+
+独立服务提交 `fd2ff3db2e4bbe53399d3f9e72e5c7602a28a2ec`：checkpoint
+读取保留原 recovery 标记，逐项检查分配、holder、descriptor、address、backing
+与 mapping 义务。仅全部退役且无残留义务时重新准入；活跃资源继续隔离。
+allocate/acquire/publish 的历史成功重放先核对当前 generation 与状态，已退役、
+隔离或被替换时返回 VERSION_CONFLICT；cleanup 的原始成功回复仍精确重放。
+已排空重启保留历史 V2 编码，但不会复活其 payload。没有增加解除隔离接口。
+
+r437/r438 旧源码对照分别复现退役授权仍返回成功，以及资源已归零但重启后
+recovery_required 仍为 1。初轮新测试误检查 object-session 不输出的 reason，
+改为检查该 CLI 实际输出的 status；原始 acquire CLI 仍核对 reason。
+r438 完整回归为 300 通过、1 失败、5 跳过：旧容量测试把退役授权重放成功
+作为预期。按新契约检查 VERSION_CONFLICT，同时保留原容量和资源断言。
+原对照、失败和诊断日志全部保留。
+
+最终 r444 的 16 分片均 exit 0、无 OOM，完整 306 个唯一 test ID 精确覆盖
+302 项基线与新增四项：301 通过、5 项既有环境跳过，零失败/错误。
+结果 JSON SHA-256：
+`95fc8d1763a4a460c13c08c0a6e24705d2cc29e74a519d590fae83c7fa8f09ce`。
+上述服务提交已仅推送授权分支，远端完整 SHA 核验一致；父仓库 gitlink 与
+mem_service.lock 同时锁定该提交，源码锁检查通过，父仓库未推送。
+
+r440 于 14:01:45 至 14:02:04 UTC 构建实际 guest 镜像，exit 0、无 OOM。
+镜像 SHA-256：
+`74883466b7776770bc69c3d5dbe72fa26b0344113818be7dbd4b9d5c29b3dec9`。
+kernel/driver 沿用 r422，QEMU 沿用 r359，平台 gitlink 未变更。
+r441 下游 Python 全集精确覆盖 579 项：574 通过、5 项交叉编译器环境跳过，
+零失败/错误/加载错误。r442 Rust workspace 于 14:10:33 UTC 正常结束，
+43 个 harness 名称及计数逐项匹配基线：963 通过、16 ignored、零失败。
+Rust 原日志 SHA-256：
+`c632a3e234f9a9d9f4037b7beb55507a6d3187a343c4d68fefa536288491a663`。
+
+r443 于 14:03:30 至 14:06:00 UTC 完成实际双 guest 验证，容器 exit 0。
+同一 checkpoint 两次 daemon KILL/重启后，三轮对象 generation 为 1/3/5，
+provider incarnation 逐轮更新，kernel segment 身份互不相同；两节点完成
+64 KiB 写入、发布、可见性与读取，随后解除映射、释放并退役。
+每轮开始重新建立 provider readiness，结束服务资源归零，kernel census
+恢复基线；三轮实际 segment 均 retired，地址保留标志与 export 均为零。
+两次旧 acquire 重放被拒绝。443 条原始回执、worker 日志和物理身份独立复核
+通过；observer_exit=0，诊断完成后清理的 runner_exit=143，无遗留 QEMU。
+结果 JSON SHA-256：
+`0b40d495c9e42d4eebbc2912c94d67456a0f413203729e01867ed1d69696bed7`。
+
+r439 的原生/安装态 SDK、worker 与 manager golden、九份契约清单及 15 项
+重放存储 sanitizer 用例通过；末尾七项实际 daemon sanitizer 用例为五通过、
+两失败。r445 保留错误输出后仍复现，r446 诊断调用干扰启动 deadline，r447
+排除该干扰后由业务 audit 确认 30 秒测试 provider lease 到期：INTERNAL
+应答 checksum 对应 data_plane_not_ready，没有 ASan/UBSan 内存诊断。
+r448 使用同源码、同七项断言及完整检查器，将测试配置的 lease 改为 300 秒，
+产品默认值未改；本段写入时原容器仍运行，缓存重放用例已通过，40 轮归档
+重放及余下用例尚未取得整轮终态，不能记为通过，也未重启原作业。
+
+本批实际重启使用已排空资源和新的 worker 日志；完整活跃资源恢复、生产
+fencing、原 worker 日志恢复和节点重新加入仍未完成。M3 与总目标保持未完成。
