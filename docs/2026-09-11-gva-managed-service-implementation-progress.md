@@ -4225,3 +4225,107 @@ bytes，SHA-256：
 清单 SHA-256：
 `fe6f880c6e325ef08844f889469b9905f7618b932dd97aeecb1b49cb3c583907`。
 本批仅变更故障观测与测试，不构成 provider 失联恢复或完整 M3 验收。
+
+### r369-r375：运行期 provider 失联隔离与原事务清理
+
+独立服务 `87e7a5afb06b7658460fbed69f043132da8b570c` 增加目录过期、
+成功注销及实例替换与 managed allocation 的联动。相关未终结分配进入
+QUARANTINED，保留 descriptor、地址、holder 和 mapping，不调用 backing
+release；锁存 managed_recovery_required，重新注册不解除新数据准入限制。
+已有 mapping close/finish/cancel、release/retire 保留原身份与事务检查。
+隔离字节独立计量已确认 backing，未发布意图保持 in_flight；隔离后的引用与
+export/import 仍计数。holder 当前缺少节点归属，其他仍有 holder 的 provider
+分配也保守隔离。未增加持久分配表、CPU 页撤销或解除隔离接口。
+
+验证全部位于指定远端隔离容器，没有本地完整套件或 guest 运行：
+
+- r369 在测试前因增量 Git bundle 缺少 prerequisite 而 exit 128；没有运行
+  用例。随后改用完整 ff2d50c 源码快照，保留失败日志。
+- r370 的 45 项定向及 r371 全集暴露同一测试输出断言问题：mapping CLI
+  输出稳定 status=internal，不转发 daemon 的详细 reason。三个失联子场景
+  均在该断言失败。只修该断言为非零退出码和稳定状态；其余隔离、拒绝、资源
+  与重新注册检查保留，生产代码未改变。r371 为 295 项、289 通过、5 跳过，
+  一个父用例含三个失败子场景，零 error；没有把失败运行改写为通过。
+- r372 于 2026-09-15 08:01:26 至 08:04:46 UTC 完成，exit 0、无 OOM。
+  OBMM worker/manager 原生夹具、ASan/UBSan、host-artifact-smoke、13 项
+  下游定向、install-smoke、installed-sdk-runtime-smoke、九份 CLI 渲染
+  manifest 逐字节比对及 15 项历史存储 sanitizer 场景通过。
+- r374 原失败父用例于 08:09:50 至 08:10:03 UTC 通过，exit 0。
+- r375 最终全部 16 分片于 08:09:50 至 08:17:05 UTC 完成，均 exit 0、
+  无 OOM。295 个唯一 test ID 精确覆盖，290 通过、5 环境跳过、零失败/
+  错误/加载错误。跳过分别为三项下游仓库文件、原生 arm64 打包工具及隔离
+  网络无非 loopback 接口；跳过不算通过。结果 SHA-256：
+  `9ff0c4b7ddf68f4533a5b913fe393daba5b9414979f4637df7d20b87b13abe37`。
+
+九个提交文件与 r370+r373 送测快照逐字节一致；r373 只覆盖测试文件。
+生产代码与 r372 原生/安装态受测代码一致。源码、原失败与最终日志、容器
+终态/命令及结果共 43 个文件归档为 `provider-loss-evidence-r375.tar.gz`，
+1,183,044 bytes，SHA-256：
+`1c1a41ee696b3034cff84cfbc7d966af0f8539f7b6650f2b77e49f05a278d30f`。
+清单 SHA-256：
+`5ed4810d94d691a808b287684bb4ba8af58f8b7a63f04f1fd0903f73ae548a0d`。
+归档已下载并核对完整哈希。仅推送授权独立服务分支，ls-remote 与上述提交
+一致；父仓库本地同步 gitlink/lock。真实 guest 故障对账、持久恢复、重新加入、
+多 home、W5 与完整 M1-M5 继续待验收，父仓库及平台仓库均未推送。
+
+### r377-r384：锁定服务的实际故障对账与正常对照
+
+r377 在 2026-09-15 08:27:30 至 08:27:46 UTC 构建 AArch64 静态 CLI/
+worker 及 guest 镜像，exit 0。消费已发布 87e7a5a、匹配 lock/gitlink；
+沿用 r342 kernel 和 r359 QEMU。镜像 SHA-256：
+`15fd5151df97f6fe078d277f5f38a3a5fbbaa64e58d5dc0c77b8fa544a78248a`。
+首次启动命令在 SSH banner 交换前超时；随后查询确认既定容器不存在才重新
+发送，实际作业只启动一次。两份配置上传也曾握手超时，恢复后分别重传。
+
+r378 下游 Python 于 08:27:30 至 08:29:01 UTC 完成，570 个唯一 test ID
+与上次完整清单一致：565 通过、5 项交叉编译器环境跳过，零失败/错误/加载错误。
+r379 Rust 于 08:27:30 至 08:36:28 UTC 完成，逐项核对 43 个外层 harness
+的名称和计数：963 通过、16 ignored、零失败，exit 0、无 OOM。结果 SHA-256：
+`a3d3e8eed28542a5e99160839995c21dc92f21d1ae3a606d2f4deed05aabe8f7`；
+Rust 原日志 SHA-256：
+`e85972280c8c1f85d8602d13d0b0340ffe845323a9a04be4defcbe0508d252cb`。
+
+r380 实际双 guest reset 在 08:28:53 至 08:29:16 UTC 完成，正常 runner
+保持 exit 1；observer 确认两条活动 home 绑定关闭。首组快照仍有两个活动
+provider，恢复标志为 0；停止 compute 节点 worker 并注销后，第二组变为
+quarantined_objects=2、quarantined_bytes=4 MiB、managed_recovery_required=1，
+仍保留 refs=4、imports=4、exports=2。compute kernel 的 4 MiB import 和
+2 MiB canary export 未减少。六项查询均 exit 0。active backing/address
+计数为零表示对象已转入隔离计量，不能解释为物理释放。实际触发来自 compute
+worker 注销；home 租约尚未到期，本轮不证明 home expiry 自动检测或恢复。
+原日志绑定的快照结果 SHA-256：
+`e6a6204687ab29dbf9e2fb99a61d7bcc8eece4cab002ec770495adf586f38ab6`。
+
+r381 正常 CPU 退役对照在 08:30:08 至 08:31:21 UTC 整轮 exit 0：同址
+generation 1 到 4，旧描述符 CPU signal=7、unmap_confirmed=1，新对象再次
+映射与数据校验、最终回收通过。
+
+r382 正常 tail V2 双请求 PTO 在 08:32:07 至 08:37:18 UTC 超时，exit 1。
+两次 completion、两份输出和输入不变检查已完成，最终清理尚无完成证据。
+本轮 guest 配额为 4 核，先前正常基线为 8 核；r384 恢复原 8 核，保持
+生产代码、镜像和输入不变，于 08:40:29 至 08:46:36 UTC 整轮 exit 0。
+原始日志与校验报告逐项匹配：两请求、六条 lease、只读 V2 输入、68 个 load
+及 34 个 store 分片（260,096/130,048 bytes）、完整数据和最终资源回收通过。
+原 r382 失败保留，不能将配额差异认定为唯一原因或形成性能结论。
+
+配置核查更正：r382/r384 从 reset 配置派生，RUN_SECS=300、MAX_RUNTIME=420、
+PTO_TIMEOUT_MS=300000；此前正常 r358 为 600、780、500000。RUN_SECS 是依次
+等待各节点完成的预算，整轮由 MAX_RUNTIME 约束；先前称作“300 秒整轮截止”
+不准确。r384 通过当前实际配置，不冒充与 r358 完全相同的配置。已准备的 r385
+尚未启动；已有完整正常回归证据，因此不再重复执行。
+
+全部八个容器终态、Python 唯一清单、Rust 外层 harness、CPU/PTO 原日志绑定、
+reset 对账及重启诊断已核对，结束后没有遗留 QEMU。证据归档共 45 文件，
+`provider-loss-runtime-evidence-r384.tar.gz` 为 129,662,540 bytes，SHA-256：
+`bb90bfc03901b9eb11e8334e9ca88f93962ffbf66bea6e86104128b07c7f6228`；
+清单 SHA-256：
+`d9c65e07dcc2d8488eacebe5a81168831677a6d960ef784dcbd6fd5ffde73fef`。
+
+r383 小型 store 重启诊断用已发布二进制和真实 daemon/CLI 进程，未创建物理
+backing。重启前保留 1 个隔离对象和引用、恢复标志 1；store 仍为
+mem_service_store_v1，尚未触发历史归档。重启后旧 allocation 查询 not_found，
+隔离/引用计数及恢复标志变为 0，新 provider 注册后新分配成功且 generation=1。
+该观察证明持久化状态缺口，不能计为恢复通过。下一批必须将分配意图、完整资源
+身份、holder、mapping、代际计数和隔离状态纳入版本化 store/journal，在返回
+成功或交付 provider 工作前确认持久化；恢复后按实际资源对账，不恢复旧指针。
+仅增大幂等缓存或只等待历史归档不会补齐该缺口。M3 与总目标继续保持未完成。
