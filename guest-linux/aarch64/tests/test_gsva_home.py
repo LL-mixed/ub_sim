@@ -78,6 +78,25 @@ int main(int argc, char **argv) {
         assert(gsva_home_update(&table, 7, &old) == GSVA_ERR_SEGMENT_RETIRED);
         assert(acquire(&table, &next.identity, true, &pin) == GSVA_OK);
         gsva_home_release(pin);
+    } else if (!strcmp(argv[1], "reset")) {
+        assert(acquire(&table, &old.identity, false, &pin) == GSVA_OK);
+        assert(gsva_home_reset(&table) == 1);
+        assert(gsva_home_reset(&table) == 0);
+        assert(acquire(&table, &old.identity, false, &second) == GSVA_ERR_SEGMENT_RETIRED);
+        assert(!second);
+        assert(gsva_home_update(&table, 7, &old) == GSVA_ERR_SEGMENT_RETIRED);
+        assert(gsva_home_update(&table, 7, &next) == GSVA_ERR_COH_PENDING);
+        old.operation = GSVA_HOME_REVOKE;
+        assert(gsva_home_update(&table, 7, &old) == GSVA_ERR_COH_PENDING);
+        assert(gsva_home_overlaps(&table, old.identity.key.home_va, 8));
+        gsva_home_release(pin);
+        assert(gsva_home_update(&table, 7, &old) == GSVA_OK);
+        assert(gsva_home_update(&table, 7, &next) == GSVA_OK);
+        assert(acquire(&table, &next.identity, true, &pin) == GSVA_OK);
+        gsva_home_release(pin);
+        assert(gsva_home_reset(&table) == 1);
+        assert(acquire(&table, &next.identity, false, &pin) == GSVA_ERR_SEGMENT_RETIRED);
+        assert(!pin);
     } else if (!strcmp(argv[1], "identity")) {
         /* Every packed identity byte is authoritative, including size/epoch. */
         for (size_t i = 0; i < sizeof(old.identity); ++i) {
@@ -163,6 +182,15 @@ int main(int argc, char **argv) {
 
     def test_registration_conflicts_and_read_only(self):
         self.run_case("registration")
+
+    def test_device_reset_closes_bindings_preserves_pins_and_denies_reactivation(self):
+        self.run_case("reset")
+        source = (QEMU / "hw/ub/ub_ubc.c").read_text()
+        reset = source.split("static void ub_bus_controller_dev_reset(", 1)[1].split(
+            "\n}\n", 1)[0]
+        self.assertLess(reset.index("gsva_home_reset(&ubc_dev->gsva_home)"),
+                        reset.index("ubc_void_pending_responses_cleanup"))
+        self.assertNotIn("gsva_home_destroy", reset)
 
     def test_kernel_export_publication_and_revoke_failures(self):
         kernel = ROOT / "guest-linux/kernel_ub"

@@ -260,6 +260,20 @@ r357 完整 Rust 已通过：963 通过、16 ignored、零失败。r358 最终 P
 整轮 exit 0，核对两请求、六条 lease、102 个 v2 分片及最终资源回收，无
 遗留 QEMU。启动和校验器修复达到本批提交条件，后续完整矩阵仍未完成。
 
+设备 reset 绑定失效约定：QEMU 的现有设备 reset 入口在清理旧计算状态前，
+先关闭本 home 所有活动 export 绑定。保留绑定 tombstone 和在途 pin，禁止
+把 reset 当作物理资源已回收的证明；旧身份无法通过重复 BIND 重新激活。
+在途 pin 仍须正常退出，未排空前同址新绑定拒绝。该能力使用既有 QMP
+system_reset 入口，不提供清空旧身份历史的恢复捷径；kernel/provider 重启
+reconciliation、重新发布准入和实际 reset 故障矩阵继续单独验收。
+
+r359-r363 已验证上述 reset 关闭子项：45 项 QEMU 底层测试通过，完整
+Python 563 通过/5 跳过，Rust 963 通过/16 ignored，均零失败；r362 正常
+旧 descriptor CPU 场景整轮通过。r363 实际映射两个 home 对象后执行 QMP
+reset，关闭 2 个活动绑定，随后远端 CPU 读失败并报告 reconciliation_required。
+原正常 PTO runner 保持 exit 1；该诊断未证明故障后的回收、重新加入或推理恢复。
+完整 M3、其他身份故障矩阵及总目标保持未完成，来源见实施记录 r359-r363。
+
 r323-r331 已补齐上述正常 unmap 子项：独立服务 `4236654` 已按授权
 发布并本地锁定；独立 Python 281 通过、5 跳过，父仓库 Python 548
 通过、5 跳过，完整 Rust 963 通过、16 ignored，均零失败。真实双 guest

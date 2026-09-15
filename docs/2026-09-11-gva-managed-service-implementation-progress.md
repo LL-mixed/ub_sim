@@ -4122,3 +4122,53 @@ r358 最终整轮 PTO 在 02:21:06 至 02:27:12 UTC 完成，runner/container
 完整原日志保留；r357 Rust 原日志与汇总单独保存。本批最终七个源码/测试
 文件与送测快照逐字节一致。启动和校验器修复达到本批提交条件，不关闭
 完整身份、重启/reset、多 home、W5、混合压力或 M3-M5，完整目标继续进行。
+
+### r359-r363：设备 reset 关闭活动 home 绑定
+
+QEMU 现有设备 reset 回调在清理计算/映射状态前关闭全部活动 home 绑定，
+保留历史身份和在途 pin。旧 BIND 不能重新激活；未排空的旧访问继续阻止
+同址新绑定。该改动不把 reset 当作 backing 已释放的证明，控制入口沿用
+QMP `system_reset`。新增编译真实 registry 的 reset 用例，覆盖重复 reset、
+旧身份拒绝、pin 排空前后同址新绑定及新身份再次 reset；12 项定向测试通过。
+
+远端完整验证（2026-09-15 UTC）：
+
+- r359：02:34:03 至 02:34:25，项目 QEMU 构建入口 exit 0，45 项底层
+  单元测试通过。QEMU SHA-256：
+  `0fc83e9673fd05e1d91038304d8c96d41f01f31f287616cbfdd1b5d7d331a9f2`。
+- r360：02:34:03 至 02:35:33，完整 Python 568 个唯一用例，563 通过、
+  5 项环境跳过、零失败/错误/加载错误。结果 SHA-256：
+  `b9bbdf25dd0dc71c63ee3c53e438c4706bb86074f9247dadb134c83e53231893`。
+- r361：02:34:03 至 02:42:50，完整 Rust exit 0；逐一核对 43 个外层
+  harness 与 r357 的名称和计数一致，963 通过、16 ignored、零失败。
+  结果 SHA-256：
+  `e7356ec9c0975356ae0dc7ed18788e6dab0903b3e67483dc66b1484b7ae8da6a`；
+  原始日志 SHA-256：
+  `805aef9ad3ebd91ea3dfadc19f9c66cfb3d28ca7faf27a6004b2ce641709daaf`。
+- r362：02:43:24 至 02:44:36，真实双 guest 正常 CPU 退役场景 exit 0。
+  旧 generation=1、新 generation=4、同址；旧描述符探针 signal=7，后续
+  新对象重新映射、数据和最终资源回收通过。沿用 r342 kernel、r350 镜像，
+  替换为 r359 QEMU。前置结果收集曾误读 `inventory` 字段而退出，guest
+  尚未创建；改用实际 `selected` 字段后才启动本轮，没有重复启动 guest。
+
+r363 在 07:23:42 至 07:24:05 运行一次实际 reset 诊断。沿用既有双节点
+runner 和原 PTO/V2 路径，在 compute 0 已映射 home 1 的输入及输出对象后，
+通过项目现有严格 QMP 函数向 nodeB 发送一次 `system_reset`。07:24:04
+命令成功，home 日志在两次成功 BIND 后记录 `GSVA_HOME_RESET closed=2`；
+compute 收到 req=531 的失败读应答，随后记录 CPU read failed 和 Bus error。
+worker 报 `reconciliation_required=1`。该轮正常 PTO runner exit 1，保留
+原始失败；独立 observer exit 0 仅说明 reset 已执行且活动绑定关闭。
+未把 SIGBUS 或进程退出计作资源恢复，未验证节点重新加入或推理续跑。
+观察结果 SHA-256：
+`28e796a77cc15475c7cf2cbabefe9602629788be38fbf944c3cc83ca44e1d514`。
+
+上述作业均无 OOM；r363 结束后确认无遗留 QEMU。四个实现/测试文件与
+送测快照逐字节一致。reset 准入关闭子项已有实际证据，重启 reconciliation、
+在途故障矩阵、重新发布、多 home、W5 和完整 M1-M5 保持未完成。
+
+完整 r359-r363 测试输出、配置、源码快照、原始 guest/QEMU 日志与终态
+清单共 26 个文件，归档 `home-reset-evidence-r363.tar.gz` 为 2,704,407
+bytes，SHA-256：
+`19c830b4c7643a486b176fddbfc96e7d9c430c624f2f9c45f533faff6b9bee7f`。
+平台改动已在 QEMU 本地提交 `91b4cc305d`；未推送、未改父仓库平台
+gitlink。独立服务继续锁定已发布 ff2d50c，未修改服务或模型执行代码。
