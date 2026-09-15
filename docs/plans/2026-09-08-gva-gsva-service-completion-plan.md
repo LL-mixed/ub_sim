@@ -346,6 +346,22 @@ r308-r322 续作：r315 暴露新增检查屏障晚于完成屏障退役的顺�
 本轮只修改下游编排、验证器和测试，独立服务仍锁定已发布 `9e6aa1c`；
 旧 provider token、旧 CPU 映射、在途撤销、多 home 与 W5 矩阵继续待验收。
 
+r386-r399 持久化续作：独立服务 `e6f261e` 已提交并仅推送授权分支。
+从首次分配起，版本化 checkpoint 同时保存 allocation、holder、mapping、
+代际计数、隔离状态、完整 V2 record 和幂等应答；重启保留待对账资源，写入
+不确定时停止状态变更。r397 九项定向、r398 全量 298 项（293 通过、5 环境
+跳过）及 r399 原生/安装态、三项 checkpoint ASan/UBSan 全部通过，原失败
+记录保留。父仓库本地同步 gitlink/lock，尚未推送。本批验证使用真实服务/CLI
+进程及合成 descriptor，不证明物理 backing 恢复；实际 guest 重启、provider/
+kernel 对账、fencing/rejoin 和完整 M3 仍待验收。详见实施记录 r386-r399。
+
+下一实际验证沿用 headless 双 guest 及现有 `--interactive-after-pass` 入口：
+正常退役用例通过后，单独启动已锁定服务/worker，两个客户端以真实 OBMM
+映射写读同一对象。采样完整身份和 kernel 区域，暂停测试客户端与 worker，
+连续重启控制服务两次，核对隔离资源、holder/mapping 及 descriptor 未丢失，
+新数据准入被拒绝。该受控静止点只验证 daemon 重启的资源保留，不证明在途
+drain、worker 重启、物理回收或重新加入；测试结束必须清理本轮 guest 进程。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。

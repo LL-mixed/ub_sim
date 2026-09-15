@@ -4329,3 +4329,55 @@ mem_service_store_v1，尚未触发历史归档。重启后旧 allocation 查询
 身份、holder、mapping、代际计数和隔离状态纳入版本化 store/journal，在返回
 成功或交付 provider 工作前确认持久化；恢复后按实际资源对账，不恢复旧指针。
 仅增大幂等缓存或只等待历史归档不会补齐该缺口。M3 与总目标继续保持未完成。
+
+### r386-r399：完整资源 checkpoint 与 V2 重启保存
+
+独立服务提交 `e6f261e1dc7ca06f92bcda8892a1a5fde57cc2d1`，仅推送
+`origin/codex/gva-managed-service-completion`，远端 SHA 已核验；父仓库
+本地同步 gitlink/lock，未推送。九个提交文件与 r394+r397 送测快照逐字节一致。
+
+- 首次 managed allocation 起使用 `mem_service_store_managed_v1`，原子保存
+  分配意图、完整身份、holder、mapping、代际上界、隔离状态、V2 record 与精确
+  幂等应答。恢复不重新登记 provider，不恢复指针；未终结资源进入 quarantine。
+- 校验字段边界、校验和及结束标记，拒绝损坏、截断和多余尾部。新格式不接受
+  旧 reply-only journal 覆盖；写入不确定后禁止继续变更，修复路径不自动解锁。
+  原 wire snapshot 无法承载该恢复域，已有 managed 状态时拒绝导出及覆盖。
+- r386 在发布的旧代码上复现重启后隔离对象清零；r387 首次修复通过。r388/r389
+  暴露新增断言误用了 holder_count，改为实际 CLI 字段 live_refs。r391 启动
+  命令重复指定 Bash，exit 126，测试未执行。r394/r395 进一步暴露 V2 幂等
+  应答被旧 512-byte 读行缓冲截断，修订读取边界并保留完整应答重写断言。
+- r397 于 2026-09-15 09:26:11 至 09:29:57 UTC 完成九项定向，全部通过。
+  覆盖连续重启、强制终止后的未发布意图、holder/mapping 保留、完整 V2 绑定、
+  损坏拒绝与历史应答；仅用服务/CLI 进程和合成 descriptor。
+- r398 的 16 分片于 09:27:33 至 09:36:05 UTC 完成：298 个唯一 test ID
+  精确覆盖，293 通过、5 环境跳过，零失败/错误，全部 exit 0、无 OOM。跳过为
+  三项下游文件、原生 arm64 打包工具和隔离网络非 loopback 接口；不算通过。
+  结果 SHA-256：
+  `63605a976367127e44c351d426d61549ccbcf29d9ce31e9963a488f77751a34e`。
+- r399 原生 worker/manager、host-artifact-smoke、13 项下游定向、安装态 SDK、
+  九份 CLI 契约清单逐字节比对及 15 项历史存储 sanitizer 场景全部通过。
+  另将真实 daemon/CLI 编译为 ASan/UBSan，三项新 checkpoint 回归全部通过；
+  该独立作业于 09:33:08 UTC 结束，exit 0。
+
+源码、原始失败、最终日志、测试清单及容器终态共 70 文件已归档并下载核验。
+`managed-checkpoint-evidence-r399.tar.gz` 为 1,677,757 bytes，SHA-256：
+`8cf9fce9dff2e769b10f686f778fcc60f85b270ce17f1a5d27f3dc1216353e72`；
+清单 SHA-256：
+`46b6fc574f9e99cbca45fe1bb91edeaf675feec3d32d418671aefd0b341ece0c`。
+本批关闭控制状态丢失缺口，实际 guest 重启、物理 backing 对账、worker 持久
+恢复与 fencing/rejoin 尚未验收；完整 M3、多 home、W5 及总目标保持未完成。
+
+### r400-r402：已发布 checkpoint 的下游锁定与完整回归
+
+r400 消费已发布 `e6f261e`，锁定校验通过，09:40:19 至 09:40:35 UTC
+完成 AArch64 静态 CLI、worker 和 guest 镜像，exit 0。继续使用 r342 kernel
+与 r359 QEMU；新镜像 SHA-256：
+`d1919aee5d871fe3477bf5834ca9043109431b91a67183d6e60d755ff2fb4890`。
+r401 于 09:41:49 UTC 完成下游 Python 全集，570 个唯一 test ID 与前次清单
+一致：565 通过、5 项交叉编译器环境跳过、零失败/错误/加载错误。r402 于
+09:49:08 UTC 完成 Rust workspace，全 43 个外层 harness 逐项与前次基线核对：
+963 通过、16 ignored、零失败，exit 0、无 OOM。Rust 原日志 SHA-256：
+`ba6525e67ee0c77bd064408fdfe0f92a2317baf6f736dbfda32c016b3bc6b505`。
+父仓库按限定四文件范围提交锁定与实施记录，父仓库及平台仓库不推送。
+实际 daemon 重启的资源保留诊断已按总计划的静止点约定开展，结果另行记录；
+本段不将镜像构建或回归通过计作物理恢复完成。
