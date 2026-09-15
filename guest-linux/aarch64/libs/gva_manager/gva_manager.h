@@ -14,6 +14,11 @@ int gva_manager_allocate_segment(
     int fd, struct obmm_cmd_gsva_alloc_segment_v1 *command);
 int gva_manager_query_segment(
     int fd, struct obmm_cmd_gsva_query_segment_v1 *command);
+/* Start zeroed with version=1. Continuations preserve instance/revision/cursor.
+ * Success returns ENTRY or END; failure invalidates the complete inventory. */
+struct obmm_cmd_gsva_enumerate_v1;
+int gva_manager_enumerate_segments(
+    int fd, struct obmm_cmd_gsva_enumerate_v1 *command);
 int gva_manager_retire_segment(
     int fd, struct obmm_cmd_gsva_retire_segment_v1 *command);
 int gva_manager_export_segment(

@@ -235,6 +235,8 @@ static struct obmm_gsva_segment segment;
 static int obmm_gsva_segment_lock, pool_error, home_error;
 static bool locked, unbacked;
 static unsigned calls;
+static unsigned revisions;
+static void obmm_gsva_changed(void) { assert(locked); revisions++; }
 static void mutex_lock(int *lock) { (void)lock; assert(!locked); locked = true; }
 static void mutex_unlock(int *lock) { (void)lock; assert(locked); locked = false; }
 static struct obmm_gsva_segment *obmm_gsva_find_segment_by_id(u64 id)
@@ -265,10 +267,11 @@ int main(void) {
             .flags = OBMM_GSVA_SEG_F_ACTIVE, .segment_id = 1,
             .home_va = 0x700000000000ULL, .size = 2097152}};
         struct obmm_cmd_gsva_export_segment_v1 cmd = {.version = 1, .segment = segment.desc};
-        calls = 0; home_error = failure ? -EIO : 0;
+        calls = revisions = 0; home_error = failure ? -EIO : 0;
         pool_error = failure == 2 ? -ENOMEM : 0; unbacked = failure == 2;
         assert(obmm_gsva_export_segment(&cmd) == 0);
         assert(!locked && !segment.export_busy);
+        assert(revisions == (failure == 2 ? 2U : 3U));
         if (failure == 2) {
             assert(cmd.outcome == OBMM_GSVA_EXPORT_NO_BACKING && !calls);
             assert(!segment.managed_export_id && !cmd.export_mem_id);
@@ -290,6 +293,7 @@ int main(void) {
         assert(segment.managed_export_id == 2);
         obmm_gsva_export_released(segment.desc.home_va, 2);
         assert(!segment.managed_export_id && !segment.managed_export_token);
+        assert(revisions == 8);
         segment.export_busy = true;
         assert(obmm_gsva_export_revoke(segment.desc.home_va, 2) == -EBUSY);
     }

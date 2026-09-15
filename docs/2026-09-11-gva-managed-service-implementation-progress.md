@@ -4526,3 +4526,69 @@ r418 于 11:54:25 至 11:56:08 UTC 完成实际双 guest 验证，exit 0、无 O
 `6a1a9abdbea42926a54f590922b0b75d3748393096c39dcb7444ce14e28152ba`。
 本轮证明实际 worker 崩溃后持久身份可读、未经核对的重启被拒绝。生产物理
 reconciliation、fencing、回收与重新加入仍未实现，M3 及总目标保持未完成。
+
+### r419-r428：版本化 kernel 库存与实际退役状态核对
+
+kernel 本地提交 `d9492ed29eb84bc47f6016323118b18c6ea6cd8c`，新增
+`OBMM_CMD_GSVA_ENUMERATE`，144-byte 版本 1 请求/响应。游标绑定随机内核
+实例标识及资源表修订号，分配、退役、export 占用/绑定/释放均更新修订号；
+变更后旧游标返回 ESTALE，修订号溢出后永久拒绝枚举。库存包含 active 与
+retired segment、完整 descriptor、原 aperture generation、地址保留标志、
+export 占用状态及 managed export ID/token，保持旧 active query 行为。
+kernel 尚未推送，父仓库 kernel gitlink 未改变；新能力的独立 checkout 复现
+仍需发布该平台提交后按授权更新 gitlink，不能仅依赖父仓库当前 pin。
+
+现有 `linqu_gva_manager --dump-segments` 通过库 API 收取完整库存，收到 END
+后才输出，数量上限 65,536；中途变化、坏响应、旧内核或缺失能力均明确失败。
+库存范围为 segment records，始终标明 fence_verified=0。独立 mem_service
+自带旧 UAPI 镜像，与该镜像编译的库明确返回 EOPNOTSUPP；新 UAPI CLI 在旧
+内核收到 ENOTTY 时也不回退。服务 core 与独立服务提交 `1f39f2a` 未改变。
+
+新增五项实际 kernel 函数夹具，验证空库存、active/retired/export/占用状态、
+内核实例及修订变化拒绝、非法游标、修订号溢出；实际库/CLI 测试覆盖 20 种
+响应及失败时零部分输出，另测旧 SDK UAPI 明确拒绝。原分配/export 夹具补充
+修订更新断言。初版枚举夹具的生成文本缺少换行已修正，本地五项随后通过。
+
+失败记录保留：r419 运行 578 项，570 通过、5 跳过、3 失败；临时 kernel
+符号链接树破坏 Git 元数据路径，同时两个 worker 构建使用独立 SDK 旧头文件。
+r421 镜像构建也因旧 UAPI 失败。改用三份 kernel 文件的容器只读挂载后，
+r424 为 571 通过、5 跳过、2 失败，r425 构建仍失败，确认剩余问题来自 SDK
+自带头文件。补显式旧 UAPI 编译契约及测试，不删除失败用例、不返回空库存。
+
+最终远端结果（2026-09-15 UTC）：
+
+- r422 于 12:09:48 至 12:15:03 完整构建 kernel Image、modules 及配套
+  driver，exit 0、无 OOM；只产生 guest 工件，未安装宿主内核。Image SHA-256：
+  `45187190049aa5c2227d2771729d90f150d8d0c8526ae70a796613c7c28c6b73`。
+  driver SHA-256 与镜像内文件一致：
+  `515e28b30f99eb0875ed26252825c18daa1653ba0aa41a6c3ac39cf4da20107d`。
+- r426 于 12:17:40 完成下游 Python 全集：579 个唯一 test ID，精确覆盖原
+  572 项及新增七项；574 通过、5 交叉编译器环境跳过，零失败/错误/加载错误。
+- r427 于 12:16:21 完成新 CLI/worker 镜像，exit 0。镜像 SHA-256：
+  `bdf468649e73a03c7200e0c639e3d203dcde0bfc58c065f0b997228cdc6d17de`。
+- r428 于 12:26:10 完成最终源码 Rust workspace，43 个 harness 名称及计数
+  逐项匹配基线：963 通过、16 ignored，零失败、exit 0、无 OOM。原日志 SHA-256：
+  `af440242ed809c28c72869af01373bd1a28b088ede749d08938aa55127cea80d`。
+
+r423 于 12:18:33 至 12:20:15 使用新 kernel 与 r427 镜像完成双 guest 验证：
+正常共享、两次 daemon 重启隔离、worker 崩溃日志与直接重启拒绝全部通过。
+home 枚举出六条 retired 与一条 active 记录；peer 显式返回零条库存。
+活动记录的 15 个字段逐项对应完整 96-byte 服务 descriptor，也与 worker 日志
+中的 segment/epoch/export 身份对应。额外申请一段无 backing 的 2 MiB 区间，
+确认 active query 成功；退役后同一 query 返回 ENOENT，枚举仍保留该 retired
+记录，地址保留标志和 export 均为零。内核实例不变，修订号依次为 53、54、55。
+该诊断只退役自己额外申请的 segment，没有回收仍隔离的业务对象。
+
+独立复核 192 条回执及退出码，supervisor 为 observer_exit=0、runner_exit=143
+（诊断完成后主动清理），结束后无遗留 QEMU。结果 JSON SHA-256：
+`6eeb3bddadc50286ea62dae800ecc0c9f1ad4ce87b6477f90e255aed1dc4574e`。
+十份最终源码逐字节核对，61 项源码/构建/测试清单、原失败、实际运行日志及
+容器终态归档为 `kernel-inventory-evidence-r428.tar.gz`，16,183,700 bytes。
+归档 SHA-256：
+`865c803264cc79c50a8d237305e0ce15bcab32198b49cabc0a904fc6da1c669b`；
+清单 SHA-256：
+`8bebffb29eb86b612e8ccf9ba25e77bdd8544e7f7f4430149829bcfb82d160d8`。
+
+本批补齐 kernel segment 库存接口与实际核对证据。worker 日志自动 reconciliation、
+映射和设备在途排空、生产 fencing、业务对象回收及重新加入继续未完成。
+不将 CLI 只读核对或单个无 backing segment 的退役计为完整 M3 恢复验收。

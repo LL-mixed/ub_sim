@@ -120,6 +120,65 @@ int gva_manager_query_segment(
     return 0;
 }
 
+int gva_manager_enumerate_segments(
+    int fd, struct obmm_cmd_gsva_enumerate_v1 *command)
+{
+#ifndef OBMM_CMD_GSVA_ENUMERATE
+    /* Standalone SDK consumers can build against their older UAPI profile.
+     * Missing enumeration never becomes an apparently valid empty inventory. */
+    (void)fd;
+    (void)command;
+    return fail(EOPNOTSUPP);
+#else
+    struct obmm_cmd_gsva_enumerate_v1 reply = {0};
+    struct obmm_gsva_segment_desc_v1 active, empty = {0};
+    const unsigned char zero_instance[16] = {0};
+    uint32_t state;
+
+    if (!command || command->version != OBMM_GSVA_ABI_VERSION ||
+        (!command->revision && (command->cursor ||
+         memcmp(command->kernel_instance, zero_instance, sizeof(zero_instance)))))
+        return fail(EINVAL);
+    reply.version = command->version;
+    reply.revision = command->revision;
+    reply.cursor = command->cursor;
+    memcpy(reply.kernel_instance, command->kernel_instance, sizeof(reply.kernel_instance));
+    if (ioctl(fd, OBMM_CMD_GSVA_ENUMERATE, &reply))
+        return -1;
+    if (reply.version != OBMM_GSVA_ABI_VERSION || !reply.revision ||
+        !memcmp(reply.kernel_instance, zero_instance, sizeof(zero_instance)) ||
+        reply.reserved || reply.reserved2 ||
+        (command->revision && (reply.revision != command->revision ||
+         memcmp(reply.kernel_instance, command->kernel_instance, sizeof(reply.kernel_instance)))))
+        return fail(EPROTO);
+    if (reply.flags == OBMM_GSVA_ENUM_END) {
+        if (reply.cursor != command->cursor || reply.resource_flags || reply.export_mem_id ||
+            reply.export_token_id || reply.aperture_generation ||
+            memcmp(&reply.desc, &empty, sizeof(empty)))
+            return fail(EPROTO);
+    } else if (reply.flags == OBMM_GSVA_ENUM_ENTRY) {
+        state = reply.desc.flags & (OBMM_GSVA_SEG_F_ACTIVE | OBMM_GSVA_SEG_F_RETIRED);
+        active = reply.desc;
+        active.flags = (active.flags & ~OBMM_GSVA_SEG_F_RETIRED) | OBMM_GSVA_SEG_F_ACTIVE;
+        if ((state != OBMM_GSVA_SEG_F_ACTIVE && state != OBMM_GSVA_SEG_F_RETIRED) ||
+            !valid_descriptor(&active) || reply.cursor <= command->cursor ||
+            reply.cursor != (reply.desc.segment_id & ((1ULL << 48) - 1)) ||
+            (reply.resource_flags & ~(OBMM_GSVA_RESOURCE_ADDRESS_RESERVED |
+                                      OBMM_GSVA_RESOURCE_EXPORT_BUSY)) ||
+            (!!reply.export_mem_id != !!reply.export_token_id) ||
+            (state == OBMM_GSVA_SEG_F_ACTIVE &&
+             !(reply.resource_flags & OBMM_GSVA_RESOURCE_ADDRESS_RESERVED)) ||
+            (state == OBMM_GSVA_SEG_F_RETIRED &&
+             (reply.resource_flags || reply.export_mem_id)))
+            return fail(EPROTO);
+    } else {
+        return fail(EPROTO);
+    }
+    *command = reply;
+    return 0;
+#endif
+}
+
 int gva_manager_export_segment(
     int fd, const struct obmm_gsva_segment_desc_v1 *segment,
     struct obmm_cmd_export *export_out)

@@ -76,3 +76,27 @@ EINVAL，随后重新 query 并核对原 segment 完全不变。日志只打印�
 保留返回的资源标识供核对。只在本任务持有并暂停生命周期变化的 segment 上执行；
 实际用例同时保留两个客户端的 CPU 映射，结束后继续数据校验并核对资源基线。
 这只覆盖 home kernel 的请求校验，consumer 导入、动态轮换和恢复需另行验证。
+
+## 完整 segment 库存
+
+`linqu_gva_manager --dump-segments` 使用 `gva_manager_enumerate_segments()`
+读取版本 1 库存，包含 active 与 retired segment、原 aperture generation、
+完整 descriptor、地址是否仍保留、export 操作占用状态及 managed export ID/token。
+输出包含用于核对的 token 身份，按运行证据保存，不公开整份原始库存。
+
+调用方以全零结构加 `version=1` 开始，后续调用保留返回的 kernel_instance、
+revision 和 cursor。本库清除输出字段后再发送下次请求；成功返回 ENTRY 或 END。
+同一枚举期间发生分配、退役或 export 状态变更时，旧游标返回 ESTALE，调用方
+必须丢弃整个库存。修订号溢出后枚举永久返回 EOVERFLOW；实例标识用于区分
+本次内核实例，不能使用可能重复的 segment counter 代替它。
+
+CLI 只在收到 END 后打印全部记录及唯一汇总，最多接受 65,536 条记录；超限、
+旧内核、缺失能力、损坏响应或中途变化均失败，不输出貌似完整的部分库存。
+库与独立 SDK 的旧 UAPI 头文件一起编译时，枚举明确返回 EOPNOTSUPP，保留旧
+worker 的构建能力；使用新 UAPI 构建的 CLI 在旧内核上收到 ENOTTY 后也不回退。
+
+`scope=segment-records fence_verified=0` 明确其证明范围。库存不证明进程 VMA、
+QEMU home binding、TLB 或设备在途任务已清理，不能凭一份库存解除服务隔离。
+原 `--query` 继续仅返回 active segment；retired 记录通过新枚举核对。
+测试包括 `test_gsva_inventory.py` 的实际 kernel 函数夹具，以及
+`gva_manager_inventory_golden.c` 的实际库/CLI 响应校验。

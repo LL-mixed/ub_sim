@@ -99,6 +99,7 @@ struct gva_mgr_config {
     bool bootstrap;
     bool dump_routes;
     bool dump_obmm_regions;
+    bool dump_segments;
     bool allocate_segment;
     bool retire_segment;
     bool reuse_segment;
@@ -520,6 +521,63 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
     }
 }
 
+static int dump_segments(int fd)
+{
+    struct obmm_cmd_gsva_enumerate_v1 cursor = {.version = OBMM_GSVA_ABI_VERSION};
+    struct obmm_cmd_gsva_enumerate_v1 *records = NULL;
+    size_t count = 0, capacity = 0, i;
+    int result = -1;
+
+    for (;;) {
+        if (gva_manager_enumerate_segments(fd, &cursor))
+            goto out;
+        if (cursor.flags == OBMM_GSVA_ENUM_END)
+            break;
+        if (count == 65536) {
+            errno = EOVERFLOW;
+            goto out;
+        }
+        if (count == capacity) {
+            size_t next = capacity ? capacity * 2 : 64;
+            void *memory = realloc(records, next * sizeof(*records));
+
+            if (!memory)
+                goto out;
+            records = memory;
+            capacity = next;
+        }
+        records[count++] = cursor;
+    }
+    for (i = 0; i < count; i++) {
+        const struct obmm_cmd_gsva_enumerate_v1 *r = &records[i];
+        const struct obmm_gsva_segment_desc_v1 *d = &r->desc;
+
+        printf("gsva-kernel-segment: cursor=%" PRIu64 " segment=%" PRIu64
+               " flags=%u address=%" PRIu64 " bytes=%" PRIu64 " epoch=%" PRIu64
+               " cna=%u owner=%u nodes=%u cache=%u p_tag=%u access=%u token_id=%u"
+               " token_value=%u resource_flags=%u export=%" PRIu64
+               " export_token=%u aperture_generation=%" PRIu64 "\n",
+               (uint64_t)r->cursor, (uint64_t)d->segment_id, d->flags,
+               (uint64_t)d->home_va, (uint64_t)d->size, (uint64_t)d->epoch,
+               d->home_cna, d->owner_node_id, d->node_count, d->cache_policy,
+               d->p_tag, d->access_flags, d->token_id, d->token_value,
+               r->resource_flags, (uint64_t)r->export_mem_id, r->export_token_id,
+               (uint64_t)r->aperture_generation);
+    }
+    printf("gsva-kernel-inventory: version=1 entries=%zu revision=%" PRIu64
+           " kernel_instance=", count, (uint64_t)cursor.revision);
+    for (i = 0; i < sizeof(cursor.kernel_instance); i++)
+        printf("%02x", cursor.kernel_instance[i]);
+    puts(" scope=segment-records fence_verified=0");
+    if (!ferror(stdout))
+        result = 0;
+out:
+    if (result)
+        log_msg("dump-segments failed errno=%d; inventory unavailable", errno);
+    free(records);
+    return result;
+}
+
 static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
 {
     int i;
@@ -545,7 +603,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         uint64_t parsed64;
         int parsed32;
 
-        if (strcmp(argv[i], "--dump-obmm-regions") == 0) {
+        if (strcmp(argv[i], "--dump-segments") == 0) {
+            cfg->bootstrap = false;
+            cfg->dump_segments = true;
+        } else if (strcmp(argv[i], "--dump-obmm-regions") == 0) {
             cfg->bootstrap = false;
             cfg->dump_obmm_regions = true;
         } else if (strcmp(argv[i], "--check-allocator") == 0) {
@@ -679,11 +740,14 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "       gva_manager --check-allocator --node-id N --node-count C\n"
                     "       gva_manager --check-export-identity --segment-id ID\n"
                     "       gva_manager --dump-routes\n"
-                    "       gva_manager --dump-obmm-regions\n");
+                    "       gva_manager --dump-obmm-regions\n"
+                    "       gva_manager --dump-segments\n");
             return -EINVAL;
         }
     }
 
+    if (cfg->dump_segments)
+        return argc == 2 ? 0 : -EINVAL;
     if (cfg->check_export_identity)
         return argc == 4 && cfg->segment_id &&
                (!strcmp(argv[1], "--segment-id") || !strcmp(argv[2], "--segment-id"))
@@ -2797,6 +2861,10 @@ int main(int argc, char **argv)
     obmm_fd = obmm_open_device();
     if (obmm_fd < 0) {
         log_msg("open /dev/obmm failed errno=%d", errno);
+        goto out;
+    }
+    if (cfg.dump_segments) {
+        rc = dump_segments(obmm_fd) ? 1 : 0;
         goto out;
     }
     if (obmm_cmdline_get("linqu_cna", value, sizeof(value))) {

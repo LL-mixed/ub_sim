@@ -388,6 +388,13 @@ r418 仅修正观察缓存后，实际双 guest 连续 daemon 重启及 worker �
 被拒绝，日志未改写；worker 退出后 kernel 资源仍存在。物理核对、回收、生产
 fencing/rejoin 和完整 M3 继续未完成，详见实施记录 r414-r418。
 
+2026-09-15 执行补记：kernel 本地提交 `d9492ed29eb8` 新增包含 active/retired
+及 managed export 身份的版本化枚举；现有 CLI 增加 `--dump-segments`。
+r423 实际核对 worker 日志与 kernel 库存，额外分配/退役后旧 query 拒绝、
+retired 库存仍可见。最终 Python 579 项、574 通过、5 跳过；Rust 963 通过、
+16 ignored。kernel 未发布，父仓库平台 pin 未更新；生产 reconciliation、
+fencing/rejoin 继续未完成。原失败和最终证据见实施记录 r419-r428。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
@@ -779,13 +786,22 @@ M1 开始编码时一并确认以下恢复接口缺口，形成有限列表，�
 | --- | --- | --- |
 | 服务分配意图、引用 | journal/record，现有内容不覆盖全部 GSVA 状态 | M1 持久化新增操作意图、资源 ID 和完成状态；M3 扩展崩溃恢复 |
 | 已知 active segment | kernel query 按 ID 或 home VA 查找 | M1 可用于回读校验；M3 按 journal ID 对账 |
-| 全量 segment、retired 与孤儿分配 | 当前 UAPI 无枚举游标；active query 过滤 retired | M1 确认缺口；M3 需要版本化枚举/状态查询或可证明完整的分配日志；不能以 NOT_FOUND 判定资源已释放 |
+| 全量 segment、retired 与孤儿分配 | 新增版本 1 segment 枚举，原 active query 继续过滤 retired；r423 实际验证 active/retired/空库存 | 通过内核实例、修订号与游标读取一致库存；worker 日志自动核对与未登记资源处置继续实现，不能以 NOT_FOUND 判定资源已释放 |
 | import/mmap、export 所有者 | provider 进程中的 region/mapping slots | M1 给进程加 incarnation 与资源快照查询；重启后不复用原 mapping handle |
 | route/coherence/TLB 清理 | QEMU/kernel 各自状态 | 必须建立同一代际的完成证明；没有证明时隔离，不能由 proc 文本推定 |
 
 已有 kernel counter 与初始 epoch 在重启后可能重复，服务日志的单个数字不能防止
 ABA。重启后的 provider incarnation 必须变化；旧事务排空或 fencing 完成前，禁止
 重新发布同址对象。需要 kernel/QEMU 扩展时限定为上述具体能力，单独附行为测试。
+
+M3 物理核对接口约定：新增版本化 kernel segment 枚举，覆盖 active 和 retired
+记录，输出原 aperture generation、完整 descriptor、地址保留状态、export
+操作占用状态及 managed export ID/token。游标绑定本次内核实例的随机标识与
+资源表修订号；分配、退役或 export 状态变化使旧游标返回 ESTALE，禁止拼接
+不同快照。旧 active query 的 ABI 与行为保持不变。现有 gva_manager CLI 提供
+完整枚举，收到明确结束标记后才输出库存；内核不支持、并发变化或数量超限均
+明确失败。此库存仅证明 kernel segment/export 记录，不证明进程 VMA、QEMU
+绑定、TLB 或排空完成；后续恢复必须继续核对这些状态，不能直接解除隔离。
 
 ### M4：资源压力、真实请求与分层收益
 

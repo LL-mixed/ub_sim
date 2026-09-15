@@ -64,7 +64,8 @@ typedef uint32_t u32;
 #define mutex_lock(p) ((void)(p))
 #define mutex_unlock(p) ((void)(p))
 struct resource { u64 start, end; const char *name; unsigned flags; };
-struct obmm_gsva_segment { struct resource address; struct obmm_gsva_segment_desc_v1 desc; int node; };
+struct obmm_gsva_segment { struct resource address; struct obmm_gsva_segment_desc_v1 desc;
+    u64 aperture_generation; int node; };
 struct ub_entity { u32 cna; };
 static struct ub_entity entity = {.cna=7};
 static struct obmm_cmd_gsva_aperture obmm_gsva_aperture = {
@@ -72,6 +73,8 @@ static struct obmm_cmd_gsva_aperture obmm_gsva_aperture = {
     .flags=OBMM_GSVA_APERTURE_F_ACTIVE};
 static struct resource obmm_gsva_address_space;
 static u64 obmm_gsva_segment_counter = 31;
+static unsigned revisions;
+static void obmm_gsva_changed(void) { revisions++; }
 static int obmm_gsva_aperture_lock, obmm_gsva_segment_lock, obmm_gsva_segments;
 static int resource_error, registered, live, resource_calls;
 static bool reserved, lose_output;
@@ -136,11 +139,13 @@ int main(void) {
     resource_error=0; lose_output=true;
     assert(allocation_ioctl(&cmd)==-EFAULT);
     assert(live==1 && reserved && registered==1 && obmm_gsva_segment_counter==32);
+    assert(revisions==1 && last_segment->aperture_generation==obmm_gsva_aperture.generation);
     assert(!memcmp(&cmd.desc,&empty,sizeof(empty))); /* Empty output alone proves nothing. */
     reserved=false; registered=0; kfree(last_segment);
     lose_output=false;
     assert(!allocation_ioctl(&cmd));
     assert(live==1 && reserved && registered==1 && obmm_gsva_segment_counter==33);
+    assert(revisions==2);
     assert(cmd.desc.home_va==obmm_gsva_aperture.base && cmd.desc.segment_id);
     reserved=false; registered=0; kfree(last_segment);
     return 0;
@@ -194,6 +199,53 @@ int main(void) {
                     )
                     self.assertEqual(result.returncode, 2)
                     self.assertNotIn("starting nodeA", result.stdout)
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires Linux UAPI")
+    def test_complete_inventory_cli_and_malformed_replies(self):
+        kernel = ROOT / "guest-linux/kernel_ub"
+        vendor = ROOT / "vendor/obmm/src/libobmm"
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "inventory-golden"
+            include = stage_uapi(binary.parent)
+            built = subprocess.run(
+                ["cc", "-O2", "-Wall", "-Wextra", "-D__EXPORTED_HEADERS__", "-pthread",
+                 "-I", str(include), "-I", str(GUEST / "common"),
+                 "-I", str(GUEST / "libs/obmm_queue"), "-I", str(vendor),
+                 "-idirafter", str(kernel / "include/uapi"),
+                 "-idirafter", str(kernel / "include"),
+                 str(GUEST / "tests/gva_manager_inventory_golden.c"),
+                 str(LIB / "gva_manager.c"), str(vendor / "libobmm.c"),
+                 str(GUEST / "common/obmm_vendor_adaptor_sim.c"),
+                 "-Wl,--wrap=ioctl", "-o", str(binary)],
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("gva_manager_inventory=pass cases=20 no_partial_output=1", result.stdout)
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires Linux UAPI")
+    def test_old_sdk_uapi_explicitly_rejects_inventory(self):
+        sdk = ROOT / "mem_service/kernel_ub/include/uapi"
+        if "OBMM_CMD_GSVA_ENUMERATE" in (sdk / "ub/obmm.h").read_text():
+            self.skipTest("standalone SDK already includes inventory UAPI")
+        program = '''
+#include "gva_manager.h"
+#include <assert.h>
+#include <errno.h>
+int main(void) {
+    assert(gva_manager_enumerate_segments(-1, 0)==-1 && errno==EOPNOTSUPP);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "old-sdk-inventory"
+            built = subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                "-I", str(LIB), "-I", str(sdk), "-x", "c", "-",
+                str(LIB / "gva_manager.c"), "-o", str(binary)], input=program,
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(built.returncode, 0, built.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(shutil.which("zsh"), "requires zsh")
     def test_runner_creates_pid_directory_with_external_artifacts(self):
