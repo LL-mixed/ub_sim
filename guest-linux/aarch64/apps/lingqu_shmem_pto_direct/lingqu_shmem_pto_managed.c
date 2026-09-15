@@ -1392,6 +1392,24 @@ static int model_output_callback(void *opaque,
     return 0;
 }
 
+static int model_input_callback(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    const struct managed_state *state = opaque;
+    (void)channel; (void)lifecycle;
+    /* Adoption moves and clears state->mapping. Inspect the live owner under
+     * its CPU lease, never the relinquished source mapping. */
+    if (mapping->len != MODEL_HIDDEN_BYTES || view->len != MODEL_HIDDEN_BYTES ||
+        mapping->flags != MEM_SERVICE_CLIENT_MAP_READ ||
+        view->flags != MEM_SERVICE_CLIENT_MAP_READ || view->offset != 0 ||
+        view->base != mapping->base || view->generation != state->allocation.generation)
+        return -EPROTO;
+    return 0;
+}
+
 static int run_model_probe(struct managed_state *state)
 {
     struct model_access access = {state, 2};
@@ -1405,9 +1423,8 @@ static int run_model_probe(struct managed_state *state)
         if (!rc) rc = wait_allocation(state->output, "active", true);
         return rc;
     }
-    if (state->mapping.len != MODEL_HIDDEN_BYTES ||
-        state->mapping.flags != MEM_SERVICE_CLIENT_MAP_READ) return -EPROTO;
-    rc = open_compute(state);
+    rc = mem_service_mapping_lease_apply(state->cpu_pin, model_input_callback, state);
+    if (!rc) rc = open_compute(state);
     struct lingqu_shmem_pto_endpoint_info info;
     if (!rc) rc = lingqu_shmem_pto_endpoint_open(&state->endpoint, &info);
     access.action = 0;

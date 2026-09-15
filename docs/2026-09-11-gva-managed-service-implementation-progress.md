@@ -4950,3 +4950,61 @@ pto_ub_gm_bad_control_table。源码定位为 CLI 把逻辑 node 0 当作 provid
 76 项，包含源文件、完整回归清单、五个作业终态和保留的失败记录；不含模型
 或网络审计原日志。SHA-256：
 `f60ceaff967b43ebe5906330395f4ed3fd4c8e4bbd08daf37093422296682106`。
+
+## 2026-09-16：真实双 guest managed 模型调用与回收
+
+本批复用 managed-config CLI、双 guest headless runner 和 callable 4，将已
+锁定 Qwen3-0.6B 的 `[1,2)` 单层计算连接到真实 SDK reader/compute lease。
+consumer 为逻辑 node 0，home 为 node 1，token 为 42；输入 2048 bytes，
+输出 allocation 为 262144 bytes，控制与结果在同一输出 owner 内不重叠。
+离线 CLI 现在分离逻辑节点和 provider CNA，并报告实际写入字节数。
+
+实际运行暴露并修复两个问题，原失败记录保留：
+
+- r491 在模型提交前返回 `-EPROTO`：adopt 已清空源 mapping，入口仍检查源
+  结构。改为通过有效 CPU lease 检查 owner 内的原映射和有界视图；C 夹具
+  覆盖清空源结构后的成功检查，以及长度、权限、offset、地址和 generation
+  七类拒绝。
+- r495 完成三份映射授权后返回 `managed_model_bad_memref`，没有执行读写。
+  执行器误用 tensor aperture 作为 provider 地址。改为使用 UB_GM base 加
+  offset；单测分离两种地址，并覆盖非零 offset、地址溢出和零地址拒绝。
+
+r500 于 2026-09-15 17:12:38 至 17:14:19 UTC 整轮 exit 0、无 OOM，容器
+运行于指定远端、network none、pull never，使用既有只读权重，没有下载依赖。
+两端实际 V2 完全一致，原请求 492 持有三份 compute lease 至成功 completion。
+QEMU 记录两次 LOAD（8768 + 2048 bytes）、一次 STORE（54680 bytes）和一次
+FENCE；home 与 consumer 的 CPU checksum 均为 `1bb986f7936fb3c0`，与相同
+配置离线 oracle 一致，控制/输出间隙与输出尾部 sentinel 未改写。home 最终
+对象、backing、地址预留、映射、引用、在途与隔离计数为零，两端 kernel region
+回到基线，本轮 QEMU 进程退出。控制面 put/materialize payload 计数均为零。
+
+实际写入的 54680-byte 数值 oracle SHA-256 为
+`3bbfc62dd97b530990a81615ba2e1fbc566237d9de36f6e28bd205d89814da10`；
+离线输出文件还包含未写入的预分配尾部，其整体 hash 不用作该有效区间 oracle。
+r484 两节点 oracle 与 r485 八节点离线兼容用例各七项通过；修改 legacy inline
+输入未改变结果。r484 Rust 全集为 973 通过、16 ignored；r488、r493、r498
+Python 全集各为 578 通过、5 环境跳过，零失败。r502 于 17:16:19 至
+17:18:19 UTC 整轮 exit 0，最终 Python 全集及加强资源台账门禁后的 r500
+原日志复核通过。新增门禁逐项拒绝九种未归零、缺失或重复的 home 资源字段；
+复核读取原日志，没有重新启动 guest。最终 Rust r497 整轮 exit 0、无 OOM，
+完整 workspace 的 43 个测试目标与 r484 精确匹配，973 通过、16 ignored、
+零失败；最前的定向检查单独记录，不重复计入 workspace 总数。
+
+guest image r494 SHA-256：
+`5080f45d7e097e77ffcdbd441bdb5f9781b838de3864cfbfd14cfbd9ca2a7b31`；
+QEMU r499 SHA-256：
+`6d0bd604f908774d59e6408727e5842b1da0d6dfcbb3608a71e2f22422c30487`；
+其链接的 sim-qemu r497 静态库 SHA-256：
+`75fab3b905392b8f61292e57237a81df956fc0e0d02d66eec887444c284d0301`。
+callable fingerprint 为 `12999650660202813907`，权重沿用原完整 SHA。
+r490/r499 各七个 QEMU 单元程序共 45 项通过，平台源码和子模块 pin 未变。
+
+本批只证明真实 managed mapping 到模型单层计算及回收的连接。Rust 模型执行
+仍使用 host 临时张量；日志的 segment staging=0 不证明模型零拷贝。完整 W5
+serving loop、跨 range 输出发布、两模型 PP/decode、多 home 及总计划其余
+故障/恢复/压力门禁继续未完成，M2 与总目标保持进行中。
+
+完整证据归档 `w5-managed-model-guest-evidence-r503.tar.gz`：16898464 bytes、
+114 项，包含 13 个作业终态、原始失败/成功日志、测试执行清单、配置及源码；
+不含模型权重或网络审计原日志。SHA-256：
+`d3ddd1dcbdc4e96f72a874a7afeb28a92abf4b2fafd7c77102ce68f18181cf41`。

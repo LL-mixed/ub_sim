@@ -138,6 +138,21 @@ struct ReplayMemory {
     writes: usize,
     fences: usize,
     request: u64,
+    written_bytes: u64,
+}
+
+impl ReplayMemory {
+    fn registration(&mut self) -> sim_core::PtoUbGmAccessRegistration {
+        // This offline fixture has one provider. Its nonzero transport identity
+        // is independent of the model's zero-based logical node coordinate.
+        sim_core::PtoUbGmAccessRegistration {
+            read: replay_read,
+            write: replay_write,
+            fence: replay_fence,
+            backend_context: self as *mut Self as usize,
+            pto_device_cna: 0xf001,
+        }
+    }
 }
 
 fn replay_view(
@@ -193,6 +208,7 @@ unsafe extern "C" fn replay_write(
     };
     bytes.copy_from_slice(unsafe { std::slice::from_raw_parts(src.cast(), len as usize) });
     memory.writes += 1;
+    memory.written_bytes = len;
     0
 }
 
@@ -223,8 +239,7 @@ fn replay_callbacks(
     output: PathBuf,
 ) -> anyhow::Result<()> {
     use sim_core::{
-        BufferUsage, PtoUbGmAccessRegistration, SimplerRuntimeArg, SimplerUbGmAccess,
-        SimplerUbGmBinding, SimplerUbGmView,
+        BufferUsage, SimplerRuntimeArg, SimplerUbGmAccess, SimplerUbGmBinding, SimplerUbGmView,
     };
     use sim_uapi::managed_model_dispatch::{
         encode_control, fingerprint, CALLABLE_ID, MAX_VIEW_BYTES, PREFIX_BYTES,
@@ -273,6 +288,7 @@ fn replay_callbacks(
         writes: 0,
         fences: 0,
         request: req.op_id,
+        written_bytes: 0,
     });
     let args = memory
         .buffers
@@ -313,15 +329,10 @@ fn replay_callbacks(
         })
         .collect();
     let mut adapter = QemuBackendAdapter::new(topology);
-    let requester = req.task.coord.levels[1];
-    let session = adapter.register_endpoint(requester)?;
-    adapter.register_pto_ub_gm_access(PtoUbGmAccessRegistration {
-        read: replay_read,
-        write: replay_write,
-        fence: replay_fence,
-        backend_context: memory.as_mut() as *mut ReplayMemory as usize,
-        pto_device_cna: requester,
-    })?;
+    let session = adapter.register_endpoint(req.task.coord.levels[1])?;
+    let registration = memory.registration();
+    let requester = registration.pto_device_cna;
+    adapter.register_pto_ub_gm_access(registration)?;
     adapter.enqueue_pto_ub_gm_dispatch(
         &session,
         sim_uapi::PtoUbGmDispatchV2Req {
@@ -357,7 +368,55 @@ fn replay_callbacks(
         "{}",
         serde_json::json!({"op_id": req.op_id, "completion": "success",
         "input_source": "offline_provider_callback_fixture", "service_access_granted": false,
-        "physical_lease_verified": false, "reads": memory.reads, "writes": memory.writes, "fences": memory.fences})
+        "physical_lease_verified": false, "reads": memory.reads, "writes": memory.writes,
+        "fences": memory.fences, "output_bytes": memory.written_bytes})
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_provider_identity_is_independent_of_zero_based_model_node() {
+        let config = ScenarioConfig::from_yaml_file(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../scenarios/mvp_2host_single_domain.yaml"),
+        )
+        .unwrap();
+        for node in [0, 1] {
+            let mut memory = ReplayMemory {
+                buffers: vec![vec![0; 64]],
+                reads: 0,
+                writes: 0,
+                fences: 0,
+                request: 17,
+                written_bytes: 0,
+            };
+            let registration = memory.registration();
+            assert_eq!(registration.pto_device_cna, 0xf001);
+            let mut adapter = QemuBackendAdapter::new(SimTopology::from_config(&config).unwrap());
+            let session = adapter.register_endpoint(node).unwrap();
+            assert_eq!(session.entity, node);
+            adapter.register_pto_ub_gm_access(registration).unwrap();
+            let data = [1u8, 2, 3, 4];
+            assert_eq!(
+                unsafe {
+                    (registration.write)(
+                        registration.backend_context as *mut _,
+                        17,
+                        1,
+                        0x1000_0000,
+                        data.as_ptr().cast(),
+                        data.len() as u64,
+                    )
+                },
+                0
+            );
+            assert_eq!(memory.written_bytes, 4);
+            assert_eq!(&memory.buffers[0][..4], &data);
+            assert_eq!(&memory.buffers[0][4..], &[0; 60]);
+        }
+    }
 }

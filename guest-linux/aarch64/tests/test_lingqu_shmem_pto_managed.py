@@ -2,6 +2,7 @@ import pathlib
 import json
 import platform
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -282,6 +283,7 @@ class ManagedPtoOwnerGuardTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("managed PTO owner guards: pass", result.stdout)
             self.assertIn("managed PTO shared compute guards: pass", result.stdout)
+            self.assertIn("managed model adopted input view: pass", result.stdout)
 
 
 class ManagedPtoContractTest(unittest.TestCase):
@@ -347,7 +349,10 @@ int main(int argc, char **argv) {
             self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
             for key, expected in ((option, 0), ("lingqu_shmem_pto_home_node", 1),
                                   ("lingqu_shmem_pto.concurrent_requests", 0),
-                                  ("lingqu_shmem_pto.reference_inputs", 0)):
+                                  ("lingqu_shmem_pto.reference_inputs", 0),
+                                  ("lingqu_shmem_pto.model_probe", 0),
+                                  ("lingqu_shmem_pto.model_output_bytes", 0),
+                                  ("lingqu_shmem_pto.model_output_checksum", 0)):
                 checked = subprocess.run([str(binary), key], capture_output=True, text=True, timeout=5)
                 self.assertEqual(checked.returncode, expected, checked.stdout + checked.stderr)
 
@@ -437,6 +442,49 @@ int main(int argc, char **argv) {
                     result = subprocess.run([sys.executable, "-c", script, str(path),
                         "cross-page", "64", enabled, "135"], capture_output=True, text=True, timeout=5)
                     self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh runner parser required")
+    def test_model_runner_preflight_uses_oracle_without_vector_manifest(self):
+        runner = (ROOT / "guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh").read_text()
+        defaults = "\n".join(line for line in runner.splitlines() if
+                             line.startswith(("LINGQU_SHMEM_PTO_", "SIMPLER_HOST_VECTOR_MANIFEST="))
+                             and '="${' in line and line.endswith('}"'))
+        functions = "\n".join(name + "() {" + runner.split(name + "() {", 1)[1].split("\n}", 1)[0] + "\n}"
+                              for name in ("require_pto_unsigned_value", "append_cmdline_if_missing",
+                                           "managed_pto_selected", "validate_lingqu_shmem_pto_config"))
+        script = "set -eu\n" + defaults + "\n" + functions + (
+            '\nsource "$1"\nvalidate_lingqu_shmem_pto_config\nprintf "%s\\n" "$APPEND_EXTRA"\n')
+        values = {"APPEND_EXTRA": "linqu_mem_service_object_share=1",
+                  "MEM_SERVICE_OBJECT_SHARE_ACCESS": "cpu-pto",
+                  "SIM_UAPI_W4_CHIPBACKEND_PROFILE": "qwen3_dense", "SIM_QWEN3_DENSE_TP_NODES": "2",
+                  "SIM_UAPI_SCENARIO_CONFIG": str(ROOT / "scenarios/mvp_2host_single_domain.yaml"),
+                  "SIMPLER_HOST_VECTOR_MANIFEST": "/nonexistent/model-probe-must-not-load-vector.json",
+                  "LINGQU_SHMEM_PTO_MODEL_PROBE": "1", "LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES": "54680",
+                  "LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM": "0x1234", "LINGQU_SHMEM_PTO_HOME_NODE": "1",
+                  "LINGQU_SHMEM_PTO_REFERENCE_INPUTS": "1", "LINGQU_SHMEM_PTO_READONLY_INPUTS": "1",
+                  "LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT": "0x1234"}
+        changes = ({}, {"LINGQU_SHMEM_PTO_MODEL_PROBE": "2"},
+                   {"LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES": "0"},
+                   {"LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES": "245761"},
+                   {"LINGQU_SHMEM_PTO_HOME_NODE": "0"}, {"SIM_QWEN3_DENSE_TP_NODES": "3"},
+                   {"LINGQU_SHMEM_PTO_REFERENCE_INPUTS": "0"},
+                   {"LINGQU_SHMEM_PTO_ACCESS_THREADS": "1"},
+                   {"LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS": "2"},
+                   {"LINGQU_SHMEM_PTO_NEGATIVE_CHECKS": "1"},
+                   {"LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM": "bad"})
+        with tempfile.TemporaryDirectory() as directory:
+            config = pathlib.Path(directory) / "probe.env"
+            for change in changes:
+                config.write_text("".join(f"{key}={shlex.quote(value)}\n" for key, value in
+                                          {**values, **change}.items()))
+                result = subprocess.run(["zsh", "-c", script, "probe-test", str(config)],
+                                        capture_output=True, text=True, timeout=5)
+                with self.subTest(change=change):
+                    self.assertEqual(result.returncode, 2 if change else 0, result.stdout + result.stderr)
+                    if not change:
+                        self.assertIn("lingqu_shmem_pto.model_probe=1", result.stdout)
+                        self.assertIn("lingqu_shmem_pto.model_output_bytes=54680", result.stdout)
+                        self.assertIn("lingqu_shmem_pto.model_output_checksum=0x1234", result.stdout)
 
     def test_same_mapping_two_dispatches_and_fail_closed_lifetime(self):
         source = (APP / "lingqu_shmem_pto_managed.c").read_text()

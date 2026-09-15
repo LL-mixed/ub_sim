@@ -96,13 +96,19 @@ fn views(req: &PtoUbGmDispatchV2Req) -> Result<Vec<View<'_>>, String> {
             BufferUsage::Input
         };
         let address = binding
-            .aperture_base
+            .ub_gm_base
             .checked_add(view.aperture_offset)
             .ok_or("managed_model_view_overflow")?;
         if binding.request_id != req.request_id
             || binding.binding_id != i as u64 + 1
             || binding.backend_cookie == 0
             || binding.flags != 0
+            || binding.aperture_base == 0
+            || binding.ub_gm_base == 0
+            || binding
+                .aperture_base
+                .checked_add(binding.aperture_length)
+                .is_none()
             || binding.access != permission
             || *usage != expected_usage
             || view.dtype != 4
@@ -374,7 +380,9 @@ mod tests {
                     binding: SimplerUbGmBinding {
                         request_id: 19,
                         binding_id: i as u64 + 1,
-                        aperture_base: address,
+                        // Runtime tensor aperture and provider address are
+                        // different address spaces in the actual QEMU ABI.
+                        aperture_base: 0x7000_0000_0000 + i as u64 * 0x10000,
                         aperture_length: len,
                         ub_gm_base: address,
                         mapped_length: len,
@@ -439,6 +447,21 @@ mod tests {
         assert_eq!(memory.calls, ["read", "write", "fence"]);
         assert_eq!(&memory.output[..4], &[1, 2, 3, 4]);
         assert!(memory.output[4..].iter().all(|byte| *byte == 0xa5));
+        let (mut offset_memory, mut offset_req) = setup();
+        for arg in &mut offset_req.args {
+            let SimplerRuntimeArg::UbGmMemref { binding, view, .. } = arg else {
+                unreachable!()
+            };
+            binding.ub_gm_base -= 64;
+            binding.aperture_length += 64;
+            binding.mapped_length += 64;
+            view.aperture_offset = 64;
+        }
+        execute(&offset_req, access(&mut offset_memory), |_, _, _| {
+            Ok(vec![1, 2, 3, 4])
+        })
+        .unwrap();
+        assert_eq!(offset_memory.calls, ["read", "write", "fence"]);
         for (fault, expected) in [
             ("read", vec!["read"]),
             ("write", vec!["read", "write"]),
@@ -453,7 +476,7 @@ mod tests {
             );
             assert_eq!(memory.calls, expected);
         }
-        for fault in 0..12 {
+        for fault in 0..16 {
             let (mut memory, mut req) = setup();
             if fault == 0 {
                 req.artifact_fingerprint ^= 1;
@@ -483,6 +506,10 @@ mod tests {
                         binding.aperture_base = 0x10000;
                         binding.ub_gm_base = 0x10000;
                     }
+                    12 => binding.aperture_base = u64::MAX,
+                    13 => binding.ub_gm_base = u64::MAX,
+                    14 => binding.aperture_base = 0,
+                    15 => binding.ub_gm_base = 0,
                     _ => (),
                 }
             }

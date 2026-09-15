@@ -475,8 +475,12 @@ Rust 互操作测试编译 SDK 的实际实现作为 oracle，拒绝填入旧 W5
 上述实际映射诊断的 CLI 参数为 `model_probe=1`、`model_output_bytes` 与
 `model_output_checksum`；后两者来自相同模型配置的离线 oracle。限定 home 1、
 consumer 0、ND 262144-byte backing、只读 V2 输入、单请求及无故障注入。
-逻辑模型配置为两节点、range `[1,2)`、非 terminal 输出。runner 配置透传、
-独立原日志验收及实际 QEMU 运行仍须完成，CLI 编译通过不能作为实际映射证据。
+逻辑模型配置为两节点、range `[1,2)`、非 terminal 输出。r500 已通过实际双
+guest 的 V2 映射、模型调用、原 completion、双端输出校验与对象回收；runner
+配置透传及独立日志验收已接通。此单层诊断不关闭 W5 serving/PP/decode 门禁。
+实际接入修正了两个夹具未覆盖的问题：SDK adopt 清空原 mapping 后，检查必须
+经 owner 的活动 lease 执行；provider 回调地址使用 `ub_gm_base + view_offset`，
+与 runtime tensor aperture 分开校验，不能假设两种地址相等。
 
 本计划展开 [实现规格第 8 节](../sim_gva_gsva_implementation_spec.md#8-剩余工作与优先级)。
 机制基线为 ub_sim `39576eb`、mem_service `e4a8a58`、kernel `85fb35d`、

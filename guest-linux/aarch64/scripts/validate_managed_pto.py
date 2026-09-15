@@ -942,6 +942,157 @@ def validate_transport_chunks(text, requests, geometry, concurrent_requests=1,
             "scope": "registered-pto-dispatches", "non_pto_bulk_sends": non_pto_bulk_sends}
 
 
+def validate_model_probe(guests, qemu, output_bytes, output_checksum):
+    """The fixed two-node Qwen layer probe; not a complete W5/PP acceptance."""
+    require(len(guests) == 2 and 0 < output_bytes <= 245760 and
+            0 <= output_checksum < 1 << 64, "invalid model probe oracle")
+    guests = [text.replace("\r\n", "\n") for text in guests]
+    maps, references = [], []
+    hidden = b"".join(struct.pack("<e", ((i % 31) - 15) / 32) for i in range(1024))
+    for node, text in enumerate(guests):
+        require("status=fail" not in text and "resources_retained=1" not in text,
+                "model guest reported failure")
+        for prefix in ("MANAGED_PTO", "MANAGED_PTO_RESULT", "MANAGED_PTO_CONFIG",
+                       "MANAGED_MODEL", "MANAGED_OWNER", "MANAGED_PTO_REFERENCE"):
+            require(all(number(row, "node") == node for row in records(text, prefix)),
+                    "model evidence has wrong guest identity")
+        config = records(text, "MANAGED_PTO_CONFIG")
+        require(len(config) == 1 and config[0].get("model_probe") == "1" and
+                config[0]["callable"] == "4" and config[0]["home_node"] == "1",
+                "model probe configuration missing")
+        mappings = [r for r in records(text, "MANAGED_PTO") if "cpu_base" in r]
+        require(len(mappings) == 2 and [r["object"] for r in mappings] == ["input", "output"],
+                "model objects missing")
+        for row, length, rights in zip(mappings, (2048, 262144), (1, 3)):
+            require(number(row, "cpu_base") == number(row, "address") > 0 and
+                    number(row, "logical_bytes") == length and number(row, "access") == rights and
+                    number(row, "generation") > 0 and number(row, "mapping_id") > 0 and
+                    row["home_node"] == "1" and row["home_provider"] == "guest-node-1",
+                    "model mapping identity, range or rights mismatch")
+        require(mappings[1]["key"] == mappings[0]["key"] + "-output" and
+                mappings[0]["address"] != mappings[1]["address"], "model output aliases input")
+        maps.append(mappings)
+        refs = records(text, "MANAGED_PTO_REFERENCE")
+        require([r["action"] for r in refs] ==
+                (["4", "5", "mapped"] if node == 0 else ["1", "2", "3", "4", "mapped"]),
+                "model reference lifecycle missing or reordered")
+        ref = decode_reference(refs[-1]["reference"])
+        require((ref["magic"], ref["layout"], ref["kind"], ref["state"], ref["flags"],
+                 ref["wire_bytes"], ref["access"], ref["offset"], ref["length"], ref["size"]) ==
+                (0x514f424d4d524546, 2, 5, 2, 0, 256, 1, 0, 2048, 262144) and
+                ref["home"] == "guest-node-1" and ref["owner"] == ref["producer"] == 1 and
+                ref["key"] == mappings[0]["key"] and ref["version"] > 0 and ref["incarnation"] > 0 and
+                ref["generation"] == number(mappings[0], "generation") and
+                ref["checksum"] == int(checksum64(hidden), 16), "model V2 reference mismatch")
+        references.append(refs[-1]["reference"])
+        done = records(text, "MANAGED_PTO_RESULT")
+        require(len(done) == 1 and done[0]["status"] == "pass" and
+                done[0]["key"] == mappings[0]["key"] and
+                done[0]["generation"] == mappings[0]["generation"] and
+                all(done[0][key] == "1" for key in
+                    ("mapping_closed", "holder_released", "readonly_inputs", "reference_inputs")) and
+                done[0]["compute_leases"] == "0" and done[0]["objects"] == "2",
+                "model resources not drained")
+        drained = [r for r in records(text, "MANAGED_OWNER") if r["state"] == "drained"]
+        require(len(drained) == 2 and {r["object"] for r in drained} == {"input", "output"} and
+                all(r[key] == "0" for r in drained for key in
+                    ("cpu_pins", "compute_pins", "in_flight_pins", "mapping_pending", "holder_pending")),
+                "model owner obligations remain")
+        rows = records(text, "MANAGED_MODEL")
+        require([r["action"] for r in rows] ==
+                (["submitted", "completed", "cpu-verify"] if node == 0 else ["cpu-verify"]),
+                "model completion/visibility sequence differs")
+        verified = rows[-1]
+        require(number(verified, "bytes") == output_bytes and
+                int(verified["checksum"], 16) == output_checksum and
+                verified["bounds"] == verified["status"] == "pass", "model output oracle mismatch")
+        lines = text.splitlines()
+        verified_at = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_MODEL ")
+                           and "action=cpu-verify" in line.split())
+        drained_at = [i for i, line in enumerate(lines) if line.startswith("MANAGED_OWNER ")
+                      and "state=drained" in line.split()]
+        done_at = next(i for i, line in enumerate(lines) if line.startswith("MANAGED_PTO_RESULT "))
+        require(verified_at < min(drained_at) <= max(drained_at) < done_at,
+                "model resources released before output visibility check")
+        for metric in ("put_object_count", "materialize_object_count"):
+            require(re.findall(rf"^{metric}=([0-9]+)$", text, re.M) == ["0"],
+                    "model payload traversed control plane")
+        validate_kernel_regions(text)
+    require(references[0] == references[1], "model reader used another V2")
+    for metric in ("live_objects", "backing_allocated_bytes", "address_reserved_bytes",
+                   "export_mappings", "import_mappings", "live_refs", "in_flight",
+                   "quarantined_objects", "quarantined_bytes"):
+        require(re.findall(rf"^{metric}=([0-9]+)$", guests[1], re.M) == ["0"],
+                f"model home resource ledger not drained: {metric}")
+    for home, peer in zip(maps[1], maps[0]):
+        require(all(home[key] == peer[key] for key in ("key", "generation", "address")),
+                "model guests mapped different allocations")
+    submitted, completed, _ = records(guests[0], "MANAGED_MODEL")
+    request = submitted["op_id"]
+    require(submitted["callable"] == "4" and submitted["inputs"] == "1" and
+            submitted["compute_leases"] == "3" and completed["op_id"] == request and
+            completed["status"] == "success" and completed["original_completion"] == "1",
+            "model original compute completion missing")
+    require(not re.search(r"QEMU_UB_GM_.*(?: denied |REJECT |FAILURE_COMPLETION |TIMEOUT |METADATA_CRC_FAIL )", qemu),
+            "model provider rejected access")
+    bound = records(qemu, "QEMU_UB_GM_GSVA_BIND")
+    registers, unbinds = [records(qemu, prefix) for prefix in
+                          ("SIM_QEMU_UB_GM_BIND_REGISTER", "QEMU_UB_GM_UNBIND")]
+    inputs, outputs = [records(qemu, "QEMU_UB_GM_" + role + "_AUTHORIZE")
+                       for role in ("INPUT", "OUTPUT")]
+    loads, stores, fences = [records(qemu, "QEMU_UB_GM_" + role)
+                             for role in ("LOAD", "STORE", "FENCE")]
+    require(tuple(map(len, (bound, registers, unbinds, inputs, outputs, loads, stores, fences))) ==
+            (3, 1, 1, 2, 1, 2, 1, 1), "model provider callback counts differ")
+    require(all(row["request"] == request for group in
+                (bound, registers, unbinds, inputs, outputs, loads, stores, fences) for row in group),
+            "model provider request identity differs")
+    validate_backing_identities(bound, maps[0])
+    validate_home_exports(guests[1], maps[1], qemu)
+    auth = inputs + outputs
+    requester = number(maps[0][0], "requester_cna")
+    require(requester > 0 and requester == number(maps[0][1], "requester_cna"), "invalid model requester")
+    for row, binding, length, mapping in zip(auth, (1, 2, 3),
+            (8768, 2048, output_bytes), (maps[0][1], maps[0][0], maps[0][1])):
+        require(number(row, "binding") == binding and number(row, "length") == length and
+                number(row, "requester_cna") == requester and
+                number(bound[binding-1], "binding") == binding and
+                number(bound[binding-1], "home_va") == number(mapping, "address"),
+                "model provider authorization mismatch")
+        callbacks = loads[binding-1:binding] if binding < 3 else stores + fences
+        for callback in callbacks:
+            require(callback["binding"] == row["binding"] and number(callback, "length") == length and
+                    number(callback, "addr") == number(row, "local"), "model callback range mismatch")
+        for callback in (loads[binding-1:binding] if binding < 3 else stores):
+            require(all(number(callback, key) == number(row, key) for key in ("map", "generation")),
+                    "model callback mapping identity mismatch")
+    require(number(outputs[0], "local") == number(inputs[0], "local") + 16384,
+            "model control/output owner-relative offset lost")
+    require(registers[0]["op"] == unbinds[0]["op"] == request and
+            registers[0]["bindings"] == unbinds[0]["bindings"] == "3" and
+            unbinds[0]["reason"] == "completion_success" and
+            tuple(unbinds[0][key] for key in
+                  ("load_bytes", "store_bytes", "fences", "segment_payload_staging_bytes")) ==
+            ("10816", str(output_bytes), "1", "0"), "model completion accounting mismatch")
+    runtime = records(qemu, "qwen3-range-runtime-timing:")
+    require(len(runtime) == 1 and runtime[0]["task_id"] == request and
+            runtime[0]["node"] == "0" and runtime[0]["layers"] == "[1,2]" and
+            runtime[0]["terminal_owner"] == runtime[0]["decode_step"] == "0" and
+            runtime[0]["real_forward"] == "1" and int(runtime[0]["output_bytes"]) == output_bytes,
+            "actual Qwen layer execution evidence missing")
+    ordered = [line.split()[0] for line in qemu.splitlines() if line.startswith((
+        "SIM_QEMU_UB_GM_BIND_REGISTER ", "QEMU_UB_GM_LOAD ", "QEMU_UB_GM_STORE ",
+        "QEMU_UB_GM_FENCE ", "QEMU_UB_GM_UNBIND ", "qwen3-range-runtime-timing: "))]
+    require(ordered == ["SIM_QEMU_UB_GM_BIND_REGISTER", "QEMU_UB_GM_LOAD", "QEMU_UB_GM_LOAD",
+                        "qwen3-range-runtime-timing:", "QEMU_UB_GM_STORE", "QEMU_UB_GM_FENCE",
+                        "QEMU_UB_GM_UNBIND"], "model callback/completion order differs")
+    return {"status": "pass", "scope": "managed-two-guest-qwen-single-layer-probe",
+            "nodes": 2, "objects": 2, "dispatches": 1, "load_callbacks": 2,
+            "store_callbacks": 1, "fences": 1, "output_bytes": output_bytes,
+            "output_checksum": f"{output_checksum:016x}", "reference": references[0],
+            "am2_complete": False, "pp_decode_verified": False}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--node-a", required=True, type=Path)
@@ -950,6 +1101,8 @@ def main():
     parser.add_argument("--qemu-b", type=Path)
     parser.add_argument("--home-node", type=int, choices=(0, 1))
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--model-probe-bytes", type=lambda value: int(value, 0))
+    parser.add_argument("--model-probe-checksum", type=lambda value: int(value, 0))
     parser.add_argument("--require-timeout-recovery", action="store_true")
     parser.add_argument("--access-threads", type=int, choices=range(9))
     parser.add_argument("--concurrent-requests", type=int, choices=(1, 2), default=1)
@@ -960,6 +1113,13 @@ def main():
     parser.add_argument("--strict-io-version", type=int, choices=(1, 2), default=1,
                         help="strict wire version of the recorded QEMU build (default: legacy v1)")
     args = parser.parse_args()
+    model_probe = args.model_probe_bytes is not None or args.model_probe_checksum is not None
+    if model_probe and (args.model_probe_bytes is None or args.model_probe_checksum is None or
+                        args.home_node != 1 or args.layout != "nd" or args.access_threads != 0 or
+                        args.concurrent_requests != 1 or not args.require_readonly_inputs or
+                        not args.require_reference_inputs or args.require_timeout_recovery or
+                        args.require_negative_checks or args.strict_io_version != 2):
+        parser.error("model probe requires both oracle fields, home 1, ND readonly V2 and no faults")
     qemu_path = args.qemu_a if args.home_node == 1 else args.qemu_b
     if qemu_path is None:
         parser.error("--qemu-a is required for home 1; --qemu-b is required for home 0")
@@ -967,7 +1127,9 @@ def main():
     try:
         contents = [path.read_bytes() for path in paths]
         text = [data.decode("utf-8", errors="replace") for data in contents]
-        result = validate(text[:2], text[2], args.require_timeout_recovery,
+        result = validate_model_probe(text[:2], text[2], args.model_probe_bytes,
+                                      args.model_probe_checksum) if model_probe else validate(
+                          text[:2], text[2], args.require_timeout_recovery,
                           args.access_threads, args.require_negative_checks,
                           args.require_readonly_inputs, args.layout, args.home_node,
                           args.concurrent_requests, args.require_reference_inputs,

@@ -81,6 +81,9 @@ LINGQU_SHMEM_PTO_ACCESS_THREADS="${LINGQU_SHMEM_PTO_ACCESS_THREADS:-0}"
 LINGQU_SHMEM_PTO_NEGATIVE_CHECKS="${LINGQU_SHMEM_PTO_NEGATIVE_CHECKS:-0}"
 LINGQU_SHMEM_PTO_READONLY_INPUTS="${LINGQU_SHMEM_PTO_READONLY_INPUTS:-0}"
 LINGQU_SHMEM_PTO_REFERENCE_INPUTS="${LINGQU_SHMEM_PTO_REFERENCE_INPUTS:-0}"
+LINGQU_SHMEM_PTO_MODEL_PROBE="${LINGQU_SHMEM_PTO_MODEL_PROBE:-0}"
+LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES="${LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES:-0}"
+LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM="${LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM:-0}"
 LINGQU_SHMEM_PTO_HOME_NODE="${LINGQU_SHMEM_PTO_HOME_NODE:-0}"
 LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS="${LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS:-1}"
 LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT="${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT:-}"
@@ -465,13 +468,15 @@ validate_lingqu_shmem_pto_config() {
   local fault_expected=""
   local value=""
 
-  if [[ ! -f "$SIMPLER_HOST_VECTOR_MANIFEST" ]]; then
+  if [[ "$LINGQU_SHMEM_PTO_MODEL_PROBE" != "1" && ! -f "$SIMPLER_HOST_VECTOR_MANIFEST" ]]; then
     echo "PTO host-vector manifest does not exist: $SIMPLER_HOST_VECTOR_MANIFEST" >&2
     exit 2
   fi
-  SIMPLER_HOST_VECTOR_MANIFEST="$(
+  if [[ "$LINGQU_SHMEM_PTO_MODEL_PROBE" != "1" ]]; then
+    SIMPLER_HOST_VECTOR_MANIFEST="$(
     cd "$(dirname "$SIMPLER_HOST_VECTOR_MANIFEST")" && pwd
   )/$(basename "$SIMPLER_HOST_VECTOR_MANIFEST")"
+  fi
   if [[ ! -f "$SIM_UAPI_SCENARIO_CONFIG" ]]; then
     echo "PTO simulator scenario does not exist: $SIM_UAPI_SCENARIO_CONFIG" >&2
     exit 2
@@ -494,6 +499,9 @@ validate_lingqu_shmem_pto_config() {
     "negative-checks:$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS" \
     "readonly-inputs:$LINGQU_SHMEM_PTO_READONLY_INPUTS" \
     "reference-inputs:$LINGQU_SHMEM_PTO_REFERENCE_INPUTS" \
+    "model-probe:$LINGQU_SHMEM_PTO_MODEL_PROBE" \
+    "model-output-bytes:$LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES" \
+    "model-output-checksum:$LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM" \
     "home-node:$LINGQU_SHMEM_PTO_HOME_NODE" \
     "concurrent-requests:$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS" \
     "artifact-fingerprint:$LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT" \
@@ -584,6 +592,29 @@ validate_lingqu_shmem_pto_config() {
   fi
   if (( LINGQU_SHMEM_PTO_AUTHORIZATION_TIMEOUT_NS == 0 )); then
     echo "PTO authorization timeout must be nonzero" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_MODEL_PROBE > 1 )); then
+    echo "model probe must be 0 or 1" >&2
+    exit 2
+  fi
+  if (( LINGQU_SHMEM_PTO_MODEL_PROBE == 1 )); then
+    if ! managed_pto_selected || [[ "$LINGQU_SHMEM_PTO_LAYOUT" != "nd" ||
+        "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" != "qwen3_dense" ||
+        "${SIM_QWEN3_DENSE_TP_NODES:-}" != "2" || "$LINGQU_SHMEM_PTO_EXPECT" != "success" ||
+        "$LINGQU_SHMEM_PTO_FAULT_CASE" != "none" ]] ||
+       (( LINGQU_SHMEM_PTO_HOME_NODE != 1 || LINGQU_SHMEM_PTO_REFERENCE_INPUTS != 1 ||
+          LINGQU_SHMEM_PTO_READONLY_INPUTS != 1 || LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS != 1 ||
+          LINGQU_SHMEM_PTO_ACCESS_THREADS != 0 || LINGQU_SHMEM_PTO_NEGATIVE_CHECKS != 0 ||
+          LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS != 0 || LINGQU_SHMEM_PTO_CANCEL_AFTER_MS != 0 ||
+          LINGQU_SHMEM_PTO_RESET_ON_PENDING != 0 || LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 ||
+          LINGQU_SHMEM_PTO_INJECT_LATE_COMPLETION != 0 ||
+          LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES < 1 || LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES > 245760 )); then
+      echo "model probe requires Qwen TP=2, home=1, ND readonly V2, one request, bounded oracle and no faults" >&2
+      exit 2
+    fi
+  elif (( LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES != 0 || LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM != 0 )); then
+    echo "model output oracle requires model-probe=1" >&2
     exit 2
   fi
   if (( LINGQU_SHMEM_PTO_RESET_ON_PENDING > 1 ||
@@ -709,10 +740,12 @@ validate_lingqu_shmem_pto_config() {
   if managed_pto_selected; then
     managed_negative_checks="$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS"
   fi
-  validate_pto_layout_manifest \
+  if (( LINGQU_SHMEM_PTO_MODEL_PROBE == 0 )); then
+    validate_pto_layout_manifest \
     "$SIMPLER_HOST_VECTOR_MANIFEST" \
     "$LINGQU_SHMEM_PTO_LAYOUT" \
     "$LINGQU_SHMEM_PTO_ELEMENTS" "$managed_negative_checks" "$LINGQU_SHMEM_PTO_GENERATION"
+  fi
 
   if (( LINGQU_SHMEM_PTO_HOME_NODE > 1 )) ||
      { (( LINGQU_SHMEM_PTO_HOME_NODE != 0 )) && ! managed_pto_selected; }; then
@@ -752,6 +785,11 @@ validate_lingqu_shmem_pto_config() {
   append_cmdline_if_missing "lingqu_shmem_pto_negative_checks=$LINGQU_SHMEM_PTO_NEGATIVE_CHECKS"
   append_cmdline_if_missing "lingqu_shmem_pto_readonly_inputs=$LINGQU_SHMEM_PTO_READONLY_INPUTS"
   append_cmdline_if_missing "lingqu_shmem_pto.reference_inputs=$LINGQU_SHMEM_PTO_REFERENCE_INPUTS"
+  if (( LINGQU_SHMEM_PTO_MODEL_PROBE == 1 )); then
+    append_cmdline_if_missing "lingqu_shmem_pto.model_probe=1"
+    append_cmdline_if_missing "lingqu_shmem_pto.model_output_bytes=$LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES"
+    append_cmdline_if_missing "lingqu_shmem_pto.model_output_checksum=$LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM"
+  fi
   # This userspace-only option must not consume a kernel init environment slot.
   append_cmdline_if_missing "lingqu_shmem_pto.home_node=$LINGQU_SHMEM_PTO_HOME_NODE"
   append_cmdline_if_missing "lingqu_shmem_pto.concurrent_requests=$LINGQU_SHMEM_PTO_CONCURRENT_REQUESTS"
@@ -3893,6 +3931,10 @@ run_iteration() {
   if [[ "$APPEND_EXTRA" == *"linqu_mem_service_object_share=1"* ]]; then
     if managed_pto_selected; then
       local -a recovery_args=()
+      if (( LINGQU_SHMEM_PTO_MODEL_PROBE == 1 )); then
+        recovery_args+=(--model-probe-bytes "$LINGQU_SHMEM_PTO_MODEL_OUTPUT_BYTES"
+          --model-probe-checksum "$LINGQU_SHMEM_PTO_MODEL_OUTPUT_CHECKSUM")
+      fi
       if (( LINGQU_SHMEM_PTO_SUBMIT_TIMEOUT_MS > 0 )); then
         recovery_args+=(--require-timeout-recovery)
       fi

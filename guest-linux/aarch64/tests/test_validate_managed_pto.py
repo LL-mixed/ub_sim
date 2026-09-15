@@ -411,7 +411,100 @@ def home_fixture(home, layout="cross-page", recovery=False, negative=False,
     return physical, qemu
 
 
+def model_probe_fixture():
+    """Synthetic parser input; never used as actual guest evidence."""
+    hidden = b"".join(struct.pack("<e", ((i % 31) - 15) / 32) for i in range(1024))
+    reference = struct.pack("<QHHHHIIQQQQQIIQQQ96s64s", 0x514f424d4d524546,
+        2, 5, 2, 0, 1, 1, 2, int(validator.checksum64(b"k"), 16), 0, 2048,
+        int(validator.checksum64(hidden), 16), 256, 1, 7, 9, 262144, b"k", b"guest-node-1").hex()
+    guests = []
+    for node in (0, 1):
+        lines = [f"MANAGED_PTO_CONFIG node={node} model_probe=1 callable=4 home_node=1"]
+        for index, role in enumerate(("input", "output")):
+            address = 0x700000000000 + index * 0x400000
+            key = "k" + ("-output" if index else "")
+            lines.append(f"MANAGED_PTO node={node} key={key} generation={7+index} "
+                f"cpu_base={address:#x} address={address:#x} logical_bytes={262144 if index else 2048} "
+                f"mapping_id={9+index} access={3 if index else 1} object={role} "
+                "home_node=1 home_provider=guest-node-1 requester_cna=0xf001")
+            if node == 1:
+                lines.append(f"obmm-worker phase=exported generation={7+index} segment={6+index} export={8+index}")
+        for action in ((4, 5) if node == 0 else (1, 2, 3, 4)):
+            lines.append(f"MANAGED_PTO_REFERENCE node={node} action={action} generation=7 version=2 status=ok")
+        lines.append(f"MANAGED_PTO_REFERENCE node={node} action=mapped reference={reference}")
+        if node == 0:
+            lines += ["MANAGED_MODEL node=0 action=submitted op_id=101 callable=4 compute_leases=3 inputs=1",
+                      "MANAGED_MODEL node=0 action=completed op_id=101 status=success original_completion=1"]
+        lines.append(f"MANAGED_MODEL node={node} action=cpu-verify bytes=64 checksum=0000000000001234 bounds=pass status=pass")
+        for role in ("output", "input"):
+            lines.append(f"MANAGED_OWNER node={node} state=drained object={role} cpu_pins=0 "
+                         "compute_pins=0 in_flight_pins=0 mapping_pending=0 holder_pending=0")
+        lines.append(f"MANAGED_PTO_RESULT node={node} status=pass key=k generation=7 objects=2 "
+            "mapping_closed=1 holder_released=1 compute_leases=0 readonly_inputs=1 reference_inputs=1")
+        lines += ["put_object_count=0", "materialize_object_count=0"]
+        if node == 1:
+            lines += [f"{metric}=0" for metric in
+                      ("live_objects", "backing_allocated_bytes", "address_reserved_bytes",
+                       "export_mappings", "import_mappings", "live_refs", "in_flight",
+                       "quarantined_objects", "quarantined_bytes")]
+        for phase in ("baseline", "drained"):
+            lines += [f"mem_service kernel-regions: phase={phase}",
+                      "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
+                      "export_handles=0 export_bytes=0 import_handles=0 import_bytes=0"]
+        guests.append("\n".join(lines))
+    qemu, callbacks = [], []
+    for binding, length, address, home, segment in (
+            (1, 8768, 0x90000000, 0x700000400000, 7),
+            (2, 2048, 0x80000000, 0x700000000000, 6),
+            (3, 64, 0x90004000, 0x700000400000, 7)):
+        role = "INPUT" if binding < 3 else "OUTPUT"
+        qemu.append(f"QEMU_UB_GM_{role}_AUTHORIZE op=101 request=101 binding={binding} "
+                    f"length={length} local={address:#x} requester_cna=0xf001 map=8 generation=9")
+        qemu.append(f"QEMU_UB_GM_GSVA_BIND request=101 binding={binding} segment={segment} "
+                    f"home_va={home:#x} epoch=7 lease_epoch=8 backing_token=9")
+        for kind in (("LOAD",) if binding < 3 else ("STORE", "FENCE")):
+            callbacks.append(f"QEMU_UB_GM_{kind} request=101 binding={binding} addr={address:#x} "
+                        f"length={length} map=8 generation=9")
+    qemu += ["SIM_QEMU_UB_GM_BIND_REGISTER op=101 request=101 bindings=3 requester_cna=0xf001",
+             *callbacks[:2],
+             "qwen3-range-runtime-timing: task_id=101 node=0 layers=[1,2] terminal_owner=0 "
+             "decode_step=0 real_forward=1 output_bytes=64", *callbacks[2:],
+             "QEMU_UB_GM_UNBIND op=101 request=101 bindings=3 reason=completion_success "
+             "load_bytes=10816 store_bytes=64 fences=1 segment_payload_staging_bytes=0"]
+    return guests, "\n".join(qemu)
+
+
 class ManagedPtoValidatorTest(unittest.TestCase):
+    def test_model_probe_requires_reference_mapping_callbacks_and_actual_layer(self):
+        guests, qemu = model_probe_fixture()
+        result = validator.validate_model_probe(guests, qemu, 64, 0x1234)
+        self.assertEqual(result["status"], "pass")
+        self.assertFalse(result["pp_decode_verified"])
+        self.assertFalse(result["am2_complete"])
+        for metric in ("live_objects", "backing_allocated_bytes", "address_reserved_bytes",
+                       "export_mappings", "import_mappings", "live_refs", "in_flight",
+                       "quarantined_objects", "quarantined_bytes"):
+            for replacement in (f"{metric}=1", "", f"{metric}=0\n{metric}=1"):
+                with self.subTest(resource=metric, replacement=replacement), self.assertRaises(ValueError):
+                    validator.validate_model_probe(
+                        [guests[0], guests[1].replace(f"{metric}=0", replacement)], qemu, 64, 0x1234)
+        for old, new in (("length=2048", "length=2049"), ("load_bytes=10816", "load_bytes=10815"),
+                         ("store_bytes=64", "store_bytes=63"), ("fences=1", "fences=0"),
+                         ("requester_cna=0xf001", "requester_cna=0"),
+                         ("real_forward=1", "real_forward=0"), ("task_id=101", "task_id=102"),
+                         ("completion_success", "timeout"), ("local=0x90004000", "local=0x90004001"),
+                         ("segment_payload_staging_bytes=0", "segment_payload_staging_bytes=64")):
+            with self.subTest(qemu_field=old), self.assertRaises(ValueError):
+                validator.validate_model_probe(guests, qemu.replace(old, new), 64, 0x1234)
+        for old, new in (("original_completion=1", "original_completion=0"),
+                         ("checksum=0000000000001234", "checksum=0000000000001235"),
+                         ("holder_pending=0", "holder_pending=1"),
+                         ("compute_leases=3", "compute_leases=2"),
+                         ("access=1", "access=3"), ("action=5", "action=4"),
+                         ("put_object_count=0", "put_object_count=1")):
+            with self.subTest(guest_field=old), self.assertRaises(ValueError):
+                validator.validate_model_probe([guests[0].replace(old, new), guests[1]], qemu, 64, 0x1234)
+
     def test_reference_mode_preserves_compute_and_ownership_gates(self):
         guests, qemu = reference_fixture()
         result = validator.validate(guests, qemu, access_threads=4,

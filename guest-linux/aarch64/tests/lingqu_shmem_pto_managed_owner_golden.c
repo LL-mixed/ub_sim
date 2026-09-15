@@ -181,6 +181,38 @@ static void exercise_shared_compute(void)
     puts("managed PTO shared compute guards: pass");
 }
 
+static void exercise_model_input_owner_view(void)
+{
+    struct managed_state state = {0};
+    state.allocation.generation = 17;
+    unsigned char payload[MODEL_HIDDEN_BYTES] = {0};
+    const struct mem_service_client_object_mapping mapping = {
+        .base = payload, .len = sizeof(payload), .flags = MEM_SERVICE_CLIENT_MAP_READ,
+    };
+    const struct mem_service_mapping_access_view valid = {
+        .base = payload, .len = sizeof(payload), .flags = MEM_SERVICE_CLIENT_MAP_READ,
+        .generation = 17,
+    };
+    /* The adopt API has cleared the source mapping. The lease owns the view. */
+    assert(!state.mapping.base && !state.mapping.len && !state.mapping.flags);
+    assert(model_input_callback(&state, NULL, &mapping, NULL, &valid) == 0);
+    for (unsigned fault = 0; fault < 7; ++fault) {
+        struct mem_service_client_object_mapping bad_mapping = mapping;
+        struct mem_service_mapping_access_view bad_view = valid;
+        switch (fault) {
+        case 0: --bad_mapping.len; break;
+        case 1: bad_mapping.flags |= MEM_SERVICE_CLIENT_MAP_WRITE; break;
+        case 2: --bad_view.len; break;
+        case 3: bad_view.flags |= MEM_SERVICE_CLIENT_MAP_WRITE; break;
+        case 4: ++bad_view.offset; break;
+        case 5: bad_view.base = payload + 1; break;
+        case 6: ++bad_view.generation; break;
+        }
+        assert(model_input_callback(&state, NULL, &bad_mapping, NULL, &bad_view) == -EPROTO);
+    }
+    puts("managed model adopted input view: pass");
+}
+
 int main(void)
 {
     for (unsigned home = 0; home < 2; ++home) {
@@ -192,6 +224,7 @@ int main(void)
         }
     }
     exercise_shared_compute();
+    exercise_model_input_owner_view();
     puts("managed PTO owner guards: pass");
     return 0;
 }
