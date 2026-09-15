@@ -4725,3 +4725,79 @@ r448 使用同源码、同七项断言及完整检查器，将测试配置的 le
 
 本批实际重启使用已排空资源和新的 worker 日志；完整活跃资源恢复、生产
 fencing、原 worker 日志恢复和节点重新加入仍未完成。M3 与总目标保持未完成。
+
+r448 最终于 14:24:02 UTC 正常结束，exit 0、无 OOM；七项实际 daemon/CLI
+用例全部通过，1599.911 秒，包含完整 40 轮归档重放和重复重启。ASan/UBSan
+保持启用，未出现检查器错误；该测试配置的 300 秒 provider lease 与产品
+默认值分开记录。没有重复启动此作业。45 个原容器的终态、原失败与诊断、
+七份最终服务源码、guest 原始日志及模型指纹准备结果共 177 项已归档并下载。
+逐项 SHA-256 校验通过，归档 `drained-restart-evidence-r448.tar.gz` 为
+5,541,934 bytes，SHA-256：
+`0f66bfd7c795882cf30771dd69207758a8b236539beba329d34b31323b2c68b5`；
+清单 SHA-256：
+`3e395f3d6f913ce83350d81865937bf589f9fdf3b23992330dbcec44200967f2`。
+
+## 2026-09-15：W5 实际模型指纹与 Rust V2 消费端准备
+
+r449 于 14:13:06 至 14:15:53 UTC 在指定远端完成一次完整权重散列，容器
+exit 0、无 OOM。权重只读挂载，逐文件核对读取前后的 device/inode/size/
+mtime/ctime 一致，未下载、替换模型或启动推理。完整 SHA-256：
+
+- Qwen3-0.6B `model.safetensors`，1,503,300,328 bytes：
+  `f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b`。
+- 指定 IQ2XXS/w2Q2K/AProjQ8/SExpQ8/OutQ8 GGUF，86,720,111,488 bytes：
+  `efc7ed607ff27076e3e501fc3fefefa33c0ed8cf1eff483a2b7fdc0c2e616668`。
+
+后续运行须核对相同文件身份；身份变化后重算，不逐轮重读全部权重。
+当前 Rust parser 的 geometry/tokenizer 验证继续单独执行：r450 发现构建缓存
+有两份 sim_models rlib，诊断程序拒绝任意选择并退出。后续改用 Cargo
+compiler-artifact 指定的实际依赖产物，保留原失败；本段不计模型运行通过。
+
+Rust V2 候选新增 `sim_services::managed_object_ref::ManagedObjectRef`，只接受
+完整 256-byte 规范编码，逐项核对版本、权限、key hash 与 allocation-relative
+范围；存储完整原始字节，完整身份参与 equality/hash，不提供 V1 降级接口。
+CLI 为 `sim-cli managed-object-ref-inspect --hex <512 hexadecimal characters>`，
+输出 `structurally_valid=true` 和 `access_granted=false`，key/home 用原始字节
+数组表示以保持 C SDK 的非 UTF-8 token 契约。此入口不连接控制面、不映射
+payload，也不授予 holder；W5 的权威 acquire/map、发布和消费仍待接通。
+候选测试直接编译锁定 C SDK 的 codec，核对正常编码及 26 项字段变体的共同
+接纳/拒绝结果。完整远端回归与实际 CLI 验证仍在执行，尚未提交候选代码。
+
+r451 初版完整 Rust 回归为 965 通过、16 ignored，43 个 harness 逐项核对，
+仅 CLI 与 sim-services 各新增一个通过测试；r452 下游 Python 仍精确覆盖
+579 项，574 通过、5 项既有环境跳过，零失败/错误。代码复查补严格 hexadecimal
+字符检查，拒绝 Rust 数字解析允许的 `+0` 表达；最终源码的 r454/r455 全集
+已启动，必须收取原作业终态后再提交，不用初版计数代替最终源码结果。
+
+r453 实际 CLI 的一正三负通过，但模型诊断误将 PP 节点数传给 TP profile，
+在 `heads=16,tp=3` 时被正确拒绝。原失败保留，没有放宽模型 TP 校验。
+r456 通过 Cargo compiler-artifact 选择实际 rlib 和 CLI，最终 CLI 一正四负
+通过，包括拒绝 signed byte；元数据诊断改为独立验证模型 geometry，明确不
+报告 PP 拓扑已验收。r456 容器 14:35:03 至 14:35:16 UTC，exit 0、无 OOM。
+
+指定 DeepSeek GGUF 为 version 3、1328 个 tensor；当前 Rust parser 的全部
+geometry 校验通过。tensor 类型计数：f16=359、f32=492、i32=3、iq2_xxs=86、
+q2_k=43、q8_0=345；`output.weight` 是 Q8_0，维度 `[4096,129280]`。
+原样 prompt `Huawei is` 经该文件 tokenizer 得到 `[42,5207,24063,344]`，
+逐 token 解码为 `H`、`ua`、`wei`、` is`；这些是输入 token，没有生成输出。
+Qwen3 配置由当前 Rust parser 读取得到 28 层、hidden=1024、intermediate=3072、
+16 个 attention heads、8 个 KV heads、head_dim=128、vocab=151936。
+元数据结果 SHA-256：
+`8c7af48097ec3ff9429406fe29bbc93d256eec73bbfbbf1ac66c687314985e38`。
+两模型的 2/3/8-node PP 和 4/8-step 实跑继续待验收；还需核对 W5 当前共用
+TP_NODES 的 pipeline 参数路径，不能把 TP=3 拒绝当作三节点 PP 的实跑结论。
+
+最终 r454 于 14:44:03 UTC 正常结束，exit 0、无 OOM：43 个 Rust harness
+逐项核对，965 通过、16 ignored、零失败。r455 于 14:36:40 UTC 正常结束，
+完整 Python 579 个 test ID 与基线精确一致，574 通过、5 项既有环境跳过，
+零失败/错误。最终 CLI、C/Rust 互操作与模型 parser 的七份实际源码均与当前
+工作树 SHA 一致，并在运行容器 tmpfs 释放前保存；未为取证重启测试容器。
+本地仅执行纯标准库 decoder 编译、两份新 Rust 文件的格式检查及 diff 检查。
+
+初版、最终回归、两个诊断失败、实际 CLI 与模型元数据和源文件共 42 项归档
+为 `w5-managed-ref-evidence-r456.tar.gz`，769,808 bytes，SHA-256：
+`609e418e81d141fd86783e807cbba5187ecfe859c7b5af9ba5c9c8f4947750c3`。
+清单 SHA-256：
+`2be515e5cd247f300bb71c19a7a4c307774e62533a6f41bde38d32bcfdc04875`。
+本批提交范围为 Rust V2 解码器、CLI、测试及实施记录；不改变现有 W5 执行
+路径，不将结构解码或模型元数据检查计为受管理 W5 推理验收。

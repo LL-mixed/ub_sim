@@ -417,11 +417,18 @@ W5 集成、故障恢复及资源压力验证。每个阶段必须产生可运�
 r443 实际双 guest 经两次 daemon 重启，三轮新代际分配、跨节点写读与物理
 回收通过，443 条回执独立复核，旧 acquire 重放拒绝。r444 独立服务完整回归
 301 通过、5 跳过；r441 下游 Python 574 通过、5 跳过；r442 Rust 963 通过、
-16 ignored。实际 daemon sanitizer 的 r448 原作业尚待终态；先前测试 lease
-到期的失败和诊断记录保留。此路径只准入已排空 checkpoint，不恢复活跃
+16 ignored。实际 daemon sanitizer 的 r448 原作业随后全部七项通过，exit 0；
+先前测试 lease 到期的失败和诊断记录保留。此路径只准入已排空 checkpoint，不恢复活跃
 payload，不解除故障隔离；完整 M3 与总目标未完成，详细边界见实施记录。
 
 ## 1. 范围与依据
+
+2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
+已核对 DeepSeek GGUF geometry/tokenizer 和 Qwen3 配置；未执行模型推理。
+Rust V2 解码器、CLI 及锁定 C SDK 互操作测试已接入，最终完整回归为 Rust
+965 通过、16 ignored，Python 574 通过、5 跳过，零失败；CLI 一正四负通过。
+V2 到服务 acquire/map、模型消费与输出发布仍待接通，2/3/8-node PP 矩阵未
+验收；TP profile 的整除检查不能代替 PP 拓扑验收。完整目标保持未完成。
 
 本计划展开 [实现规格第 8 节](../sim_gva_gsva_implementation_spec.md#8-剩余工作与优先级)。
 机制基线为 ub_sim `39576eb`、mem_service `e4a8a58`、kernel `85fb35d`、
@@ -747,6 +754,11 @@ W5 用新分配/访问链路完成连续 decode。
   和新严格 I/O；任何未确认结果保留冻结状态，重试完成后才释放 route/地址。
 - 将 W5 prefix/KV/hidden 对象绑定到同一对象生命周期；保留 terminal reader
   发布序列、metadata refresh、payload refresh 和 checksum 检查。
+- Rust 消费端先接入与已锁定 C SDK 逐字节一致的 256-byte V2 解码器，保留
+  完整 key/home 字节、generation、incarnation、内容版本及 allocation-relative
+  范围；V1 类型和调用路径保持独立，禁止隐式降级。CLI 检查入口只报告结构
+  有效性，不能授予访问权限。互操作测试须由 C SDK 生成编码，并共同拒绝错误
+  版本、范围、权限与非规范 key；后续服务 acquire/map 和模型调用仍须独立接通。
 - 显式声明支持的节点数；移除本次路径中新出现的 8-node 假设。已有 helper
   上限如暂保留，必须作为具体路径限制公开，不能包装成协议上限。
 - 将 M1 的单 home 分配扩展到 W5 配置中的多 home，对全局区间分配、各 home

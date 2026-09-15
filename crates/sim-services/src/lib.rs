@@ -1,5 +1,7 @@
 //! Host-side service simulation entry points.
 
+pub mod managed_object_ref;
+
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
