@@ -438,6 +438,25 @@ V2 到服务 acquire/map、模型消费与输出发布仍待接通，2/3/8-node 
 真实运行同时发现并修复 KV 容量漏算每层 40-byte 头部。SDK acquire/map、
 guest/provider 调用点、lease 保持及受管理输出发布仍待接通，完整 M2 未完成。
 
+W5 managed 执行接入约定：复用已有 tag-10 注册映射、请求绑定及原 CQ completion，
+新增 callable 4 调用当前 Rust/Simpler model-range，不切换 Qwen PTO graph 或 DS4
+动态库。参数依次为只读控制视图、零至两个只读 V2 payload 视图和独立可写输出。
+控制视图携带版本、原 op/request ID、range 坐标、8192-byte prompt 控制前缀及
+完整 V2；禁止携带旧 inline hidden/KV。访问使用已注册的 read/write/fence 回调，
+先校验全部视图再读，输出边界确认后写，fence 成功后才返回成功 completion。
+SDK owner/compute lease 由 guest 保持至原 completion；超时保留所有权。callable
+指纹标识编入的执行适配代码和 backend profile，模型权重另行按原要求固定指纹。
+此接口实现和模拟回调测试不替代真实 guest 映射、输出发布及完整 PP 验收。
+
+r467-r471 已实现并验证上述执行适配层及 guest owner operation helper：Rust
+全集 971 通过、16 ignored；Python 全集 575 通过、5 环境跳过；24 个原生
+生命周期夹具组合及 ASan/UBSan 通过。Qwen3-0.6B 真实单层经注册回调完成
+两次 read、一次 write 和一次 fence，完整输出与 r464 逐字节一致，四项负例
+继续拒绝。guest helper 已纳入构建签名和源文件列表，支持原请求等待/重试、
+失败 completion 清理及 release 重试。W5 serving loop 尚未调用该 helper；
+当前实际模型证据仍使用离线 provider callback，未验证物理 SDK lease、QEMU
+guest 映射和受管理输出发布，不关闭 M2、PP 矩阵或总目标。
+
 本计划展开 [实现规格第 8 节](../sim_gva_gsva_implementation_spec.md#8-剩余工作与优先级)。
 机制基线为 ub_sim `39576eb`、mem_service `e4a8a58`、kernel `85fb35d`、
 QEMU `f201ebe`、libobmm `53011ee`。原稿编写时根仓库为 `80cb36f`。

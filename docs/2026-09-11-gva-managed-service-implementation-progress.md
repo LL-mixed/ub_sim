@@ -4849,3 +4849,56 @@ token 42、层区间 `[1,2)` 的两次计算均实际执行一层；正常输入
 `1ba35f6eefbb935a6121313deef19bbdb77d9650f0bf5c9e42301fcd4dff96e8`。
 验证报告逐项比较 43 个 Rust harness、579 个 Python test ID、七份构建输入
 源码及六个实际 CLI case；归档不包含权重或网络审计原日志。
+
+## 2026-09-16：W5 注册 provider 回调与 guest operation
+
+callable 4 复用现有 tag-10 授权映射与原 CQ completion，调用既有 Rust/Simpler
+model-range；callables 1–3、V1 路径及模型计算保持原契约。控制视图为 8768
+bytes，包含版本、原 op/request ID、八个 range 坐标、8192-byte prompt 前缀
+及最多两份完整 V2。执行器不复制旧 inline hidden/KV；实际 payload 通过注册
+read 回调读取，校验完整引用的长度/权限/checksum 后消费。输出仅通过单独
+WRITE view 写入，拒绝别名、越界、错误 request/binding、控制格式及 callback
+失败；输出 fence 成功后才返回成功。临时 host bytes 属于原 Rust 计算路径，
+不把此路径计为 PTO numerical kernel 的零 staging 证据。
+
+`w5_managed_model_guest.h/.c` 提供 encode/prepare/submit/poll/release，使用现有
+SDK mapping owner 和 compute lease。guest 调用方负责通过完整原 V2 acquire/map，
+适配层 pin 这些既有 owner，不授予新的 holder。queue enqueue 原子拒绝后可
+使用同一 operation/endpoint 重试，已 begin 的 pin 不重复 begin；等待和协议
+异常保持所有权。已领取 completion 在 lease-complete 重试期间保留，失败的
+completion 允许清理，禁止发布输出。release 失败保留 cleanup handle。
+构建签名和 W5 源文件列表已包含 helper，serving loop 尚未调用它。
+
+远端均使用指定验证主机、隔离容器、network none、离线锁定依赖：
+
+- r467：2026-09-15 15:53:57 至 16:03:07 UTC，exit 0、无 OOM。Rust workspace
+  的 43 个 harness 与 r462 精确匹配，971 通过、16 ignored、零失败；新增一个
+  provider 边界测试覆盖 12 类视图拒绝、控制损坏、read/write/fence/model 失败
+  及输出长度边界。完整 Rust 与随后 CLI 构建串行执行，无重叠重编译。
+- r470：15:59:58 至 16:01:49 UTC，exit 0、无 OOM。Python 全集精确覆盖 580
+  个不同 test ID，相比 r463 只增加一个 guest helper 测试；575 通过、5 个
+  环境跳过、零失败/错误/加载错误。新增测试实际编译 C helper，运行 0/1/2
+  输入各八种生命周期组合，并逐字节验证 C 控制编码。
+- r471：16:04:19 至 16:04:24 UTC，exit 0、无 OOM。同一 C helper 的 24 个
+  原生模拟生命周期组合在 ASan/UBSan 下通过。此夹具模拟 endpoint 和 lease
+  函数，不构成真实 SDK provider 映射证据。
+
+r468 CLI 使用 `managed-model-range-run --provider-callbacks`，固定原 Qwen3
+权重和 token 42，层区间 `[1,2)`；正常与 poisoned-inline 两次真实单层均通过，
+每次实际计数 read=2、write=1、fence=1，完整输出与 r464 的对应输出逐字节
+相同，SHA-256 仍为
+`5c3d33e80566122d25c96022cb01beea446cf3903fd77526d0f176c513d96376`。
+两次进程耗时 3.487/3.477 秒，含加载与检查，不作为 decode 性能。原四项负例
+均 exit 1 且没有输出文件。CLI 明确标记 offline callback 和未验证物理 lease。
+
+十份构建/测试输入的 SHA 与本地源码一致。证据归档共 45 项，429,049 bytes：
+`w5-managed-provider-evidence-r471.tar.gz`，SHA-256
+`c9fc734ac2a4c95f88bde5def0bd250d1e3f48e4b74e6b91eeaa0d08415203d6`；
+manifest SHA-256
+`5bdbe2fce974bfbb9ca1d11a9954fd1dde51bb457c133c0f181302e79319c236`。
+取证脚本初次将整数 passed 当作列表，第二次将列表 skipped 当作整数，均在
+创建归档前失败；按实际字段类型规范计数后重新核对成功，没有重跑测试。
+
+尚未完成：W5 serving loop 接入、真实 QEMU/provider read/write/fence、SDK
+物理 lease 与输出 publish/seal、2/3/8-node PP 的 4/8-step 及总计划其他
+故障/回收/压力门禁。本批不关闭 M2 或总目标；服务和平台子仓库未修改、未推送。

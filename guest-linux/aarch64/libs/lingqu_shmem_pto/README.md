@@ -1,5 +1,38 @@
 # Lingqu shmem PTO guest adaptor
 
+## Managed W5 Rust/Simpler range adapter
+
+`w5_managed_model_guest.h/.c` prepares callable 4 on the existing authorized
+mapping/CQ path. It uses the current Rust/Simpler model-range implementation;
+callables 1–3 and the separate Qwen PTO graph keep their existing contracts.
+The model caller supplies SDK owners for a published read-only control view,
+zero to two read-only V2 input views and a separate writable output allocation.
+Inputs must have been acquired/mapped using those exact V2 references. The
+adapter pins these existing owners; it does not resolve/grant new holders.
+Control is 8768 bytes: little-endian magic/version/count/op ID/request ID,
+eight range coordinates, 8192 prompt-control bytes and two 256-byte V2 slots.
+Unused slots are zero. The fingerprint CLI is
+`sim-cli managed-model-provider-fingerprint`; it fingerprints the compiled
+adapter/model dispatch source and selected profile, excluding model weights.
+
+Prepare retains every memref. Submit begins SDK compute leases before enqueue;
+a rejected enqueue consumes no endpoint ID and may be retried on the same
+operation/endpoint without beginning pins twice. Poll retains all resources on
+`-EAGAIN` or protocol failure. Only the original completion completes leases;
+a consumed completion survives a lease-completion retry. Release preserves
+failed cleanup handles. Callers retain context, endpoint and immutable queue
+metadata until release, serialize endpoint operations, and publish output only
+after a successful completion. A failed completion permits cleanup only.
+
+The registered Rust entry reads and writes through request-bound callbacks,
+checks permissions/ranges/full V2 payload checksums, rejects output aliasing,
+and fences output before success. Temporary host bytes are part of the existing
+Rust numerical path; this is not the zero-staging PTO numerical kernel contract.
+`sim-cli managed-model-range-run --provider-callbacks ...` exercises the same
+entry with explicitly labelled offline callbacks. That CLI cannot validate SDK
+grants or physical leases. Native operation fixtures and offline model execution
+do not establish W5 serving-loop integration or real multi-guest acceptance.
+
 This directory contains the guest-side, simulator-facing adaptor for PTO
 dispatches whose tensor payload remains in `lingqu_shmem`.
 

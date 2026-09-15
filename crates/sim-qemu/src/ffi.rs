@@ -211,6 +211,7 @@ impl LinquUbBridge {
             PTO_UB_GM_HOST_VECTOR_CALLABLE_ID
                 | PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID
                 | PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID
+                | sim_uapi::managed_model_dispatch::CALLABLE_ID
         ) {
             return Err(LingquPtoUbGmError::UnsupportedCallable);
         }

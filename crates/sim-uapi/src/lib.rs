@@ -10,6 +10,7 @@ mod deepseek_v4_flash_official_vector_runtime;
 mod deepseek_v4_flash_runtime;
 mod qwen3_pto_range;
 pub mod managed_model_input;
+pub mod managed_model_dispatch;
 use managed_model_input::{resolve_managed_operands, ManagedModelInput};
 pub use qwen3_pto_range::Qwen3PtoRangeGeometry;
 
@@ -16056,6 +16057,9 @@ fn run_pto_ub_gm_chipbackend(
     req: &PtoUbGmDispatchV2Req,
     access: PtoUbGmAccessRegistration,
 ) -> Result<(), String> {
+    if req.callable_id == managed_model_dispatch::CALLABLE_ID {
+        return managed_model_dispatch::run(topology, req, access);
+    }
     match req.callable_id {
         PTO_UB_GM_HOST_VECTOR_CALLABLE_ID => validate_host_vector_ub_gm_args(req)?,
         PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID => validate_qwen3_operator_ub_gm_args(req)?,
@@ -16827,6 +16831,9 @@ fn pto_ub_gm_manifest_path(callable_id: u64) -> Result<PathBuf, String> {
 }
 
 pub fn pto_ub_gm_registered_callable_fingerprint(callable_id: u64) -> Result<u64, String> {
+    if callable_id == managed_model_dispatch::CALLABLE_ID {
+        return managed_model_dispatch::fingerprint();
+    }
     let path = pto_ub_gm_manifest_path(callable_id)?;
     let (manifest_id, fingerprint) = pto_ub_gm_callable_from_manifest(&path)?;
     if manifest_id != callable_id {
