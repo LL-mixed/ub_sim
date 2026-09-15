@@ -2,6 +2,7 @@
 #include "components/mem_service/providers/mem_service_provider_obmm_worker.c"
 #include <assert.h>
 #include <stdarg.h>
+#include <sys/wait.h>
 
 enum failure_mode {
     GOOD, ALLOC_FAIL, EXPORT_FAIL, PUBLISH_FAIL, BAD_REPLY,
@@ -19,6 +20,8 @@ static bool rollback_empty;
 static unsigned cancellations, loop_polls;
 static uint64_t kernel_address = 0x700000000000ULL;
 static bool fail_next_sync;
+static const struct mem_service_client_allocation *direct_work;
+static struct mem_service_client_allocation polled_work;
 
 int __real_fsync(int fd);
 int __wrap_fsync(int fd)
@@ -86,6 +89,7 @@ int __wrap_mem_service_client_poll_allocation(const struct mem_service_client *c
         work->generation = 98;
         work->size_bytes = UINT64_MAX;
     }
+    polled_work = *work;
     *status = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
 }
@@ -214,9 +218,9 @@ int __wrap_mem_service_client_retire_object(
     snprintf(expected, sizeof(expected), "obmm-capacity-7-%" PRIu64, generation);
     assert(!strcmp(key, "object") && !strcmp(operation, expected) && has_generation);
     cancellations++;
-    *out = (struct mem_service_client_allocation){.key = "object", .state = "retiring",
-        .home_node = "nodeA", .provider_incarnation = 7,
-        .generation = generation + (mode == BAD_CANCEL_REPLY)};
+    *out = drive_worker_loop ? polled_work : *direct_work;
+    strcpy(out->state, "retiring");
+    out->generation = generation + (mode == BAD_CANCEL_REPLY);
     if (mode == BAD_CANCEL_BINDING) out->provider_incarnation++;
     if (mode == BACKED_CANCEL_REPLY) out->provider_backed = true;
     *status = MEM_SERVICE_WIRE_STATUS_OK;
@@ -236,6 +240,7 @@ int main(void)
     };
     FILE *journal = tmpfile();
     struct worker_reservation reservation = {0};
+    direct_work = &work;
     assert(journal);
     for (mode = GOOD; mode <= BAD_REPLY; mode++) {
         unsigned old_alloc = allocated, old_export = exports, old_publish = publishes;
@@ -511,6 +516,49 @@ int main(void)
         assert(!mem_service_provider_obmm_serve_allocations(config_path));
         assert(allocated == before + 1);
         drive_worker_loop = false;
+        assert(!mem_service_provider_obmm_inspect_allocation_state(config_path));
+        {
+            struct worker_config saved;
+            struct worker_ledger_entry entry;
+            struct stat st;
+            unsigned char byte, last;
+            struct flock lock = {.l_type = F_WRLCK, .l_whence = SEEK_SET};
+            int fd = open(state_path, O_RDWR), status;
+            pid_t child;
+            bool found_published = false;
+            assert(fd >= 0 && !fstat(fd, &st) && !read_config(config_path, &saved));
+            for (uint64_t seq = 1; seq <= (uint64_t)st.st_size / WORKER_LEDGER_FRAME_BYTES; seq++) {
+                assert(!ledger_read_entry(fd, seq, &saved, &entry));
+                if (!strcmp(entry.phase, "published")) {
+                    assert(entry.work.key[0] && entry.work.generation);
+                    assert(entry.reservation.segment.segment_id && entry.reservation.segment.epoch);
+                    assert(entry.reservation.exported.mem_id && entry.reservation.exported.tokenid);
+                    assert(entry.reservation.descriptor.len == 96);
+                    found_published = true;
+                }
+            }
+            assert(found_published);
+            saved.incarnation++;
+            assert(lseek(fd, 0, SEEK_SET) == 0 && ledger_read_entry(fd, 1, &saved, &entry));
+            assert(!fcntl(fd, F_SETLK, &lock));
+            child = fork();
+            assert(child >= 0);
+            if (!child) _exit(mem_service_provider_obmm_inspect_allocation_state(config_path) == 1 ? 0 : 1);
+            assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status));
+            lock.l_type = F_UNLCK;
+            assert(!fcntl(fd, F_SETLK, &lock));
+            assert(pread(fd, &byte, 1, 48) == 1);
+            unsigned char changed = byte ^ 1;
+            assert(pwrite(fd, &changed, 1, 48) == 1);
+            assert(mem_service_provider_obmm_inspect_allocation_state(config_path) == 1);
+            assert(pwrite(fd, &byte, 1, 48) == 1);
+            assert(pread(fd, &last, 1, st.st_size - 1) == 1);
+            assert(!ftruncate(fd, st.st_size - 1));
+            assert(mem_service_provider_obmm_inspect_allocation_state(config_path) == 1);
+            assert(pwrite(fd, &last, 1, st.st_size - 1) == 1 && !close(fd));
+            assert(!mem_service_provider_obmm_inspect_allocation_state(config_path));
+            puts("gva_worker_durable_ledger=pass identity=1 corruption=1 torn=1 writer_lock=1");
+        }
         assert(!unlink(state_path) && !unlink(config_path) && !rmdir(directory));
     }
     fclose(journal);

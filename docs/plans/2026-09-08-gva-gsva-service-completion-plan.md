@@ -373,6 +373,21 @@ r409 实际验证通过上述静止点：两个客户端写读后，暂停客户
 16 ignored；原 r403/r407/r408 诊断失败保留。该结果不关闭 worker 恢复、
 生产 fencing/rejoin、物理回收和完整 M3。详见实施记录 r403-r409。
 
+r410-r413 续作：独立服务 `1f39f2a` 已提交并仅发布授权分支，父仓库本地
+同步锁定。worker 每阶段持久保存完整对象/provider、segment、export 回执及
+descriptor，新增只读 `inspect-allocation-state`；已有日志仍阻止直接重启，
+日志校验不等于物理对账。七项定向、301 项服务全集（296 通过、5 跳过）及
+原生/安装态、worker ASan/UBSan 均通过。实际 worker 崩溃后验证、完整恢复
+对账及 fencing/rejoin 继续待完成，详见实施记录 r410-r413。
+
+2026-09-15 执行补记：r414-r416 核验已发布 `1f39f2a` 的下游锁定、guest
+镜像与完整回归：Python 572 项、567 通过、5 环境跳过；Rust 43 harness、
+963 通过、16 ignored，零失败。r417 因观察器接收块队列溢出失败，保留原证据；
+r418 仅修正观察缓存后，实际双 guest 连续 daemon 重启及 worker 崩溃检查通过。
+完整持久身份与 96-byte descriptor 保留，未经 reconciliation 的 worker 重启
+被拒绝，日志未改写；worker 退出后 kernel 资源仍存在。物理核对、回收、生产
+fencing/rejoin 和完整 M3 继续未完成，详见实施记录 r414-r418。
+
 目标：mem_service 独立作为基础设施启动，向多个独立客户端提供对象分配、
 访问、共享与回收。GSVA 作为地址管理/映射能力，由服务与 provider 协同提供；
 W5、其他 serving 和 pretraining 只消费同一套服务 SDK。
@@ -973,8 +988,8 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r331 正常 unmap、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2 整轮通过；当前锁定服务 e6f261e | 多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | r380 实际隔离保留资源；e6f261e 补齐 checkpoint，r397-r399 覆盖完整 V2 保存；r409 实际 daemon 连续重启保留隔离资源 | 生产 reconciliation、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r331 正常 unmap、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2 整轮通过；当前锁定服务 1f39f2a | 多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M3 回收与恢复 | 进行中 | r380 实际隔离保留资源；e6f261e 补齐 checkpoint；1f39f2a 补齐 worker 持久身份；r418 实际 daemon 重启与 worker 崩溃后身份保留、直接重启拒绝通过 | 生产 reconciliation、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

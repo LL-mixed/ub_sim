@@ -105,6 +105,8 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
             result = subprocess.run([str(golden)], capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("gva_worker_transaction=pass", result.stdout)
+            self.assertIn("gva_worker_durable_ledger=pass identity=1 corruption=1 torn=1 writer_lock=1",
+                          result.stdout)
             config = pathlib.Path(directory) / "worker.conf"
             state = pathlib.Path(directory) / "worker.state"
             good = (f"connect=unix:{directory}/absent.sock\nnode_id=nodeA\n"
@@ -128,6 +130,11 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("reconciliation required", result.stderr)
+                self.assertEqual(state.read_text(), "unreconciled reservation\n")
+                inspected = subprocess.run([str(binary), "inspect-allocation-state", "--config", str(config)],
+                                           capture_output=True, text=True, timeout=10)
+                self.assertEqual(inspected.returncode, 1, inspected.stderr)
+                self.assertIn("physical_state=unknown", inspected.stderr)
                 self.assertEqual(state.read_text(), "unreconciled reservation\n")
 
 

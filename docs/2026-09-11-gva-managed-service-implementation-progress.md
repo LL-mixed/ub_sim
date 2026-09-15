@@ -4441,3 +4441,88 @@ SHA-256：`b8d973e56f8fc0933c239418eed3089d334e0d4df56aa0283855161ac903eacb`。
 `e4e432c1b8a9f098451e3df398909b5851a564bd7e4b6d56f85b59bd1a035525`；
 清单 SHA-256：
 `bfa4ffb9ce43d1bb5d662474414b57083eed482d7a05af2c6ca07a4c8c6d60cc`。
+
+### r410-r413：worker 完整资源日志与严格只读校验
+
+独立服务提交 `1f39f2ac76f15b4d366f862925d5519b017b0702`，仅推送授权的
+`origin/codex/gva-managed-service-completion`，远端 SHA 已核验；父仓库
+本地同步 gitlink/lock，未推送。10 个服务文件、2 个下游测试文件与送测
+快照逐字节一致，原生构建容器内的最终源码也已逐字节核对。
+
+worker 的 state_file 使用 `obmm-worker-ledger-v1`：固定 1,024-byte 帧、
+显式小端字段、严格序号、零保留区及校验和。阶段记录保存原 node/incarnation、
+对象 key/generation、逻辑尺寸/对齐、完整 segment、实际 export 回执及 opaque
+descriptor，不保存指针；同步成功后再继续操作。取消回执额外核对逻辑尺寸、
+对齐与能力，stdout 的原阶段行保持兼容。
+
+新增 `inspect-allocation-state --config <path>`，先校验完整文件及原配置身份，
+再只读输出阶段身份；并发 writer、旧格式、损坏、半帧及非规范字段拒绝。
+输出明确 physical_state=unknown、reconciliation_required=1，不访问设备、
+不恢复映射或解除隔离；已有 state_file 仍禁止 worker 直接重启。校验和用于
+发现数据损坏，不提供篡改认证，也不能证明未记录的物理资源已经释放。
+
+r410 编码三项通过，worker 事务夹具失败：原取消回执省略尺寸与能力，严格
+日志读取拒绝该记录。补全夹具回执并加强生产核对；源码复核还修正 magic 长度，
+增加完整版本字节断言。r411 于 11:26:17 至 11:26:37 UTC 完成，三项编码与
+四项原生 worker 测试全部通过；包含完整字段往返、逐字节损坏、非规范编码、
+进程指针拒绝、真实文件半写、原身份不符、进程锁及旧日志拒绝。
+
+r412 的 16 分片于 2026-09-15 11:28:19 至 11:41:43 UTC 完成，全部 exit 0、
+无 OOM：301 个唯一 test ID 精确覆盖原有 298 项和新增三项，296 通过、5 环境
+跳过，零失败/错误/加载错误。结果 SHA-256：
+`fc19ec13861847b725af2e43b0ffc8007ae30d0947dd870d4f2917ffedb710e6`。
+r413 于 11:28:59 至 11:32:21 UTC 完成，exit 0：原生 worker、ASan/UBSan
+事务与日志夹具、manager、host-artifact-smoke、安装态 SDK、九份 CLI 契约
+清单比对及 15 项存储 sanitizer 场景全部通过。
+
+75 项源码/配置、原失败状态、原始日志、测试清单和容器终态已归档，下载后
+逐项校验通过。`worker-ledger-evidence-r413.tar.gz` 为 283,709 bytes，SHA-256：
+`a635600bf89d8a51f8f1a16e53c9595c8a3eb450cfa717c157e523590c2a106a`；
+清单 SHA-256：
+`b3e4b91a0c4c4a8a4da6338d90f58ef0daeeac5322d0529c2ae812d2025499fc`。
+本批先补对账所需的持久身份；实际 worker 崩溃后日志验证、kernel/provider
+对账、生产 fencing/rejoin 和完整 M3 继续待验收。
+
+### r414-r418：锁定 worker 日志并验证实际崩溃后的身份保留
+
+r414 使用已发布的 `1f39f2a`，源码锁定检查通过；2026-09-15 11:46:09
+至 11:46:26 UTC 构建 AArch64 静态 CLI、worker 与 guest 镜像，exit 0。
+镜像 SHA-256：
+`f02cb8e6e9b249f83b664afdeaf0f6a57a659768982efb5ad1bd2f8e8b5440c4`。
+r415 于 11:47:40 UTC 完成下游 Python 全集：572 个唯一 test ID，567 通过、
+5 项交叉编译器环境跳过，零失败/错误/加载错误。r416 于 11:55:02 UTC
+完成 Rust workspace：43 个 harness 的名称及计数逐项匹配原基线，963 通过、
+16 ignored，零失败、exit 0、无 OOM。Rust 原日志 SHA-256：
+`c4dce0569bdb2388e13d49708e1a33f2a6b3ef4c7356ec09c4b8d5e686088829`。
+
+r417 正常 CPU 退役前置用例通过；观察器按接收块数量限容的队列发生
+`queue.Full`，11:52:08 UTC exit 1，尚未执行 daemon/worker 崩溃断言。
+保留失败与原始日志。r418 仅将观察器接收缓存改为临时文件，以总字节上限
+256 MiB 限容；不丢弃输出，超限明确失败。2 MiB 短分片、延迟消费、小块
+读取、双向发送、EOF、超限拒绝及线程退出的本地轻量检查通过。
+服务代码、镜像、资源断言和故障范围保持不变。
+
+r418 于 11:54:25 至 11:56:08 UTC 完成实际双 guest 验证，exit 0、无 OOM：
+
+- 正常前置用例通过；实际客户端以 OBMM 映射写读 65,536 bytes。
+- 静止点连续两次 daemon 重启均保留 refs=2、import mappings=2、
+  export mappings=1，将对象及 2 MiB 资源保持隔离；新 acquire 均拒绝。
+- 两个已暂停的 worker 被终止，shell `wait` 均返回 137，随后才读取日志。
+  home 日志含五帧完整阶段记录，另一节点含一帧启动记录；原节点及 incarnation
+  一致，published 的 key、generation、地址与完整 96-byte descriptor
+  逐项匹配实际服务对象，segment/epoch/export 非零。
+- 两端普通 worker 重启均 exit 1 并要求 reconciliation；重启尝试前后日志
+  SHA-256 相同。kernel 区域 ID、类型和字节在 worker 退出后仍与退出前一致，
+  因而进程死亡不能作为物理资源已释放的依据。
+- 独立复核 182 条命令回执、退出码和完整身份。supervisor 为 observer_exit=0、
+  runner_exit=143（诊断完成后主动清理），结束后未发现遗留 QEMU。
+
+结果 JSON SHA-256：
+`ae132e7cd4641d602e29080f48ef01c7e82d2314c5a9729485601b90a32ab0f5`。
+源码、配置、失败与成功原日志、测试清单、五个容器终态共 44 项证据归档为
+`worker-crash-evidence-r418.tar.gz`，5,777,367 bytes，SHA-256：
+`9400e0b5acfe374163db8f466670c799fdc3ab770f0449e89cb778de31c43764`；
+清单 SHA-256：
+`6a1a9abdbea42926a54f590922b0b75d3748393096c39dcb7444ce14e28152ba`。
+本轮证明实际 worker 崩溃后持久身份可读、未经核对的重启被拒绝。生产物理
+reconciliation、fencing、回收与重新加入仍未实现，M3 及总目标保持未完成。
