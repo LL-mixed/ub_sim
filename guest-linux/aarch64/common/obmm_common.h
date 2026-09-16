@@ -39,8 +39,8 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "../../kernel_ub/include/uapi/ub/obmm.h"
-#include "../../kernel_ub/include/uapi/ub/gsva.h"
+#include <ub/obmm.h>
+#include <ub/gsva.h>
 
 #include <libobmm.h>
 

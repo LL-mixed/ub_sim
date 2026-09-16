@@ -3831,6 +3831,14 @@ def test_shared_obmm_helpers_use_app_language():
     assert "user-space demo" not in combined
 
 
+def test_shared_obmm_helpers_use_one_exported_uapi_identity():
+    common = (ROOT / "common" / "obmm_common.h").read_text()
+
+    assert "#include <ub/obmm.h>" in common
+    assert "#include <ub/gsva.h>" in common
+    assert "kernel_ub/include/uapi" not in common
+
+
 class GuestToolchainContractTests(unittest.TestCase):
     def test_arm64_native_gcc_is_accepted_for_guest_builds(self):
         common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()
