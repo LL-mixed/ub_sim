@@ -5726,4 +5726,17 @@ v3，并在所有帧核对同一绑定。旧 v2 继续供 inspect/resume/recover
 隔离授权所需配置证明，`quarantine-allocation-state` 对 v2 明确失败关闭。golden
 增加旧 v2 首帧不得发送 provider deregister 的断言。本地仅重跑受影响的交叉编译
 目标，1 项通过、4.742 秒；该提交已只推送授权服务分支并核验远端 SHA。n4 原失败
-用例尚待使用该精确修复重跑。
+用例随后使用该精确修复重跑。
+
+r2 将同一隔离 checkout 离线更新到父仓库
+`9851169d4f6f2041a91ebb9fc6a6c9ff932f0e2b`、独立服务
+`688db48104395db5d71a2ee4f51b39895f3c3ba8`，lock 与 child SHA 一致且普通文件
+工作树洁净。原生重跑同一单项在 7.179 秒完成，1/1 通过、零失败；原始日志
+`holder-revoke-worker-native-r2.log` 为 98 bytes，SHA-256：
+`d9169e3c9cdcc6b54e2e0464cecd90c7cdffcd2ecf063a29ddb6ab2d405e21b2`。
+
+该原生 golden 实际执行 ledger v3 正常隔离、旧 v2 首帧零 deregister 拒绝、remote
+holder 物理撤销成功后才提交 receipt、物理失败不提交 receipt，以及 lost-home HOME
+holder receipt 完成后才 reclaim。它验证 Linux/AArch64 产品代码与测试替身的调用
+顺序；`/dev/obmm` 仍由 ioctl wrapper 提供，因此不计为真实 QEMU route、VMA、cache、
+TLB 或 PTO 撤销证据。r1 失败与 r2 通过均保留，未运行其他远端回归。
