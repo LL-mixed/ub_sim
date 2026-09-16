@@ -114,6 +114,7 @@ MAX_RUNTIME="${MAX_RUNTIME:-300}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_${RANDOM}}"
 INTERACTIVE_AFTER_PASS=0
 SKIP_GUEST_ARTIFACT_PREPARATION=0
+VALIDATE_HOLDER_RECOVERY_LOG_DIR=""
 MAIN_PID=$$
 
 usage() {
@@ -137,6 +138,9 @@ Options:
   --iterations N     Number of dual-node iterations.
   --max-runtime SECS Global watchdog timeout.
   --report-file PATH Validation report output path.
+  --validate-holder-recovery-logs DIR
+                      Validate an existing holder-recovery iteration directory
+                      without launching QEMU.
   --kernel-image PATH Arm64 guest kernel image.
   --initramfs-image PATH Guest initramfs containing selected apps.
   --interactive-after-pass
@@ -889,6 +893,15 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       REPORT_FILE="$2"
+      shift 2
+      ;;
+    --validate-holder-recovery-logs)
+      if [[ $# -lt 2 ]]; then
+        echo "--validate-holder-recovery-logs requires a value" >&2
+        usage >&2
+        exit 2
+      fi
+      VALIDATE_HOLDER_RECOVERY_LOG_DIR="$2"
       shift 2
       ;;
     --kernel-image)
@@ -2442,7 +2455,7 @@ validate_mem_service_holder_recovery_log() {
   assert_log_has "$nodeb_qemu" \
     "GSVA_RECOVERY: local holder revoked" \
     "local holder physical revoke" || return 1
-  assert_log_has "$nodeb_qemu" "OBMM_COH_FENCE req_id=" \
+  assert_log_has "$nodea_qemu" "OBMM_COH_FENCE req_id=" \
     "holder writeback fence request" || return 1
   assert_log_has "$nodeb_qemu" "OBMM_COH_FENCE_ACK.*status=0" \
     "holder writeback fence acknowledgement" || return 1
@@ -4146,6 +4159,20 @@ run_iteration() {
     return 29
   fi
 }
+
+if [[ -n "$VALIDATE_HOLDER_RECOVERY_LOG_DIR" ]]; then
+  if [[ ! -d "$VALIDATE_HOLDER_RECOVERY_LOG_DIR" ]]; then
+    echo "holder recovery log directory not found: $VALIDATE_HOLDER_RECOVERY_LOG_DIR" >&2
+    exit 2
+  fi
+  validate_mem_service_holder_recovery_log \
+    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeA_guest.log" \
+    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeB_guest.log" \
+    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeA_qemu.log" \
+    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeB_qemu.log"
+  echo "holder recovery existing-log validation passed"
+  exit 0
+fi
 
 declare -a ITERATION_RESULTS
 declare -a ITERATION_ERRORS
