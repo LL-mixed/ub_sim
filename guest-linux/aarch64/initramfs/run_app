@@ -1619,7 +1619,7 @@ mem_service_object_share_holder_recovery() {
   session_pid=$!
 
   attempt=0
-  while [ "$attempt" -lt 600 ]; do
+  while [ "$attempt" -lt 300 ]; do
     if /bin/busybox grep -q \
         'MANAGED_PTO_HOLDER_RECOVERY node=1 state=prepared' \
         /tmp/holder-recovery-pto.log 2>/dev/null; then
@@ -1632,7 +1632,14 @@ mem_service_object_share_holder_recovery() {
     attempt=$((attempt + 1))
     /bin/busybox sleep 0.1
   done
-  [ "$attempt" -lt 600 ] || return 1
+  if [ "$attempt" -ge 300 ]; then
+    echo "mem_service holder-recovery: node=1 phase=pto-prepared-observed status=timeout"
+    /bin/busybox cat /tmp/holder-recovery-pto.log
+    kill -9 "$pto_pid" 2>/dev/null || true
+    wait "$pto_pid" 2>/dev/null || true
+    pto_pid=""
+    return 1
+  fi
   pto_op="$(/bin/busybox sed -n \
     's/.*state=prepared op_id=\([0-9][0-9]*\).*/\1/p' \
     /tmp/holder-recovery-pto.log | /bin/busybox head -n 1)"

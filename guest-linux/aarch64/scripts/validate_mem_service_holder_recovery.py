@@ -78,10 +78,22 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     for text, role in ((node_a, "home"), (node_b, "replacement")):
         require("mem_service object-share: status=fail" not in text,
                 f"{role} guest reported failure")
+    home_canary = require_pattern(
+        node_a,
+        r"MANAGED_PTO node=0 peer_canary=pass bootstrap_generation=([1-9][0-9]*)",
+        "home PTO endpoint peer canary is missing",
+    )
+    replacement_canary = require_pattern(
+        node_b,
+        r"MANAGED_PTO node=1 peer_canary=pass bootstrap_generation=([1-9][0-9]*)",
+        "replacement PTO endpoint peer canary is missing",
+    )
     require(node_a.count("MANAGED_PTO node=0 peer_canary=pass") == 1,
-            "home PTO endpoint peer canary missing or duplicated")
+            "home PTO endpoint peer canary is duplicated")
     require(node_b.count("MANAGED_PTO node=1 peer_canary=pass") == 1,
-            "replacement PTO endpoint peer canary missing or duplicated")
+            "replacement PTO endpoint peer canary is duplicated")
+    require(home_canary.group(1) == replacement_canary.group(1),
+            "PTO peers used different bootstrap discovery generations")
 
     require_pattern(node_a, r"mem_service recover-allocation: status=ok",
                     "home recovery was not accepted")
@@ -205,6 +217,8 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     )
     require(prepared.group(1) == rejected.group(1) == rejected.group(2),
             "old holder PTO completion identity does not match its prepared dispatch")
+    require(int(home_canary.group(1)) != int(prepared.group(4)),
+            "PTO bootstrap discovery reused the fenced provider incarnation")
     require(prepared.group(1) == submit_started.group(1) == observed.group(1) ==
             rejected_observed.group(1) == cpu_probe_started.group(1) ==
             cpu_probe_observed.group(1) == cpu_rejected.group(1) ==
@@ -269,6 +283,7 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         "old_pto_error": rejected.group(3),
         "old_pto_operation_id": int(rejected.group(1)),
         "old_pto_mapping_id": int(prepared.group(3)),
+        "pto_bootstrap_generation": int(home_canary.group(1)),
         "home_retire": home_retire,
         "node_a_sha256": hashlib.sha256(node_a.encode()).hexdigest(),
         "node_b_sha256": hashlib.sha256(node_b.encode()).hexdigest(),

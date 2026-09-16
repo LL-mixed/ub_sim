@@ -19,7 +19,7 @@ SPEC.loader.exec_module(validator)
 
 def fixture():
     node_a = "\n".join((
-        "MANAGED_PTO node=0 peer_canary=pass",
+        "MANAGED_PTO node=0 peer_canary=pass bootstrap_generation=9001",
         "MANAGED_PTO_HOLDER_RECOVERY node=0 state=peer-ready generation=1",
         "mem_service recover-allocation: status=ok",
         "state=retiring",
@@ -45,7 +45,7 @@ def fixture():
         "mem_service holder-recovery: node=1 phase=pto-rejected-observed status=ok op_id=8",
         "mem_service holder-recovery: node=1 phase=cpu-probe-start-observed status=ok op_id=8",
         "mem_service holder-recovery: node=1 phase=cpu-rejected-observed status=ok op_id=8",
-        "MANAGED_PTO node=1 peer_canary=pass",
+        "MANAGED_PTO node=1 peer_canary=pass bootstrap_generation=9001",
         "MANAGED_PTO node=1 key=holder-recovery-object generation=1 cpu_base=0x700000000000 address=0x700000000000 logical_bytes=65536 mapping_id=2 mapping_handle=1 access=3 object=input home_node=0 home_provider=guest-node-0 requester_cna=0xf002",
         "MANAGED_OWNER node=1 state=adopted generation=1 mapping_id=2 cpu_pins=1 holder_transferred=1 object=input",
         "MANAGED_PTO_HOLDER_RECOVERY node=1 state=prepared op_id=8 generation=1 mapping_id=2 holder_node=guest-node-1 holder_incarnation=7 retained_leases=3",
@@ -80,6 +80,7 @@ class HolderRecoveryGuestTests(unittest.TestCase):
         self.assertEqual(result["old_pto_error"], "pto_ub_gm_bad_memref")
         self.assertEqual(result["old_pto_operation_id"], 8)
         self.assertEqual(result["old_pto_mapping_id"], 2)
+        self.assertEqual(result["pto_bootstrap_generation"], 9001)
         self.assertEqual(result["home_retire"], {
             "segment_id": "0xc4c2000000000001",
             "epoch": 1,
@@ -111,6 +112,7 @@ class HolderRecoveryGuestTests(unittest.TestCase):
             (1, "state=rejected"),
             (1, "state=cpu-probe-start"),
             (1, "old_pto_access=rejected"),
+            (1, "bootstrap_generation=9001"),
             (0, "status=COMMITTED"),
             (2, "operation=2"),
             (3, "remote_retire_drained"),
@@ -131,6 +133,20 @@ class HolderRecoveryGuestTests(unittest.TestCase):
         logs = fixture()
         logs[1] = logs[1].replace("completion_op=8", "completion_op=9")
         with self.assertRaisesRegex(ValueError, "completion identity"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        logs[1] = logs[1].replace("bootstrap_generation=9001",
+                                  "bootstrap_generation=9002")
+        with self.assertRaisesRegex(ValueError, "different bootstrap"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        logs[0] = logs[0].replace("bootstrap_generation=9001",
+                                  "bootstrap_generation=7")
+        logs[1] = logs[1].replace("bootstrap_generation=9001",
+                                  "bootstrap_generation=7")
+        with self.assertRaisesRegex(ValueError, "provider incarnation"):
             validator.validate(*logs)
 
         logs = fixture()

@@ -568,6 +568,14 @@ int main(int argc, char **argv) {
         self.assertIn("MANAGED_PTO_HOLDER_RECOVERY", source)
         self.assertIn("old_cpu_access=%s", source)
         self.assertIn("old_pto_access=%s", source)
+        self.assertIn("managed_provider_bootstrap_generation", source)
+        open_provider = source.split(
+            "static int open_provider(", 1
+        )[1].split("static int wait_allocation(", 1)[0]
+        self.assertIn("bootstrap_generation", open_provider)
+        self.assertIn("&local, peers, 2", open_provider)
+        self.assertNotIn("state->config.generation,\n        &local, peers, 2",
+                         open_provider)
         holder_dispatch = source.split(
             "static int dispatch_vector_checked(", 1
         )[1].split("static int dispatch_vector(", 1)[0]

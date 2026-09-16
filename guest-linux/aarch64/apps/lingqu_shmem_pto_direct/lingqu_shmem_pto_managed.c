@@ -123,6 +123,39 @@ static uint64_t now_ms(void)
     return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 }
 
+/* OBMM bootstrap generation is a shared discovery namespace. Keep it
+ * independent from the provider incarnation used by holder fencing: the
+ * provider worker and this PTO endpoint are separate publishers. */
+static uint64_t managed_provider_bootstrap_generation(
+    const struct managed_config *config)
+{
+    static const char domain[] = "mem-service-managed-pto-provider-v1";
+    const uint64_t prime = UINT64_C(1099511628211);
+    uint64_t hash = UINT64_C(1469598103934665603);
+    uint64_t words[2] = {config->generation, config->fingerprint};
+    for (size_t i = 0; i < sizeof(domain) - 1; ++i) {
+        hash ^= (uint8_t)domain[i];
+        hash *= prime;
+    }
+    for (size_t i = 0; config->key[i] != '\0'; ++i) {
+        hash ^= (uint8_t)config->key[i];
+        hash *= prime;
+    }
+    for (size_t word = 0; word < 2; ++word) {
+        for (unsigned byte = 0; byte < 8; ++byte) {
+            hash ^= (uint8_t)(words[word] >> (byte * 8));
+            hash *= prime;
+        }
+    }
+    if (hash == 0 || hash == config->generation) {
+        hash = config->generation ^ UINT64_C(0xd6e8feb86659fd93);
+    }
+    if (hash == 0 || hash == config->generation) {
+        hash = config->generation == UINT64_MAX ? 1 : config->generation + 1;
+    }
+    return hash;
+}
+
 static int parse_number(const char *text, uint64_t *out)
 {
     char *end;
@@ -440,6 +473,8 @@ static int open_provider(struct managed_state *state)
     struct mem_service_region region;
     uint8_t pattern[256];
     uint64_t checksum;
+    uint64_t bootstrap_generation =
+        managed_provider_bootstrap_generation(&state->config);
     int rc = mem_service_provider_registry_init(&state->registry);
     if (!rc) rc = mem_service_provider_obmm_endpoint_open(&state->provider, &config);
     if (!rc) rc = mem_service_provider_obmm_endpoint_registration(&state->provider,
@@ -448,7 +483,7 @@ static int open_provider(struct managed_state *state)
         &state->provider, config.import_region_bytes, sizeof(pattern),
         (uint8_t)(41 + state->config.node), &region, &local, &checksum);
     if (!rc) rc = mem_service_provider_obmm_endpoint_exchange_remote_regions(
-        &state->provider, state->config.node, 2, state->config.generation,
+        &state->provider, state->config.node, 2, bootstrap_generation,
         &local, peers, 2);
     if (rc) return rc;
     unsigned peer = 1 - state->config.node;
@@ -459,7 +494,8 @@ static int open_provider(struct managed_state *state)
     if (!rc) rc = mem_service_provider_registry_register(&state->registry, &registration);
     if (!rc) rc = mem_service_provider_channel_bind(&state->registry, registration.name,
         registration.instance, MEM_SERVICE_PROVIDER_CAP_PEER_MAPPING, &state->channel);
-    if (!rc) printf("MANAGED_PTO node=%u peer_canary=pass\n", state->config.node);
+    if (!rc) printf("MANAGED_PTO node=%u peer_canary=pass bootstrap_generation=%" PRIu64
+                    "\n", state->config.node, bootstrap_generation);
     return rc;
 }
 

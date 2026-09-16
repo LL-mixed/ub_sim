@@ -1539,6 +1539,7 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "--managed-config /tmp/holder-recovery-pto.conf" in holder_recovery
     assert "MANAGED_PTO_HOLDER_RECOVERY node=1 state=prepared" in holder_recovery
     assert "phase=pto-prepared-observed op_id=$pto_op" in holder_recovery
+    assert "phase=pto-prepared-observed status=timeout" in holder_recovery
     assert "phase=pto-rejected-observed status=ok op_id=$pto_op" in holder_recovery
     assert "phase=cpu-probe-start-observed status=ok op_id=$pto_op" in holder_recovery
     assert "phase=cpu-rejected-observed status=ok op_id=$pto_op" in holder_recovery
