@@ -5249,3 +5249,25 @@ SSH 连接层且远端无日志、容器或 unittest 进程，审计保留 unkno
 
 该项补齐 callable 4 结果发布的长度/内容绑定；owner 映射、serving loop 切换
 及连续 decode 仍待后续批次完成。
+
+## 2026-09-16：W5 managed serving owner/runtime 基础层
+
+新增 provider-neutral 的 W5 managed object、runtime 和 serving 三层接口。object
+层把 reader 的 RESOLVE/ACQUIRE/map/adopt 与 writer 的 allocate-at-home、BEGIN、
+map/adopt、多 view STAGE、unmap、SEAL、holder 释放收敛为同一 process-local owner
+生命周期；所有 idempotency key 由稳定 operation prefix 和 reference key 派生。
+runtime 公共接口不暴露 provider 选择，当前部署 adapter 在独立实现文件中选择
+OBMM channel，并统一持有 client、access domain、managed compute context 和原 PTO
+endpoint。serving 层使用 callable 4，保持 input/writer owner 至原 completion，随后
+解析精确结果边界，发布 result、hidden、KV 和可选 terminal 四份 V2 view。
+
+公共 decoder 同时返回 terminal logits 与 token-text 两张连续表的精确 view；独立
+`mem_service` 提交 `b5812c4` 为它保留 model-terminal-result kind 13，区别于既有
+64-byte sampled-token handoff kind 6。该子仓库提交已推送授权分支，父仓库 gitlink
+与 lock 同步更新。
+
+本批 18 项本地定向测试通过，覆盖 writer/reader owner 清理、runtime adapter、
+callable 4 两输入四输出状态机、terminal view 边界及现有 result 负例。此批形成
+serving-loop 的真实 SDK building block；`apps/llm_infer` 分支选择、managed key
+接续及 2/3/8-node 连续 decode 尚未接通，M2 保持进行中。远端全集留到主循环代码
+成为单一最终候选后执行。

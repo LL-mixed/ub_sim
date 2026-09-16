@@ -39,7 +39,7 @@ struct llm_infer_terminal_result {
 };
 
 struct llm_infer_range_result {
-    struct llm_infer_result_view hidden, kv;
+    struct llm_infer_result_view hidden, kv, terminal_view;
     uint64_t input_checksum, output_tensor_checksum, range_checksum, real_layers;
     /* Exact bytes written by the serialized result, excluding spare capacity. */
     uint64_t serialized_bytes;
@@ -56,8 +56,9 @@ struct llm_infer_range_result {
  * The caller verifies whole-result integrity. Numerical layer/tensor checksum
  * metadata may differ from the serialized hidden payload's model_checksum.
  * A terminal range must contain exactly one structurally valid logits/token
- * table for expected.step and expected.vocab_size; non-terminal ranges leave
- * terminal_present clear. */
+ * table for expected.step and expected.vocab_size. terminal_view covers the
+ * exact contiguous logits and token-text tables for V2 publication;
+ * non-terminal ranges leave it and terminal_present clear. */
 int llm_infer_decode_range_result(const void *result, size_t result_bytes,
     uint64_t allocation_offset, const struct llm_infer_range_identity *expected,
     struct llm_infer_range_result *out);

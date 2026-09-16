@@ -59,7 +59,8 @@ class Terminal(ctypes.Structure):
 
 
 class Result(ctypes.Structure):
-    _fields_ = [("hidden", View), ("kv", View), ("input_checksum", ctypes.c_uint64),
+    _fields_ = [("hidden", View), ("kv", View), ("terminal_view", View),
+                ("input_checksum", ctypes.c_uint64),
                 ("output_tensor_checksum", ctypes.c_uint64),
                 ("range_checksum", ctypes.c_uint64), ("real_layers", ctypes.c_uint64),
                 ("serialized_bytes", ctypes.c_uint64),
@@ -230,6 +231,8 @@ class ManagedResultTest(unittest.TestCase):
                     self.assertEqual(result.serialized_bytes, len(data))
                     self.assertEqual(result.serialized_checksum,
                                      checksum(data, False))
+                    self.assertEqual(bytes(result.terminal_view),
+                                     bytes(ctypes.sizeof(View)))
                     self.assertEqual(result.terminal_present, 0)
                     for view in (result.hidden, result.kv):
                         start = view.offset - 16384
@@ -263,6 +266,13 @@ class ManagedResultTest(unittest.TestCase):
         rc, result = self.call(data, identity)
         self.assertEqual(rc, 0)
         self.assertEqual(result.terminal_present, 1)
+        terminal_bytes = TOKEN_TEXT_ENTRY + 64 - LOGITS
+        self.assertEqual(result.terminal_view.offset, 16384 + LOGITS)
+        self.assertEqual(result.terminal_view.bytes, terminal_bytes)
+        self.assertEqual(result.terminal_view.model_checksum, 0x1234)
+        self.assertEqual(
+            result.terminal_view.service_checksum,
+            checksum(data[LOGITS:LOGITS + terminal_bytes], False))
         terminal = result.terminal
         self.assertEqual(terminal.step, 7)
         self.assertEqual(terminal.sampled_token, 11)

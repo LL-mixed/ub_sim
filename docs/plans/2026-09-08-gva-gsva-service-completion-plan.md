@@ -559,6 +559,14 @@ harness 为 976 通过、16 ignored、零失败。两套门禁均使用 network-
 Cargo offline、冻结 registry/target 及 PTO ISA `594817f`。serving loop 的
 owner 接入仍继续推进。
 
+owner/runtime 续作：guest 侧现已提供 provider-neutral managed object、runtime 与
+serving 状态机。reader 完成 RESOLVE/ACQUIRE/map/adopt，writer 完成指定 home
+allocate、BEGIN、map/adopt、result/hidden/KV/terminal 多 view STAGE、unmap、SEAL
+和 holder 释放；callable 4 保持全部 owner 到原 completion 后再解码和发布。
+terminal V2 使用独立 kind 13，公共 decoder 返回其精确连续表 view。独立服务提交
+`b5812c4` 已推送并锁定，18 项定向测试通过。该 building block 尚未替换
+`apps/llm_infer` 的 callable 3 分支，不能据此关闭 W5 serving 或 M2。
+
 W5 serving 对象命名约定：输出 allocation 使用
 `w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>`，均为固定宽度
 小写十六进制；run/request 非零。该完整 key 由 producer 在 allocate 时确定，

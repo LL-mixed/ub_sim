@@ -49,11 +49,14 @@ static uint64_t result_checksum(const unsigned char *bytes, size_t length,
 
 static int llm_infer_decode_terminal_result(const unsigned char *bytes,
     size_t metadata_end, const struct llm_infer_range_identity *expected,
-    struct llm_infer_terminal_result *out)
+    uint64_t allocation_offset, struct llm_infer_terminal_result *out,
+    struct llm_infer_result_view *view_out)
 {
     struct llm_infer_terminal_result decoded = {0};
+    struct llm_infer_result_view decoded_view = {0};
     unsigned matches = 0;
-    if (!bytes || !expected || !out || !expected->vocab_size) return -EINVAL;
+    if (!bytes || !expected || !out || !view_out || !expected->vocab_size)
+        return -EINVAL;
     for (size_t header = 0; header + LLM_INFER_LOGITS_HEADER_BYTES <= metadata_end;
          header += 8) {
         if (result_word(bytes + header) != LLM_INFER_LOGITS_MARKER) continue;
@@ -133,6 +136,7 @@ static int llm_infer_decode_terminal_result(const unsigned char *bytes,
         if (!valid || result_word(bytes + token_header + 32) != total_piece_bytes)
             continue;
         if (++matches != 1) return -EPROTO;
+        size_t terminal_bytes = token_base + token_bytes - header;
         const unsigned char *entry = bytes + header + LLM_INFER_LOGITS_HEADER_BYTES;
         const unsigned char *text = bytes + token_base;
         decoded.step = result_word(entry + 72);
@@ -158,9 +162,17 @@ static int llm_infer_decode_terminal_result(const unsigned char *bytes,
             decoded.candidate_piece_word0[candidate] = result_word(item + 32);
             decoded.candidate_piece_word1[candidate] = result_word(item + 40);
         }
+        decoded_view = (struct llm_infer_result_view) {
+            .offset = allocation_offset + header,
+            .bytes = terminal_bytes,
+            .model_checksum = decoded.logits_checksum,
+            .service_checksum = result_checksum(bytes + header,
+                                                terminal_bytes, false),
+        };
     }
     if (matches != 1) return -EPROTO;
     *out = decoded;
+    *view_out = decoded_view;
     return 0;
 }
 
@@ -234,7 +246,8 @@ int llm_infer_decode_range_result(const void *result, size_t length,
         bytes, (size_t)decoded.serialized_bytes, false);
     if (expected->layer_end == expected->total_layers) {
         int rc = llm_infer_decode_terminal_result(bytes, (size_t)header,
-            expected, &decoded.terminal);
+            expected, allocation_offset, &decoded.terminal,
+            &decoded.terminal_view);
         if (rc) return rc;
         decoded.terminal_present = 1;
     }
