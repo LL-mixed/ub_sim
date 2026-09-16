@@ -150,7 +150,7 @@ int __wrap_mem_service_client_poll_recovery_allocation(
         *status = MEM_SERVICE_WIRE_STATUS_OK;
         return 0;
     }
-    assert(after_generation == (!recovery_reclaims ? 99 : 0));
+    assert(after_generation == (recovery_polls ? 99 : 0));
     *status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
     return 0;
 }
