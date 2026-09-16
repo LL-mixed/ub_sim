@@ -1529,6 +1529,10 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "holder_fence_receipt_required" in holder_recovery
     assert holder_recovery.count('echo "provider=obmm"') == 2
     assert holder_recovery.count('echo "provider_node_count=2"') == 2
+    assert "provider-directory-status" in holder_recovery
+    assert "expired_count=[1-9][0-9]*" in holder_recovery
+    assert "replaced=0" in holder_recovery
+    assert "/bin/busybox cat /tmp/holder-recovery-fence.log" in holder_recovery
     managed = run_app.split("mem_service_object_share_managed() (", 1)[1].split(
         "\nrun_mem_service_object_share()", 1)[0]
     reference = run_app.split("mem_service_object_share_reference_ops() (", 1)[1].split(

@@ -2411,8 +2411,10 @@ validate_mem_service_holder_recovery_log() {
   assert_log_has "$nodeb_guest" \
     "mem_service provider-register: status=ok" \
     "replacement provider registered" || return 1
-  assert_log_has "$nodeb_guest" "replaced=1" \
-    "replacement incarnation replaced old provider" || return 1
+  assert_log_has "$nodeb_guest" "expired_count=[1-9][0-9]*" \
+    "old provider loss confirmed by lease expiry" || return 1
+  assert_log_has "$nodeb_guest" "replaced=0" \
+    "replacement registered after old provider removal" || return 1
   assert_log_has "$nodeb_guest" \
     "obmm-holder-fence: status=fenced key=holder-recovery-object" \
     "holder fencing receipt" || return 1

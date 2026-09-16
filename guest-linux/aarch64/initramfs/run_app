@@ -1542,7 +1542,7 @@ mem_service_object_share_holder_recovery() {
     echo "op=write key=$key offset=0 len=$size seed=$seed"
     echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
     echo "op=allocate key=$ready_key idempotency_key=holder-recovery-ready size_bytes=65536 capabilities=map"
-    echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=$key state=retired timeout_ms=90000 poll_ms=50"
     echo "op=read key=$key offset=0 len=$size seed=$seed"
   } >/tmp/holder-recovery-client.conf
   /bin/linqu_mem_service object-session \
@@ -1570,6 +1570,23 @@ mem_service_object_share_holder_recovery() {
   kill -9 "$worker" 2>/dev/null || return 1
   wait "$worker" 2>/dev/null || true
   worker_pid=""
+  attempt=0
+  while [ "$attempt" -lt 60 ]; do
+    result=0
+    /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+      >/tmp/holder-recovery-loss.log 2>&1 || result=$?
+    if [ "$result" -eq 0 ] &&
+        /bin/busybox grep -q 'provider_active_count=1' \
+        /tmp/holder-recovery-loss.log &&
+        /bin/busybox grep -Eq 'expired_count=[1-9][0-9]*' \
+        /tmp/holder-recovery-loss.log; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 1
+  done
+  /bin/busybox cat /tmp/holder-recovery-loss.log
+  [ "$attempt" -lt 60 ] || return 1
   {
     echo "connect=$connect"
     echo "node_id=guest-node-1"
@@ -1583,11 +1600,14 @@ mem_service_object_share_holder_recovery() {
     --readiness-generation "$replacement" --capabilities 1 \
     >/tmp/holder-recovery-register.log 2>&1 || return 1
   /bin/busybox cat /tmp/holder-recovery-register.log
-  /bin/busybox grep -q 'replaced=1' /tmp/holder-recovery-register.log || return 1
-  /bin/linqu_mem_service_provider_obmm fence-holder-state \
-    --config /tmp/managed-share.worker.conf \
-    --replacement-config /tmp/managed-share.worker.replacement.conf \
-    >/tmp/holder-recovery-fence.log 2>&1 || return 1
+  /bin/busybox grep -q 'replaced=0' /tmp/holder-recovery-register.log || return 1
+  if ! /bin/linqu_mem_service_provider_obmm fence-holder-state \
+      --config /tmp/managed-share.worker.conf \
+      --replacement-config /tmp/managed-share.worker.replacement.conf \
+      >/tmp/holder-recovery-fence.log 2>&1; then
+    /bin/busybox cat /tmp/holder-recovery-fence.log
+    return 1
+  fi
   /bin/busybox cat /tmp/holder-recovery-fence.log
   /bin/busybox grep -q \
     'obmm-holder-fence: status=fenced key=holder-recovery-object' \
