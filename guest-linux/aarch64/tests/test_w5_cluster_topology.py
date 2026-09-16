@@ -51,6 +51,41 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     f"SIM_W5_CLUSTER_NODE_COUNT={node_count}\n", result.stdout
                 )
 
+    def test_cli_managed_serving_derives_callable_fingerprint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sim_cli = Path(temp_dir) / "sim-cli"
+            sim_cli.write_text(
+                "#!/bin/sh\n"
+                "[ \"$1\" = managed-model-provider-fingerprint ] || exit 2\n"
+                "echo 424242\n",
+                encoding="utf-8",
+            )
+            sim_cli.chmod(0o755)
+            env = os.environ.copy()
+            env.pop("SIM_W5_MANAGED_ARTIFACT_FINGERPRINT", None)
+            env["SIM_CLI_BIN"] = str(sim_cli)
+            result = subprocess.run(
+                [
+                    str(self.config_runner),
+                    "--print-env",
+                    "--managed-serving",
+                    str(self.deepseek_config),
+                ],
+                cwd=self.repo,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SIM_W5_MANAGED_SERVING=1\n", result.stdout)
+        self.assertIn(
+            "SIM_W5_MANAGED_ARTIFACT_FINGERPRINT=424242\n", result.stdout
+        )
+        self.assertIn("SIM_W5_MANAGED_CONNECT=tcp:10.0.0.1:9700\n", result.stdout)
+
     def test_cli_rejects_unsupported_cluster_size(self):
         result = self.run_config("--print-env", "--nodes", "5")
         self.assertEqual(result.returncode, 2)

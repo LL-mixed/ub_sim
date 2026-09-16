@@ -7,7 +7,7 @@ source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--managed-serving] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -26,6 +26,7 @@ PRINT_ENV=0
 READINESS_ONLY=0
 VALIDATE_ONLY=0
 SERVE_QUEUE=0
+MANAGED_SERVING_OVERRIDE=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
 NODES_OVERRIDE=""
@@ -57,6 +58,10 @@ while (( $# > 0 )); do
       ;;
     --serve-queue)
       SERVE_QUEUE=1
+      shift
+      ;;
+    --managed-serving)
+      MANAGED_SERVING_OVERRIDE=1
       shift
       ;;
     --serve-requests)
@@ -337,6 +342,18 @@ fi
 if (( DISABLE_MEMORY_REUSE_OVERRIDE )); then
   export SIM_W5_TEST_MEMORY_REUSE_DISABLE=1
 fi
+if (( MANAGED_SERVING_OVERRIDE )); then
+  export SIM_W5_MANAGED_SERVING=1
+  export SIM_LINGQU_SHMEM_PTO_ENABLE=1
+  export SIM_W5_QWEN3_PTO=0
+  export SIM_W5_PTO_UB_GM_PROBE=0
+  export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT=0
+  export SIM_QWEN3_GUEST_ENGRAM=0
+  export SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP=0
+  export SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP=0
+  export SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=0
+  export SIM_W5_TEST_MEMORY_REUSE_DISABLE=1
+fi
 if [[ -n "$REQUESTS_OVERRIDE" ]]; then
   export SIM_W5_SERVING_REQUESTS_FILE="$REQUESTS_OVERRIDE"
 fi
@@ -370,6 +387,30 @@ bool_enabled() {
       return 1
       ;;
   esac
+}
+
+resolve_w5_managed_fingerprint() {
+  local sim_cli fingerprint
+
+  if ! bool_enabled "${SIM_W5_MANAGED_SERVING:-0}"; then
+    return 0
+  fi
+  if [[ -n "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}" &&
+        "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" != "0" ]]; then
+    return 0
+  fi
+  sim_cli="${SIM_CLI_BIN:-$ROOT_DIR/../../target/release/sim-cli}"
+  if [[ ! -x "$sim_cli" ]]; then
+    echo "managed serving requires SIM_CLI_BIN or a built target/release/sim-cli to fingerprint callable 4" >&2
+    return 2
+  fi
+  fingerprint="$(SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" \
+    "$sim_cli" managed-model-provider-fingerprint)" || return 2
+  if [[ ! "$fingerprint" =~ '^[1-9][0-9]*$' ]]; then
+    echo "managed model provider returned an invalid fingerprint: $fingerprint" >&2
+    return 2
+  fi
+  export SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="$fingerprint"
 }
 
 context_guard_requires() {
@@ -448,6 +489,10 @@ print_w5_effective_env() {
   print_env_value SIM_W5_PROGRESS_INTERVAL_SECS "${SIM_W5_PROGRESS_INTERVAL_SECS:-}"
   print_env_value SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE "${SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE:-}"
   print_env_value SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"
+  print_env_value SIM_W5_MANAGED_SERVING "${SIM_W5_MANAGED_SERVING:-0}"
+  print_env_value SIM_W5_MANAGED_ARTIFACT_FINGERPRINT "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
+  print_env_value SIM_W5_MANAGED_CONNECT "${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
+  print_env_value SIM_W5_MANAGED_APERTURE_SIZE "${SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000}"
 
   print_env_section "model"
   print_env_value SIM_UAPI_W4_CHIPBACKEND_PROFILE "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}"
@@ -528,6 +573,24 @@ validate_w5_cluster_config() {
   if [[ ! "$steps" =~ '^[0-9]+$' || "$steps" == "0" ]]; then
     echo "SIM_QWEN3_GUEST_DECODE_STEPS must be a positive integer: $steps" >&2
     return 2
+  fi
+  if bool_enabled "${SIM_W5_MANAGED_SERVING:-0}"; then
+    case "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" in
+      qwen3_dense|deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+        ;;
+      *)
+        echo "managed serving requires qwen3_dense or DeepSeek simpler backend: ${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-unset}" >&2
+        return 2
+        ;;
+    esac
+    if ! bool_enabled "${SIM_LINGQU_SHMEM_PTO_ENABLE:-0}" ||
+       bool_enabled "${SIM_W5_QWEN3_PTO:-0}" ||
+       bool_enabled "${SIM_W5_PTO_UB_GM_PROBE:-0}" ||
+       bool_enabled "${SIM_QWEN3_GUEST_ENGRAM:-0}" ||
+       [[ ! "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}" =~ '^[1-9][0-9]*$' ]]; then
+      echo "managed serving configuration is incomplete or conflicts with a legacy model path" >&2
+      return 2
+    fi
   fi
   if [[ -n "$progress_interval" && ! "$progress_interval" =~ '^[0-9]+$' ]]; then
     echo "SIM_W5_PROGRESS_INTERVAL_SECS must be a non-negative integer: $progress_interval" >&2
@@ -841,6 +904,9 @@ run_post_run_maintenance() {
 }
 
 w5_memory_runtime_needs_bootstrap() {
+  if bool_enabled "${SIM_W5_MANAGED_SERVING:-0}"; then
+    return 1
+  fi
   if bool_enabled "${SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP:-1}"; then
     return 0
   fi
@@ -882,6 +948,12 @@ bootstrap_w5_memory_service_infra() {
     return 2
   fi
 }
+
+resolve_w5_managed_fingerprint_status=0
+resolve_w5_managed_fingerprint || resolve_w5_managed_fingerprint_status=$?
+if (( resolve_w5_managed_fingerprint_status != 0 )); then
+  exit "$resolve_w5_managed_fingerprint_status"
+fi
 
 resolve_w5_memory_reuse_config_status=0
 w5_resolve_memory_reuse_config "$ROOT_DIR/out" "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}" || resolve_w5_memory_reuse_config_status=$?
