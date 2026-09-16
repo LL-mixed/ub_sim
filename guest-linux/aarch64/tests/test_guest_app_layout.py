@@ -1518,19 +1518,9 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "validate_mem_service_object_share_log" in apps_runner
     assert 'MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery"' in apps_runner
     assert 'GSVA_COH_UB_LINK_TX="$GSVA_COH_UB_LINK_TX"' in apps_runner
-    assert "validate_mem_service_holder_recovery_log" in apps_runner
-    assert "--validate-holder-recovery-logs" in apps_runner
-    holder_validator = apps_runner.split(
-        "validate_mem_service_holder_recovery_log() {", 1
-    )[1].split("\nvalidate_gva_direct_log() {", 1)[0]
-    assert 'assert_log_has "$nodea_qemu" "OBMM_COH_FENCE req_id="' in holder_validator
-    assert (
-        'assert_log_has "$nodeb_qemu" "OBMM_COH_FENCE_ACK.*status=0"'
-        in holder_validator
-    )
-    assert apps_runner.index(
-        'if [[ -n "$VALIDATE_HOLDER_RECOVERY_LOG_DIR" ]]'
-    ) < apps_runner.index("for ((i = 1; i <= ITERATIONS; i++))")
+    assert "validate_mem_service_holder_recovery.py" in apps_runner
+    assert '--qemu-a "$nodea_qemu_log" --qemu-b "$nodeb_qemu_log"' in apps_runner
+    assert "managed-holder-recovery-validation.json" in apps_runner
     holder_barrier = run_app.split(
         "mem_service_object_share_holder_barrier() {", 1
     )[1].split("\nmem_service_object_share_holder_recovery() {", 1)[0]

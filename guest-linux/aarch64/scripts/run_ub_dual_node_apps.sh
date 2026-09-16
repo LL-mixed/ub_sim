@@ -114,7 +114,6 @@ MAX_RUNTIME="${MAX_RUNTIME:-300}"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_${RANDOM}}"
 INTERACTIVE_AFTER_PASS=0
 SKIP_GUEST_ARTIFACT_PREPARATION=0
-VALIDATE_HOLDER_RECOVERY_LOG_DIR=""
 MAIN_PID=$$
 
 usage() {
@@ -138,9 +137,6 @@ Options:
   --iterations N     Number of dual-node iterations.
   --max-runtime SECS Global watchdog timeout.
   --report-file PATH Validation report output path.
-  --validate-holder-recovery-logs DIR
-                      Validate an existing holder-recovery iteration directory
-                      without launching QEMU.
   --kernel-image PATH Arm64 guest kernel image.
   --initramfs-image PATH Guest initramfs containing selected apps.
   --interactive-after-pass
@@ -893,15 +889,6 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       REPORT_FILE="$2"
-      shift 2
-      ;;
-    --validate-holder-recovery-logs)
-      if [[ $# -lt 2 ]]; then
-        echo "--validate-holder-recovery-logs requires a value" >&2
-        usage >&2
-        exit 2
-      fi
-      VALIDATE_HOLDER_RECOVERY_LOG_DIR="$2"
       shift 2
       ;;
     --kernel-image)
@@ -2390,78 +2377,6 @@ validate_mem_service_object_share_log() {
         "${node_name} CPU logical-view guard" || return 1
     fi
   fi
-}
-
-validate_mem_service_holder_recovery_log() {
-  local nodea_guest="$1"
-  local nodeb_guest="$2"
-  local nodea_qemu="$3"
-  local nodeb_qemu="$4"
-
-  assert_log_absent "$nodea_guest" "mem_service object-share: status=fail" \
-    "holder recovery home guest failure" || return 1
-  assert_log_absent "$nodeb_guest" "mem_service object-share: status=fail" \
-    "holder recovery replacement guest failure" || return 1
-  assert_log_has "$nodea_guest" \
-    "mem_service recover-allocation: status=ok" \
-    "home recovery accepted after holder receipt" || return 1
-  assert_log_has "$nodea_guest" \
-    "state=retiring" \
-    "home recovery entered retiring" || return 1
-  assert_log_has "$nodea_guest" \
-    "action=wait_state key=holder-recovery-object status=ok state=retired" \
-    "home worker completed physical retirement" || return 1
-  assert_log_has "$nodea_guest" \
-    "mem_service holder-recovery: node=0 status=recovered .*state=retired" \
-    "home recovery result" || return 1
-
-  assert_log_has "$nodeb_guest" \
-    "action=map key=holder-recovery-object status=ok" \
-    "old holder mapping established" || return 1
-  assert_log_has "$nodeb_guest" \
-    "action=publish_data key=holder-recovery-object status=ok" \
-    "old holder payload published" || return 1
-  assert_log_has "$nodeb_guest" \
-    "mem_service provider-register: status=ok" \
-    "replacement provider registered" || return 1
-  assert_log_has "$nodeb_guest" "expired_count=[1-9][0-9]*" \
-    "old provider loss confirmed by lease expiry" || return 1
-  assert_log_has "$nodeb_guest" "replaced=0" \
-    "replacement registered after old provider removal" || return 1
-  assert_log_has "$nodeb_guest" \
-    "obmm-holder-fence: status=fenced key=holder-recovery-object" \
-    "holder fencing receipt" || return 1
-  assert_log_has "$nodeb_guest" \
-    "obmm-holder-fence: status=complete node=guest-node-1 .*allocations=1" \
-    "holder fencing completion" || return 1
-  assert_log_has "$nodeb_guest" \
-    "action=wait_state key=holder-recovery-object status=ok state=retired" \
-    "old mapping process observed retirement" || return 1
-  assert_log_absent "$nodeb_guest" \
-    "action=read key=holder-recovery-object status=ok" \
-    "old CPU mapping unexpectedly remained readable" || return 1
-  assert_log_has "$nodeb_guest" \
-    "mem_service holder-recovery: node=1 status=fenced old_cpu_access=rejected signal_exit=(135|139)" \
-    "old CPU mapping rejected after forced revoke" || return 1
-
-  assert_log_has "$nodeb_qemu" \
-    "GSVA_TLB: flush reason=remote_retire_quarantine" \
-    "holder TLB quarantine" || return 1
-  assert_log_has "$nodeb_qemu" \
-    "GSVA_TLB: flush reason=remote_retire_drained" \
-    "holder TLB drain" || return 1
-  assert_log_has "$nodeb_qemu" "GSVA_UNMAP: .*tombstone=yes" \
-    "holder route tombstone" || return 1
-  assert_log_has "$nodeb_qemu" \
-    "GSVA_RECOVERY: local holder revoked" \
-    "local holder physical revoke" || return 1
-  assert_log_has "$nodea_qemu" "OBMM_COH_FENCE req_id=" \
-    "holder writeback fence request" || return 1
-  assert_log_has "$nodeb_qemu" "OBMM_COH_FENCE_ACK.*status=0" \
-    "holder writeback fence acknowledgement" || return 1
-  assert_log_has "$nodea_qemu" \
-    "GSVA_COH: home retire route finalized" \
-    "home route finalization" || return 1
 }
 
 validate_gva_direct_log() {
@@ -4086,9 +4001,11 @@ run_iteration() {
         --incarnation "$MEM_SERVICE_OBJECT_SHARE_INCARNATION" \
         --output "${nodea_guest_log:h}/managed-reference-validation.json" || return 1
     elif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
-      validate_mem_service_holder_recovery_log \
-        "$nodea_guest_log" "$nodeb_guest_log" \
-        "$nodea_qemu_log" "$nodeb_qemu_log" || return 1
+      python3 "${SCRIPT_DIR}/validate_mem_service_holder_recovery.py" \
+        --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
+        --qemu-a "$nodea_qemu_log" --qemu-b "$nodeb_qemu_log" \
+        --output "${nodea_guest_log:h}/managed-holder-recovery-validation.json" \
+        || return 1
     else
     validate_mem_service_object_share_log \
       "nodeA" "$nodea_guest_log" || return 1
@@ -4159,20 +4076,6 @@ run_iteration() {
     return 29
   fi
 }
-
-if [[ -n "$VALIDATE_HOLDER_RECOVERY_LOG_DIR" ]]; then
-  if [[ ! -d "$VALIDATE_HOLDER_RECOVERY_LOG_DIR" ]]; then
-    echo "holder recovery log directory not found: $VALIDATE_HOLDER_RECOVERY_LOG_DIR" >&2
-    exit 2
-  fi
-  validate_mem_service_holder_recovery_log \
-    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeA_guest.log" \
-    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeB_guest.log" \
-    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeA_qemu.log" \
-    "$VALIDATE_HOLDER_RECOVERY_LOG_DIR/nodeB_qemu.log"
-  echo "holder recovery existing-log validation passed"
-  exit 0
-fi
 
 declare -a ITERATION_RESULTS
 declare -a ITERATION_ERRORS
