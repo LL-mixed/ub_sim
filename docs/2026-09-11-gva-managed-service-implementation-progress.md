@@ -5740,3 +5740,56 @@ holder 物理撤销成功后才提交 receipt、物理失败不提交 receipt，
 holder receipt 完成后才 reclaim。它验证 Linux/AArch64 产品代码与测试替身的调用
 顺序；`/dev/obmm` 仍由 ioctl wrapper 提供，因此不计为真实 QEMU route、VMA、cache、
 TLB 或 PTO 撤销证据。r1 失败与 r2 通过均保留，未运行其他远端回归。
+
+### n4 双 guest r3-r8：跨节点 RETIRE 物理闭环
+
+r3-r6 依次暴露并修复了实际双 guest case 中的 UB Link 模式选择、managed GSVA
+导入、完整 key 身份保持、home 节点重复导入及 home 侧退役驱动问题。对应父仓库
+提交为 `bfdc960`、`1f2b689`、`c56ef04`、`51b54a9` 和 `0eea9b4`；各失败轮次
+保留原日志，没有用单测结果替代实际 guest 证据。
+
+r7 使用父仓库 `0eea9b41a05fb93e639f405b8b50f3d2a0c3b3ec` 和 QEMU
+`0cbc73a5efe9f3f14635623f640c6512ed84da2d`。远端 holder 已经完成写回、排空、
+tombstone 和成功 `RETIRE_ACK`，home 协调状态也进入 `RETIRED`；随后发现两处实际
+缺口：home 收到最后一个精确成功 ACK 后没有执行本地 route finalization，guest 的
+验收代码又尝试以普通 mmap 重新映射 managed GSVA backing。前者会留下 home route，
+后者因缺少 `MAP_GSVA` 被正确拒绝。QEMU `5809bc8a1a` 将 home route finalization
+绑定到最后一个成功 ACK，失败时把协调状态转为 `TIMEOUT`；重复或中间 ACK 不能触发
+清理。guest 改为直接读取已经建立的 home managed mapping，不再构造无效的第二次
+映射。远端目标单测 `test-gsva-retire --verbose` 随后 7/7 通过，其中新增
+`home-finalize-fail-closed`。
+
+r8 锁定以下实际运行组合：
+
+```text
+parent      9abca2cf8184d477e6e355bc19ed24c08ff321d3
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+mem_service 688db48104395db5d71a2ee4f51b39895f3c3ba8
+```
+
+两个 guest 的用例本身均为 1/1 PASS。node B 通过 ARM MMU 写入唯一值
+`0x5a17e4d000000001`；node A 在最终 ACK 后从原 home mapping 读到同一值并报告
+`Retry error=0`。node A 的 QEMU 发出 home fence，node B 返回 `status=0` 的
+`FENCE_ACK`；node B 随后记录 `rx RETIRE local drained`，两端分别产生同 epoch
+`tombstone=yes`，home 端记录 `home retire route finalized`。node B 保留的旧 CPU
+VMA 再访问得到 signal 7、code 3，guest 将其判定为撤销成功。
+
+r8 原 runner 最终退出 1，唯一原因是验收器仍要求旧实现中的字面日志
+`OBMM_COH_WB`。当前物理路径用 home `OBMM_COH_FENCE`、holder 成功
+`OBMM_COH_FENCE_ACK` 和 home 读取精确脏值共同证明同步。父仓库 `9abca2c` 据此
+修正验收条件并增加 `--validate-only`；它在不构建、不清理共享目录、不启动 QEMU 或
+guest 的情况下重新读取同一组 r8 日志并退出 0。没有重跑 guest。2026-09-17 再次
+只读核对的四份日志 SHA-256 为：
+
+```text
+nodeA_guest 16e9b339211e0181a6793d9e780d214e72a37e94e5db03cfe0da3a04d1c13fde
+nodeB_guest b7dc42526ccffd4aefe2a85e28fef08b417716d5edf965b96a931e71a20cc192
+nodeA_qemu  60b0c13cc487cfd9eff243c8655dc1b78b413d4eddfca8d5ebda4715698963ca
+nodeB_qemu  a98aae03ea74c1ace96ec065e4c18ca666d110a863457a5ea3ccca754b130edc
+```
+
+非自匹配进程查询确认目标机当前没有 `qemu-system-aarch64` 遗留。该结果关闭 M3
+中的跨节点 RETIRE 物理排空、脏回写、旧 CPU VMA 失效和 home/holder route 清理
+子项。replacement provider 实际调用 `LOCAL_REVOKE`、提交 fencing receipt、拒绝旧
+PTO 访问、完成 rejoin，以及杀死/重启和重复故障注入矩阵仍未验收。
