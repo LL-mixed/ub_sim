@@ -5665,3 +5665,42 @@ epoch、tombstone 幂等，以及 kernel 事件值和 QEMU dispatch 接线。编
 当前完成的是可产生物理证明的 QEMU 原语。replacement OBMM provider 还没有调用
 该原语并向 Memory Service 提交 `fence-allocation-holder` receipt；PTO 旧访问实际
 拒绝、provider 完整重新加入和 n4 故障注入仍待完成。平台子仓库与父仓库均未推送。
+
+## 2026-09-17：OBMM holder 物理撤销与 receipt 闭环
+
+独立服务提交 `6d3ebe38ec92b01948a874d6be0131091e59d52f` 接通上述平台原语与
+`fence-allocation-holder`。控制面新增 holder-scoped recovery poll；它只枚举仍包含
+精确 `(node_id, fenced_incarnation)` holder 的 QUARANTINED allocation，并要求调用者
+是同节点当前 active replacement incarnation、完整 provider directory 已 ready。
+该 poll 复用现有 wire operation 和字段，不产生 receipt，也不把 replacement 在线
+解释为旧 holder 已排空。
+
+OBMM provider 新增 `fence-holder-state`。命令解析服务保存的严格 GSVA descriptor，
+向本机 `/dev/obmm` 提交 `LOCAL_REVOKE`，要求 QEMU 完成精确 route quarantine、在途
+访问排空、home fence/writeback、cache/TLB 失效、CPU window unmap 和 tombstone。
+物理成功后才使用确定性幂等键提交 fencing receipt。物理失败报告
+`receipt_state=not-submitted`；物理已成功而 receipt RPC 结果不确定时报告
+`receipt_state=unknown-retry-safe`，下一次调用通过 QEMU tombstone 与服务持久 receipt
+收敛。
+
+lost-home 的旧 HOME holder 不经过 remote route 撤销。`recover-allocation-state`
+已经要求 kernel instance 发生变化、两次 inventory 快照稳定、旧 ledger 中的 segment
+均不存在且身份没有复用；当前将该证明用于先提交旧 HOME holder receipt，再执行
+reclaim。其他节点的 remote holder 仍须由对应节点运行 `fence-holder-state`，任一
+holder 或 mapping 未清空时 recovery 保持失败关闭。
+
+本批定向门禁结果：
+
+```text
+provider-backed recovery behavior + worker cross-build: 2 passed, 7.471s
+worker diagnostics + OBMM adapter cross-build: 2 passed, 5.556s
+lost-home HOME holder ordering worker cross-build: 1 passed, 4.688s
+```
+
+macOS 只执行轻量 daemon 行为和 AArch64 `-Werror` 交叉编译，没有启动 QEMU、guest、
+模型或完整回归。golden 要求 remote holder 必须先物理撤销、物理失败不得产生 receipt；
+lost-home reclaim 必须观察到旧 HOME holder receipt。服务提交已只推送用户授权的
+`origin/codex/gva-managed-service-completion`，远端 ref 精确核验为上述 SHA。父仓库
+仅在本地同步 gitlink/lock；kernel、QEMU 与父仓库均未推送。n4 上的原生 ioctl、真实
+旧 CPU/PTO 访问拒绝、provider 重新加入和重复故障注入仍未验收，M3 与总目标继续
+保持进行中。

@@ -96,6 +96,8 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                        "open", "close", "ioctl", "fsync", "mem_service_client_provider_refresh",
                        "mem_service_client_poll_allocation", "mem_service_client_provider_deregister",
                        "mem_service_client_poll_recovery_allocation",
+                       "mem_service_client_poll_holder_recovery_allocation",
+                       "mem_service_client_fence_allocation_holder",
                        "mem_service_client_recover_allocation",
                        "mem_service_client_inspect_allocation"]
             built = subprocess.run(
@@ -115,7 +117,13 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
             self.assertIn("gva_worker_durable_ledger=pass identity=1 corruption=1 torn=1 writer_lock=1",
                           result.stdout)
             self.assertIn(
-                "gva_worker_recovery=pass kernel_replaced=1 service_reclaim=1 archive_retry=1",
+                "gva_worker_recovery=pass kernel_replaced=1 "
+                "home_holder_fenced=1 service_reclaim=1 archive_retry=1",
+                result.stdout,
+            )
+            self.assertIn(
+                "gva_worker_holder_fence=pass physical_first=1 "
+                "failed_physical_receipt=0 exact_identity=1",
                 result.stdout,
             )
             self.assertIn(

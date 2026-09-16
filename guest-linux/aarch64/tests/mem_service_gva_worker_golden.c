@@ -19,6 +19,7 @@ static bool drive_worker_loop;
 static bool drive_worker_recovery;
 static bool drive_worker_resume;
 static bool drive_worker_quarantine;
+static bool drive_worker_holder_fence;
 static enum mem_service_wire_status quarantine_status = MEM_SERVICE_WIRE_STATUS_OK;
 static unsigned provider_deregistrations;
 static bool resume_service_mismatch;
@@ -36,6 +37,9 @@ static struct mem_service_client_allocation polled_work;
 static struct obmm_cmd_gsva_enumerate_v1 kernel_record;
 static unsigned inventory_mode, inventory_calls;
 static unsigned recovery_polls, recovery_reclaims, recovery_inspects;
+static unsigned recovery_home_receipts;
+static unsigned holder_recovery_polls, holder_physical_revokes, holder_receipts;
+static bool holder_physical_fail;
 
 int __real_fsync(int fd);
 int __wrap_fsync(int fd)
@@ -49,7 +53,8 @@ int __real_close(int fd);
 int __wrap_open(const char *path, int flags, ...)
 {
     mode_t create_mode = 0;
-    if ((drive_worker_loop || drive_worker_recovery || drive_worker_resume) &&
+    if ((drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
+         drive_worker_holder_fence) &&
         !strcmp(path, "/dev/obmm")) return 42;
     if (flags & O_CREAT) {
         va_list args;
@@ -62,7 +67,8 @@ int __wrap_open(const char *path, int flags, ...)
 
 int __wrap_close(int fd)
 {
-    return (drive_worker_loop || drive_worker_recovery || drive_worker_resume) && fd == 42
+    return (drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
+            drive_worker_holder_fence) && fd == 42
                ? 0
                : __real_close(fd);
 }
@@ -71,7 +77,8 @@ int __wrap_ioctl(int fd, unsigned long op, ...)
 {
     va_list args;
     void *argument;
-    assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume) && fd == 42);
+    assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
+            drive_worker_holder_fence) && fd == 42);
     va_start(args, op);
     argument = va_arg(args, void *);
     va_end(args);
@@ -99,6 +106,23 @@ int __wrap_ioctl(int fd, unsigned long op, ...)
             inventory_mode == 2 || inventory_mode == 9 ? 2 : 1;
         return 0;
     }
+    if (op == OBMM_CMD_GSVA_EVENT_V1) {
+        struct obmm_cmd_gsva_event_v1 *event = argument;
+
+        assert(drive_worker_holder_fence);
+        assert(event->version == OBMM_GSVA_ABI_VERSION &&
+               event->sub_op == OBMM_GSVA_EVENT_LOCAL_REVOKE &&
+               !event->requester_cna);
+        assert(event->key.segment_id == kernel_record.desc.segment_id &&
+               event->key.home_va == kernel_record.desc.home_va &&
+               event->key.size == kernel_record.desc.size &&
+               event->key.epoch == kernel_record.desc.epoch &&
+               event->token_id == kernel_record.desc.token_id &&
+               event->token_value == kernel_record.desc.token_value);
+        holder_physical_revokes++;
+        event->error = holder_physical_fail ? GSVA_ERR_COH_PENDING : GSVA_OK;
+        return 0;
+    }
     assert(op == OBMM_CMD_GSVA_APERTURE_QUERY);
     *(struct obmm_cmd_gsva_aperture *)argument = (struct obmm_cmd_gsva_aperture){.base = 0x700000000000ULL,
         .size = 0x1000000, .node_count = 2, .flags = OBMM_GSVA_APERTURE_F_ACTIVE};
@@ -110,10 +134,13 @@ int __wrap_mem_service_client_provider_refresh(const struct mem_service_client *
     struct mem_service_client_provider_directory *directory, enum mem_service_wire_status *status)
 {
     (void)client;
-    assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume) &&
+    assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
+            drive_worker_holder_fence) &&
            !strcmp(node, "nodeA"));
-    assert(incarnation == (drive_worker_recovery ? 8 : 7));
-    assert(readiness_generation == (drive_worker_recovery ? 2 : 1));
+    assert(incarnation ==
+           ((drive_worker_recovery || drive_worker_holder_fence) ? 8 : 7));
+    assert(readiness_generation ==
+           ((drive_worker_recovery || drive_worker_holder_fence) ? 2 : 1));
     memset(directory, 0, sizeof(*directory));
     /* The real refresh reply omits data_plane_ready; it stays false. */
     directory->directory_ready = true;
@@ -163,12 +190,101 @@ int __wrap_mem_service_client_poll_recovery_allocation(
         work->generation = 99;
         work->size_bytes = 17;
         work->capabilities = 1;
+        work->holder_count = 1;
+        strcpy(work->holders[0].session_id, "home-session");
+        strcpy(work->holders[0].node_id, "nodeA");
+        work->holders[0].generation = work->generation;
+        work->holders[0].provider_incarnation = 7;
         assert(after_generation == 0);
         *status = MEM_SERVICE_WIRE_STATUS_OK;
         return 0;
     }
     assert(after_generation == (recovery_polls ? 99 : 0));
     *status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+    return 0;
+}
+
+int __wrap_mem_service_client_poll_holder_recovery_allocation(
+    const struct mem_service_client *client, const char *node,
+    uint64_t current_incarnation, uint64_t fenced_incarnation,
+    uint64_t after_generation, struct mem_service_client_allocation *work,
+    enum mem_service_wire_status *status)
+{
+    struct obmm_cmd_export exported = {0};
+    struct mem_service_provider_descriptor descriptor;
+
+    (void)client;
+    assert(drive_worker_holder_fence && !strcmp(node, "nodeA") &&
+           current_incarnation == 8 && fenced_incarnation == 7);
+    if (holder_receipts || holder_recovery_polls++) {
+        assert(after_generation == 99);
+        *status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+        return 0;
+    }
+    assert(!after_generation);
+    exported.length = 1;
+    exported.size[0] = kernel_record.desc.size;
+    exported.flags = OBMM_EXPORT_FLAG_GSVA_FIXED_UBA |
+                     OBMM_EXPORT_FLAG_ALLOW_MMAP;
+    exported.uba = kernel_record.desc.home_va;
+    exported.mem_id = kernel_record.export_mem_id;
+    exported.tokenid = kernel_record.export_token_id;
+    assert(!mem_service_provider_obmm_encode_gsva(
+        &kernel_record.desc, &exported, &descriptor));
+    memset(work, 0, sizeof(*work));
+    strcpy(work->key, "remote-object");
+    strcpy(work->state, "quarantined");
+    strcpy(work->home_node, "nodeB");
+    work->provider_incarnation = 3;
+    work->generation = 99;
+    work->size_bytes = kernel_record.desc.size;
+    work->capabilities = MEM_SERVICE_MANAGED_CAP_MAP;
+    work->provider_backed = true;
+    work->address = kernel_record.desc.home_va;
+    work->address_len = kernel_record.desc.size;
+    work->descriptor_len = descriptor.len;
+    memcpy(work->descriptor, descriptor.bytes, descriptor.len);
+    work->holder_count = 1;
+    strcpy(work->holders[0].session_id, "remote-session");
+    strcpy(work->holders[0].node_id, "nodeA");
+    work->holders[0].generation = work->generation;
+    work->holders[0].provider_incarnation = 7;
+    *status = MEM_SERVICE_WIRE_STATUS_OK;
+    return 0;
+}
+
+int __wrap_mem_service_client_fence_allocation_holder(
+    const struct mem_service_client *client, const char *key,
+    const char *holder_node_id, uint64_t current_incarnation,
+    uint64_t generation, uint64_t fenced_incarnation,
+    const char *idempotency_key,
+    struct mem_service_client_allocation *out,
+    enum mem_service_wire_status *status)
+{
+    (void)client;
+    if (drive_worker_holder_fence) {
+        assert(holder_physical_revokes && !holder_physical_fail &&
+               !strcmp(key, "remote-object") &&
+               !strcmp(holder_node_id, "nodeA") &&
+               current_incarnation == 8 && generation == 99 &&
+               fenced_incarnation == 7 &&
+               !strcmp(idempotency_key,
+                       "obmm-holder-fence-0000000000000007-0000000000000063"));
+        holder_receipts++;
+    } else {
+        assert(drive_worker_recovery && !strcmp(key, "object") &&
+               !strcmp(holder_node_id, "nodeA") &&
+               current_incarnation == 8 && generation == 99 &&
+               fenced_incarnation == 7 &&
+               !strcmp(idempotency_key,
+                       "obmm-home-absence-0000000000000007-0000000000000063"));
+        recovery_home_receipts++;
+    }
+    memset(out, 0, sizeof(*out));
+    strcpy(out->key, key);
+    strcpy(out->state, "quarantined");
+    out->generation = generation;
+    *status = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
 }
 
@@ -182,7 +298,8 @@ int __wrap_mem_service_client_recover_allocation(
     (void)client;
     assert(drive_worker_recovery && !strcmp(key, "object") &&
            !strcmp(node, "nodeA") && current_incarnation == 8 &&
-           generation == 99 && fenced_incarnation == 7 && backing_gone);
+           generation == 99 && fenced_incarnation == 7 && backing_gone &&
+           recovery_home_receipts == 1);
     recovery_reclaims++;
     memset(out, 0, sizeof(*out));
     strcpy(out->key, key);
@@ -1020,6 +1137,20 @@ int main(void)
                 "readiness_generation=2\nallocation_granularity_bytes=2097152\n"
                 "state_file=%s\n", state_path);
         assert(!fclose(file));
+        drive_worker_holder_fence = true;
+        holder_recovery_polls = holder_physical_revokes = holder_receipts = 0;
+        holder_physical_fail = true;
+        assert(mem_service_provider_obmm_fence_holder_state(
+                   config_path, replacement_path) == 1);
+        assert(holder_physical_revokes == 1 && !holder_receipts);
+        holder_recovery_polls = 0;
+        holder_physical_fail = false;
+        assert(!mem_service_provider_obmm_fence_holder_state(
+            config_path, replacement_path));
+        assert(holder_physical_revokes == 2 && holder_receipts == 1);
+        drive_worker_holder_fence = false;
+        puts("gva_worker_holder_fence=pass physical_first=1 "
+             "failed_physical_receipt=0 exact_identity=1");
         drive_worker_recovery = true;
         inventory_mode = 3;
         assert(mem_service_provider_obmm_recover_allocation_state(
@@ -1027,17 +1158,20 @@ int main(void)
         assert(!access(state_path, F_OK) && access(archive_path, F_OK) < 0);
         inventory_mode = 9;
         recovery_polls = recovery_reclaims = recovery_inspects = 0;
+        recovery_home_receipts = 0;
         assert(!mem_service_provider_obmm_recover_allocation_state(
             config_path, replacement_path));
         assert(access(state_path, F_OK) < 0 && !access(archive_path, F_OK));
-        assert(recovery_reclaims == 1 && !recovery_inspects);
+        assert(recovery_reclaims == 1 && !recovery_inspects &&
+               recovery_home_receipts == 1);
         recovery_polls = 0;
         assert(!mem_service_provider_obmm_recover_allocation_state(
             config_path, replacement_path));
         assert(recovery_reclaims == 1 && recovery_inspects == 1);
         drive_worker_recovery = false;
         inventory_mode = 0;
-        puts("gva_worker_recovery=pass kernel_replaced=1 service_reclaim=1 archive_retry=1");
+        puts("gva_worker_recovery=pass kernel_replaced=1 "
+             "home_holder_fenced=1 service_reclaim=1 archive_retry=1");
         assert(!unlink(archive_path) && !unlink(replacement_path) &&
                !unlink(config_path) && !rmdir(directory));
     }

@@ -527,6 +527,18 @@ window 解除映射并保留精确 tombstone，最后才把 coherence 对象置�
 或模型。该原语尚未接入 replacement provider 的恢复命令，因此 receipt 自动提交、
 PTO 实际拒绝、完整重新加入和 n4 故障注入仍未完成。
 
+同日 M3 provider 撤销闭环续作：独立服务 `6d3ebe3` 增加 holder-scoped recovery
+poll 和 `fence-holder-state`。replacement provider 按精确旧 holder identity 获取
+QUARANTINED descriptor，先通过 `/dev/obmm` 调用 `LOCAL_REVOKE`；只有 QEMU 返回
+完整物理排空成功后才提交 holder fencing receipt，失败路径保持
+`receipt_state=not-submitted`，RPC 不确定路径显式标记可幂等重试。lost-home HOME
+holder 使用“kernel instance 已替换、两次稳定 inventory 不含旧 segment 且没有身份
+复用”的证明先提交独立 receipt，再执行 reclaim；其他节点 remote holder 仍须各自
+排空。相关 daemon 行为、provider adapter 和 worker 构建定向门禁通过；提交已只
+推送授权的 mem_service 分支并核验远端完整 SHA。kernel/QEMU 仍未推送。该批完成
+生产调用链实现，n4 原生 ioctl、旧 CPU/PTO 拒绝、重新加入和重复故障矩阵仍待实际
+目标验收。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1312,8 +1324,8 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 4ba90ac；callable 4 主循环、请求级退役及精确 holder 身份已完成构建/契约门禁，r608 实际 guest 证明 object-session holder 身份可驱动 lost-home recovery | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序；双 guest case 已要求实际脏回写和旧 CPU VMA 故障；4ba90ac 要求持久化的精确 holder fencing receipt，禁止凭 incarnation 变化清空 holder/mapping | 实际杀死/重启注入矩阵、裸 reserve-intent/torn 隔离实际证据、跨节点物理排空的 n4 运行证据、PTO 拒绝、强制撤销生产者、完整重新加入及重复故障矩阵仍未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 6d3ebe3；callable 4 主循环、请求级退役及精确 holder 身份已完成构建/契约门禁，r608 实际 guest 证明 object-session holder 身份可驱动 lost-home recovery | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序；双 guest case 已要求实际脏回写和旧 CPU VMA 故障；4ba90ac 要求持久化的精确 holder fencing receipt；dd07fe43c50d/854a8d8449/6d3ebe3 接通本地强制撤销、holder-scoped 枚举、物理优先 receipt 和 lost-home HOME holder 消失证明 | 实际杀死/重启注入矩阵、裸 reserve-intent/torn 隔离实际证据、跨节点物理排空与强制撤销的 n4 运行证据、PTO 拒绝、完整重新加入及重复故障矩阵仍未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
