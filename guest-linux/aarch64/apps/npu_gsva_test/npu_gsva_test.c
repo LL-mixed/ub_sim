@@ -18,7 +18,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#include "../../../kernel_ub/include/uapi/ub/ub_npu.h"
+#include <ub/ub_npu.h>
 
 #define TAG "[npu_gsva_test]"
 

@@ -17,7 +17,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "../../../kernel_ub/include/uapi/ub/ub_ssd.h"
+#include <ub/ub_ssd.h>
 
 #define TAG "[ssd_gsva_test]"
 

@@ -3833,10 +3833,16 @@ def test_shared_obmm_helpers_use_app_language():
 
 def test_shared_obmm_helpers_use_one_exported_uapi_identity():
     common = (ROOT / "common" / "obmm_common.h").read_text()
+    npu = (ROOT / "apps" / "npu_gsva_test" / "npu_gsva_test.c").read_text()
+    ssd = (ROOT / "apps" / "ssd_gsva_test" / "ssd_gsva_test.c").read_text()
 
     assert "#include <ub/obmm.h>" in common
     assert "#include <ub/gsva.h>" in common
     assert "kernel_ub/include/uapi" not in common
+    assert "#include <ub/ub_npu.h>" in npu
+    assert "kernel_ub/include/uapi" not in npu
+    assert "#include <ub/ub_ssd.h>" in ssd
+    assert "kernel_ub/include/uapi" not in ssd
 
 
 class GuestToolchainContractTests(unittest.TestCase):
