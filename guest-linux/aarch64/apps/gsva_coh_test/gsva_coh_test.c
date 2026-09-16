@@ -31,6 +31,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -43,6 +45,12 @@
 static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
+
+static sigjmp_buf revoked_cpu_probe_jump;
+static volatile sig_atomic_t revoked_cpu_probe_armed;
+static volatile sig_atomic_t revoked_cpu_probe_signal;
+static volatile sig_atomic_t revoked_cpu_probe_code;
+static volatile uintptr_t revoked_cpu_probe_address;
 
 #define TEST(name) do { \
     tests_run++; \
@@ -97,6 +105,78 @@ static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
                            uint32_t token_id, uint32_t token_value,
                            uint64_t segment_id, uint64_t home_va,
                            uint64_t size, int32_t *error_out);
+
+static void revoked_cpu_probe_handler(int signal, siginfo_t *info, void *context)
+{
+    uintptr_t fault_address = info ? (uintptr_t)info->si_addr : 0;
+
+    (void)context;
+    if (revoked_cpu_probe_armed && info && info->si_code > 0 &&
+        fault_address >= revoked_cpu_probe_address &&
+        fault_address < revoked_cpu_probe_address + sizeof(uint64_t)) {
+        revoked_cpu_probe_signal = signal;
+        revoked_cpu_probe_code = info->si_code;
+        siglongjmp(revoked_cpu_probe_jump, 1);
+    }
+    _exit(128 + signal);
+}
+
+static int gsva_probe_revoked_cpu_read(volatile uint64_t *address,
+                                       int *signal_out, int *code_out)
+{
+    struct sigaction action = {0};
+    struct sigaction old_bus;
+    struct sigaction old_segv;
+    volatile sig_atomic_t observed = 0;
+    int restore_error = 0;
+
+    if (!address || !signal_out || !code_out || revoked_cpu_probe_armed)
+        return -EINVAL;
+
+    action.sa_sigaction = revoked_cpu_probe_handler;
+    action.sa_flags = SA_SIGINFO;
+    sigfillset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, &old_segv))
+        return -errno;
+    if (sigaction(SIGBUS, &action, &old_bus)) {
+        int saved = errno;
+
+        (void)sigaction(SIGSEGV, &old_segv, NULL);
+        return -saved;
+    }
+
+    revoked_cpu_probe_address = (uintptr_t)address;
+    revoked_cpu_probe_signal = 0;
+    revoked_cpu_probe_code = 0;
+    if (!sigsetjmp(revoked_cpu_probe_jump, 1)) {
+        volatile uint64_t value;
+
+        alarm(3);
+        revoked_cpu_probe_armed = 1;
+        value = *address;
+        revoked_cpu_probe_armed = 0;
+        alarm(0);
+        (void)value;
+    } else {
+        revoked_cpu_probe_armed = 0;
+        alarm(0);
+        observed = 1;
+    }
+
+    if (sigaction(SIGBUS, &old_bus, NULL))
+        restore_error = -errno;
+    if (sigaction(SIGSEGV, &old_segv, NULL))
+        restore_error = -errno;
+    if (restore_error)
+        return restore_error;
+    if (!observed || (revoked_cpu_probe_signal != SIGBUS &&
+                      revoked_cpu_probe_signal != SIGSEGV))
+        return -EPROTO;
+
+    *signal_out = revoked_cpu_probe_signal;
+    *code_out = revoked_cpu_probe_code;
+    return 0;
+}
 
 /* ---- Test: cross_node_write_read ---- */
 static void test_cross_node_write_read(int obmm_fd, uint32_t local_cna,
@@ -2052,15 +2132,22 @@ static void test_coh_remote_fence(int obmm_fd, uint32_t local_cna,
 static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                                    int node_idx, int node_count)
 {
-    TEST("GSVA coherence sends remote retire over UB Link");
+    const uint64_t metadata_generation = 0x475356410608ULL;
+    const uint64_t ready_generation = 0x475356410618ULL;
+    const uint64_t done_generation = 0x475356410628ULL;
+    const uint64_t dirty_value = 0x5a17e4d000000001ULL;
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool got[OBMM_POOL_HELPERS_MAX_NODES] = {false};
-    uint64_t my_base = GSVA_BASE + 0x7000000ULL;
+    uint64_t home_base = GSVA_BASE + 0x7000000ULL;
+    uint64_t export_base = node_idx == 0 ?
+        home_base : GSVA_BASE + (uint64_t)node_idx * GSVA_SIZE;
     struct obmm_helpers_meta my_meta = {0};
+    struct obmm_helpers_meta home_meta = {0};
     uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     uint64_t import_mem_id = 0;
     struct obmm_helpers_region import_region = { .fd = -1 };
+    struct obmm_helpers_region home_region = { .fd = -1 };
     int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
     uint32_t peer_cna = 0;
     uint64_t segment_id = 0;
@@ -2069,6 +2156,7 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     bool retire_already_complete = false;
     int rc;
 
+    TEST("GSVA remote retire drains a physical holder before ACK");
     if (node_count < 2) {
         FAIL("remote retire requires at least two nodes");
         return;
@@ -2076,88 +2164,99 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
 
     my_meta.export_cna = local_cna;
     rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE,
-                                  my_base + (uint64_t)node_idx * GSVA_SIZE);
+                                  export_base);
     CHECK(rc == 0, "fixed UBA export should succeed");
 
     rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
-                                0x475356410608ULL, &my_meta);
+                                metadata_generation, &my_meta);
     CHECK(rc == 0, "bootstrap publish should succeed");
 
-    if (node_idx != 0) {
-        for (int attempt = 0; attempt < 40; attempt++) {
-            struct obmm_cmd_gsva_query_v1 query = {0};
-
-            query.version = OBMM_GSVA_ABI_VERSION;
-            query.query_type = GSVA_QUERY_CAPS;
-            (void)ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
-            usleep(100000);
-        }
-        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
-        PASS();
-        return;
-    }
-
     rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
-                               0x475356410608ULL, metas, got);
+                               metadata_generation, metas, got);
     CHECK(rc == 0, "bootstrap lookup should succeed");
+    CHECK(got[0], "home metadata should be available");
     CHECK(got[1], "peer metadata should be available");
+    home_meta = metas[0];
     peer_cna = metas[1].export_cna;
-    CHECK(peer_cna != 0 && peer_cna != local_cna,
-          "peer CNA should be a real remote CNA");
+    CHECK(peer_cna != 0 && peer_cna != home_meta.export_cna,
+          "peer CNA should differ from home CNA");
 
-    segment_id = my_meta.export_mem_id;
-    token_id = my_meta.token_id;
-    if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
-                               OBMM_IMPORT_CACHE_AUTO)) {
-        obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
-        FAIL("failed to allocate import PA");
-        return;
+    segment_id = home_meta.export_mem_id;
+    token_id = home_meta.token_id;
+    if (node_idx <= 1) {
+        if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
+                                   OBMM_IMPORT_CACHE_AUTO)) {
+            obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+            FAIL("failed to allocate import PA");
+            return;
+        }
+
+        rc = obmm_do_import_v2(obmm_fd, &home_meta, local_cna,
+                               import_pas[0], token_id,
+                               OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+                               OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+                               OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+                               0, 0, 0, 0, 0, segment_id,
+                               home_base, home_base, 0,
+                               &import_mem_id);
+        CHECK(rc == 0, "GSVA identity import should succeed");
+
+        rc = obmm_map_gsva_region_at(import_mem_id,
+                                     (void *)(uintptr_t)home_base,
+                                     GSVA_SIZE, import_osync[0],
+                                     &import_region);
+        CHECK(rc == 0, "GSVA mmap should succeed");
     }
 
-    rc = obmm_do_import_v2(obmm_fd, &my_meta, local_cna,
-                           import_pas[0], token_id,
-                           OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
-                           OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
-                           OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
-                           0, 0, 0, 0, 0, segment_id,
-                           my_base, my_base, 0,
-                           &import_mem_id);
-    CHECK(rc == 0, "GSVA identity import should succeed");
-
-    rc = obmm_map_gsva_region_at(import_mem_id, (void *)(uintptr_t)my_base,
-                                 GSVA_SIZE, import_osync[0],
-                                 &import_region);
-    CHECK(rc == 0, "GSVA mmap should succeed");
-    {
-        volatile uint64_t *probe =
-            (volatile uint64_t *)(uintptr_t)import_region.addr;
+    if (node_idx == 0) {
+        volatile uint64_t *probe = import_region.addr;
         uint64_t value = *probe;
 
         __sync_synchronize();
         printf("%s   coh_remote_retire ARM MMU touch va=%#" PRIx64
-               " value=%#" PRIx64 "\n", TAG, my_base, value);
+               " value=%#" PRIx64 "\n", TAG, home_base, value);
+        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                             local_cna, token_id, token_id, segment_id,
+                             home_base, GSVA_SIZE, &ev_error);
+        CHECK(rc == 0, "local ReadAcquire should reach QEMU");
+        CHECK(ev_error == GSVA_OK, "local ReadAcquire should pass");
+    } else if (node_idx == 1) {
+        volatile uint64_t *probe = import_region.addr;
+
+        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE,
+                             local_cna, token_id, token_id, segment_id,
+                             home_base, GSVA_SIZE, &ev_error);
+        CHECK(rc == 0, "holder WriteAcquire should reach QEMU");
+        CHECK(ev_error == GSVA_OK, "holder WriteAcquire should pass");
+        *probe = dirty_value;
+        __sync_synchronize();
+        printf("%s   coh_remote_retire dirty_write va=%#" PRIx64
+               " value=%#" PRIx64 "\n", TAG, home_base, dirty_value);
     }
 
-    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
-                         token_id, token_id, segment_id, my_base,
-                         GSVA_SIZE, &ev_error);
-    CHECK(rc == 0, "local ReadAcquire should reach QEMU");
-    CHECK(ev_error == GSVA_OK, "local ReadAcquire should pass");
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                ready_generation, &my_meta);
+    CHECK(rc == 0, "retire ready publish should succeed");
+    memset(metas, 0, sizeof(metas));
+    memset(got, 0, sizeof(got));
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               ready_generation, metas, got);
+    CHECK(rc == 0, "retire ready barrier should complete");
 
-    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, peer_cna,
-                         token_id, token_id, segment_id, my_base,
-                         GSVA_SIZE, &ev_error);
-    CHECK(rc == 0, "remote ReadAcquire should reach QEMU");
-    CHECK(ev_error == GSVA_OK, "remote ReadAcquire should pass");
+    if (node_idx == 0) {
+        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, peer_cna,
+                             token_id, token_id, segment_id, home_base,
+                             GSVA_SIZE, &ev_error);
+        CHECK(rc == 0, "remote holder ReadAcquire should reach QEMU");
+        CHECK(ev_error == GSVA_OK, "remote holder should enter sharer set");
 
-    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
-                         token_id, token_id, segment_id, my_base,
-                         GSVA_SIZE, &ev_error);
-    CHECK(rc == 0, "Retire should reach QEMU");
-    CHECK(ev_error == GSVA_ERR_COH_PENDING,
-          "retire should wait for remote RetireAck");
+        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
+                             token_id, token_id, segment_id, home_base,
+                             GSVA_SIZE, &ev_error);
+        CHECK(rc == 0, "Retire should reach QEMU");
+        CHECK(ev_error == GSVA_ERR_COH_PENDING || ev_error == GSVA_OK,
+              "retire should wait for or consume remote RetireAck");
 
-    {
         struct obmm_cmd_gsva_query_v1 query = {0};
         struct {
             uint32_t version;
@@ -2168,7 +2267,7 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         query.version = OBMM_GSVA_ABI_VERSION;
         query.query_type = GSVA_QUERY_COHERENCE;
         query.segment_id = segment_id;
-        query.home_va = my_base;
+        query.home_va = home_base;
         rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &query);
         CHECK(rc == 0, "coherence query should reach QEMU");
         if (query_resp->error == GSVA_OK) {
@@ -2185,33 +2284,84 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
             FAIL("coherence query should report pending or retired state");
             return;
         }
-    }
 
-    if (retire_already_complete) {
-        ev_error = GSVA_OK;
-    } else {
-        for (int attempt = 0; attempt < 30; attempt++) {
-            rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETRY, local_cna,
-                                 (uint32_t)pending_seq, 0, segment_id, my_base,
-                                 GSVA_SIZE, &ev_error);
-            CHECK(rc == 0, "Retry should reach QEMU");
-            if (ev_error == GSVA_OK)
+        if (retire_already_complete) {
+            ev_error = GSVA_OK;
+        } else {
+            for (int attempt = 0; attempt < 50; attempt++) {
+                rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETRY,
+                                     local_cna, (uint32_t)pending_seq, 0,
+                                     segment_id, home_base, GSVA_SIZE,
+                                     &ev_error);
+                CHECK(rc == 0, "Retry should reach QEMU");
+                if (ev_error == GSVA_OK)
+                    break;
+                usleep(100000);
+            }
+        }
+        printf("%s   coh_remote_retire Retry error=%d\n", TAG, ev_error);
+        CHECK(ev_error == GSVA_OK,
+              "remote RETIRE_ACK should complete pending op");
+
+        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                             local_cna, token_id, token_id, segment_id,
+                             home_base, GSVA_SIZE, &ev_error);
+        CHECK(rc == 0,
+              "ReadAcquire after remote retire should reach QEMU");
+        CHECK(ev_error == GSVA_ERR_SEGMENT_RETIRED,
+              "ReadAcquire after remote retire should be retired");
+
+        rc = obmm_map_region(my_meta.export_mem_id, GSVA_SIZE, false,
+                             &home_region);
+        CHECK(rc == 0, "home backing mmap should succeed");
+        CHECK(*(volatile uint64_t *)home_region.addr == dirty_value,
+              "retire ACK must follow dirty holder writeback");
+        printf("%s   coh_remote_retire writeback_verified value=%#" PRIx64
+               "\n", TAG, *(volatile uint64_t *)home_region.addr);
+        obmm_unmap_region(&home_region);
+    } else if (node_idx == 1) {
+        bool retired = false;
+        int fault_signal = 0;
+        int fault_code = 0;
+
+        for (int attempt = 0; attempt < 70; attempt++) {
+            rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                 local_cna, token_id, token_id, segment_id,
+                                 home_base, GSVA_SIZE, &ev_error);
+            CHECK(rc == 0, "holder retire poll should reach QEMU");
+            if (ev_error == GSVA_ERR_SEGMENT_RETIRED) {
+                retired = true;
                 break;
+            }
+            CHECK(ev_error == GSVA_OK ||
+                  ev_error == GSVA_ERR_ROUTE_MISSING ||
+                  ev_error == GSVA_ERR_COH_PENDING,
+                  "holder retire poll returned unexpected state");
             usleep(100000);
         }
+        CHECK(retired, "holder route should reach retired tombstone");
+        printf("%s   coh_remote_retire holder_retired error=%d\n",
+               TAG, ev_error);
+        rc = gsva_probe_revoked_cpu_read(import_region.addr,
+                                         &fault_signal, &fault_code);
+        CHECK(rc == 0, "retired holder CPU mapping should fault");
+        printf("%s   coh_remote_retire revoked_cpu signal=%d code=%d\n",
+               TAG, fault_signal, fault_code);
     }
-    printf("%s   coh_remote_retire Retry error=%d\n", TAG, ev_error);
-    CHECK(ev_error == GSVA_OK, "remote RETIRE_ACK should complete pending op");
 
-    rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
-                         token_id, token_id, segment_id, my_base,
-                         GSVA_SIZE, &ev_error);
-    CHECK(rc == 0, "ReadAcquire after remote retire should reach QEMU");
-    CHECK(ev_error == GSVA_ERR_SEGMENT_RETIRED,
-          "ReadAcquire after remote retire should be rejected as retired");
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                done_generation, &my_meta);
+    CHECK(rc == 0, "retire done publish should succeed");
+    memset(metas, 0, sizeof(metas));
+    memset(got, 0, sizeof(got));
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               done_generation, metas, got);
+    CHECK(rc == 0, "retire done barrier should complete");
 
-    obmm_unmap_region(&import_region);
-    obmm_do_unimport(obmm_fd, import_mem_id);
+    if (node_idx <= 1) {
+        obmm_unmap_region(&import_region);
+        obmm_do_unimport(obmm_fd, import_mem_id);
+    }
     obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
     PASS();
 }

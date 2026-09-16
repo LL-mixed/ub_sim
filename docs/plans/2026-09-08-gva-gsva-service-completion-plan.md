@@ -496,6 +496,14 @@ AArch64 binary 以 `-Werror` 交叉编译成功；提交已只推送授权服务
 CPU/PTO 访问拒绝和协调端精确回执闭环；实际强制撤销、重新加入和重复故障矩阵继续
 保持未完成。
 
+同日将旧 `coh_remote_retire` 从伪造远端 CNA 的消息往返测试改成真实双 guest
+验收入口。node B 导入 node A 的严格 GSVA、写入脏值并保留 CPU VMA；独立 barrier
+后 node A 发起 RETIRE。成功判据同时要求 node B writeback/fence、两次 TLB flush、
+CPU window unmap 和 tombstone，node A 在 ACK 后从 home backing 读到脏值，node B
+旧 VMA 读取触发 `SIGBUS/SIGSEGV`。AArch64 `-Werror` 构建、runner 语法和两个定向
+契约测试通过；没有本地 QEMU 运行。该入口留到最终 n4 验收执行，当前不构成实际
+跨节点物理排空证据，PTO 拒绝和强制撤销仍待补齐。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1282,7 +1290,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
 | M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 3e21a04；callable 4 主循环、请求级退役及精确 holder 身份已完成构建/契约门禁，r608 实际 guest 证明 object-session holder 身份可驱动 lost-home recovery | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序 | 实际杀死/重启注入矩阵、裸 reserve-intent/torn 隔离实际证据、跨节点物理排空的 n4 运行证据、强制撤销、完整重新加入及重复故障矩阵仍未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序；双 guest case 已要求实际脏回写和旧 CPU VMA 故障 | 实际杀死/重启注入矩阵、裸 reserve-intent/torn 隔离实际证据、跨节点物理排空的 n4 运行证据、PTO 拒绝、强制撤销、完整重新加入及重复故障矩阵仍未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

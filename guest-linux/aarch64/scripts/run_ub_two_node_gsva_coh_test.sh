@@ -390,6 +390,27 @@ validate_coh_logs() {
       echo "[gsva_coh] FAIL: remote retire test lacks peer rx RETIRE evidence" >&2
       return 1
     fi
+    if ! grep -q 'GSVA_COH: rx RETIRE local drained' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: peer did not drain its physical RETIRE route" >&2
+      return 1
+    fi
+    if grep -q 'GSVA_COH: rx RETIRE retained quarantine' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: peer RETIRE remained quarantined" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_TLB: flush reason=remote_retire_quarantine' "$NODEB_QEMU_LOG" ||
+       ! grep -q 'GSVA_TLB: flush reason=remote_retire_drained' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: peer lacks RETIRE TLB flush evidence" >&2
+      return 1
+    fi
+    if ! grep -q 'OBMM_COH_WB' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: peer lacks dirty writeback evidence" >&2
+      return 1
+    fi
+    if ! grep -Eq 'GSVA_UNMAP: .*tombstone=yes' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: peer lacks retired route tombstone" >&2
+      return 1
+    fi
     if ! grep -q 'GSVA_COH: rx RETIRE_ACK applied' "$NODEA_QEMU_LOG"; then
       echo "[gsva_coh] FAIL: remote retire test lacks coordinator rx RETIRE_ACK apply evidence" >&2
       return 1
@@ -402,9 +423,23 @@ validate_coh_logs() {
       echo "[gsva_coh] FAIL: guest did not observe remote RETIRE_ACK recovery" >&2
       return 1
     fi
+    if ! grep -q 'coh_remote_retire writeback_verified value=0x5a17e4d000000001' "$NODEA_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: home did not verify holder dirty writeback" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_retire dirty_write' "$NODEB_GUEST_LOG" ||
+       ! grep -q 'coh_remote_retire holder_retired error=-9' "$NODEB_GUEST_LOG" ||
+       ! grep -q 'coh_remote_retire revoked_cpu signal=' "$NODEB_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: holder lacks dirty/retired/revoked CPU evidence" >&2
+      return 1
+    fi
     if [[ "$GSVA_MODE" == "arm_mmu" ]]; then
       if ! grep -q 'GSVA_TLB: lookup' "$NODEA_QEMU_LOG"; then
         echo "[gsva_coh] FAIL: ARM MMU remote retire lacks GSVA_TLB lookup evidence" >&2
+        return 1
+      fi
+      if ! grep -q 'GSVA_TLB: lookup' "$NODEB_QEMU_LOG"; then
+        echo "[gsva_coh] FAIL: holder lacks ARM MMU access evidence" >&2
         return 1
       fi
       if grep -q 'GVA_TCG_TRANSLATE' "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG"; then

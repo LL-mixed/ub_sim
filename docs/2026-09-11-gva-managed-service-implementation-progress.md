@@ -5569,3 +5569,35 @@ envelope、tombstone 幂等和严格 I/O 阻塞。该运行没有构建或启动
 实际构建执行。真实双 guest 的 dirty writeback、TLB 撤销、旧 CPU/PTO 访问拒绝和
 协调端成功收齐精确回执仍缺实际运行证据；强制撤销、重新加入和重复故障矩阵继续
 保持未完成，M3 与总目标仍为进行中。QEMU 子仓库与父仓库均未推送。
+
+## 2026-09-17：远端 RETIRE 双 guest 物理验收入口
+
+既有 `coh_remote_retire` 只在 node A 的 coherence 状态机中登记 node B 的 CNA；
+node B 没有同 key route、CPU VMA 或脏缓存。它只能验证消息往返，无法证明接收端
+排空。当前 case 改为真实双 guest 生命周期：node A 导出并建立 home route，node B
+导入同一严格 GSVA、取得本地写权限并通过 ARM MMU 写入唯一脏值；两端以独立
+bootstrap generation 完成 ready/done barrier。node A 只有在精确 `RETIRE_ACK`
+完成后才直接读取 home backing，并要求脏值已经回写。node B 等待同 epoch
+tombstone 后，在保留原 VMA 的进程内执行受信号保护的 CPU 读取，要求得到
+`SIGBUS` 或 `SIGSEGV`；探针设置 3 秒硬退出，避免异常访问无限阻塞。
+
+两节点 runner 现要求 node B 的 quarantine/drained 两次 TLB flush、OBMM dirty
+writeback、CPU window unmap、tombstone 和 `rx RETIRE local drained` 日志，同时
+拒绝任何 `retained quarantine`。它还核对 node A 的最终 writeback 值、node B 的
+dirty/retired/revoked CPU 记录，以及两端 ARM MMU 路径均未回退到 TCG。
+
+本批轻量本地定向门禁结果：
+
+```text
+aarch64-linux-gnu-gcc -O2 -Wall -Wextra -Werror -static ...
+build: PASS
+bash -n guest-linux/aarch64/scripts/run_ub_two_node_gsva_coh_test.sh
+syntax: PASS
+2 targeted guest layout/acceptance contract tests: PASS
+```
+
+本机没有安装 `pytest`，首次契约命令在产品构建和 shell 语法已经通过后因模块缺失
+退出；未下载依赖，随后直接加载同一测试模块调用两个无 fixture 的目标函数并通过。
+本批没有启动 QEMU 或 workload。验收入口已经能够证明计划要求的物理事件，真实
+n4 双 guest 结果仍待最终目标验收；PTO 旧访问拒绝、强制撤销、重新加入和重复故障
+矩阵继续保持未完成。父仓库未推送。

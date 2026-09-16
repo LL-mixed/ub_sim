@@ -3369,6 +3369,25 @@ def test_gsva_coh_all_mode_keeps_test_blocks_disjoint():
     assert "uint64_t base = GSVA_BASE + 0x2000000ULL;" in source
 
 
+def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
+    source = (ROOT / "apps" / "gsva_coh_test" / "gsva_coh_test.c").read_text()
+    runner = (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text()
+
+    assert "GSVA remote retire drains a physical holder before ACK" in source
+    assert "ready_generation = 0x475356410618ULL" in source
+    assert "done_generation = 0x475356410628ULL" in source
+    assert "coh_remote_retire dirty_write" in source
+    assert "retire ACK must follow dirty holder writeback" in source
+    assert "gsva_probe_revoked_cpu_read(import_region.addr" in source
+    assert "coh_remote_retire revoked_cpu signal=" in source
+    assert "GSVA_COH: rx RETIRE local drained" in runner
+    assert "GSVA_TLB: flush reason=remote_retire_quarantine" in runner
+    assert "GSVA_TLB: flush reason=remote_retire_drained" in runner
+    assert "GSVA_UNMAP: .*tombstone=yes" in runner
+    assert "coh_remote_retire writeback_verified" in runner
+    assert "coh_remote_retire revoked_cpu signal=" in runner
+
+
 def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
     two_node_coh_runner = (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text()
     two_node_lifecycle_runner = (ROOT / "scripts" / "run_ub_two_node_gsva_lifecycle_test.sh").read_text()
