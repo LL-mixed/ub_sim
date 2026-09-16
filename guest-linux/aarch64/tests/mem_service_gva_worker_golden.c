@@ -19,6 +19,11 @@ static bool drive_worker_loop;
 static bool drive_worker_recovery;
 static bool drive_worker_resume;
 static bool resume_service_mismatch;
+static const char *resume_service_state = "active";
+static bool resume_service_backed = true;
+static struct mem_service_client_allocation resume_identity;
+static struct obmm_gsva_segment_desc_v1 resume_service_segment;
+static uint64_t resume_service_mem_id, resume_service_token_id;
 static bool rollback_empty;
 static unsigned cancellations, loop_polls;
 static uint64_t kernel_address = 0x700000000000ULL;
@@ -196,32 +201,42 @@ int __wrap_mem_service_client_inspect_allocation(
     (void)client;
     assert((drive_worker_recovery || drive_worker_resume) && !strcmp(key, "object"));
     if (drive_worker_resume) {
-        struct obmm_cmd_export exported = {
-            .length = 1,
-            .flags = OBMM_EXPORT_FLAG_GSVA_FIXED_UBA |
-                     OBMM_EXPORT_FLAG_ALLOW_MMAP,
-            .uba = kernel_record.desc.home_va,
-            .mem_id = kernel_record.export_mem_id,
-            .tokenid = kernel_record.export_token_id,
-        };
+        struct obmm_cmd_export exported = {0};
         struct mem_service_provider_descriptor descriptor;
 
-        exported.size[0] = kernel_record.desc.size;
-        assert(!mem_service_provider_obmm_encode_gsva(
-            &kernel_record.desc, &exported, &descriptor));
         memset(out, 0, sizeof(*out));
+        *out = resume_identity;
         strcpy(out->key, key);
-        strcpy(out->state, "active");
-        strcpy(out->home_node, "nodeA");
-        out->provider_incarnation = 7;
-        out->generation = 99;
-        out->size_bytes = 17;
-        out->capabilities = 1;
-        out->provider_backed = true;
-        out->address = kernel_record.desc.home_va + resume_service_mismatch;
-        out->address_len = kernel_record.desc.size;
-        out->descriptor_len = descriptor.len;
-        memcpy(out->descriptor, descriptor.bytes, descriptor.len);
+        strcpy(out->state, resume_service_state);
+        if (!out->home_node[0]) strcpy(out->home_node, "nodeA");
+        if (!out->provider_incarnation) out->provider_incarnation = 7;
+        if (!out->generation) out->generation = 99;
+        if (!out->size_bytes) out->size_bytes = 17;
+        if (!out->capabilities) out->capabilities = 1;
+        out->provider_backed = resume_service_backed;
+        if (resume_service_backed) {
+            if (!resume_service_segment.segment_id) {
+                resume_service_segment = kernel_record.desc;
+                resume_service_mem_id = kernel_record.export_mem_id;
+                resume_service_token_id = kernel_record.export_token_id;
+            }
+            exported.length = 1;
+            exported.flags = OBMM_EXPORT_FLAG_GSVA_FIXED_UBA |
+                             OBMM_EXPORT_FLAG_ALLOW_MMAP;
+            exported.uba = resume_service_segment.home_va;
+            exported.size[0] = resume_service_segment.size;
+            exported.mem_id = resume_service_mem_id;
+            exported.tokenid = resume_service_token_id;
+            assert(!mem_service_provider_obmm_encode_gsva(
+                &resume_service_segment, &exported, &descriptor));
+            out->address = resume_service_segment.home_va + resume_service_mismatch;
+            out->address_len = resume_service_segment.size;
+            out->descriptor_len = descriptor.len;
+            memcpy(out->descriptor, descriptor.bytes, descriptor.len);
+        } else {
+            out->address = out->address_len = out->descriptor_len = 0;
+            memset(out->descriptor, 0, sizeof(out->descriptor));
+        }
         *status = MEM_SERVICE_WIRE_STATUS_OK;
         return 0;
     }
@@ -292,6 +307,11 @@ int __wrap_gva_manager_export_segment_checked(int fd,
     out->mem_id = 17;
     out->tokenid = 97;
     if (mode == EXPORT_FAIL) errno = ENOMEM; /* errno alone is not a receipt. */
+    if (drive_worker_resume && mode != EXPORT_FAIL) {
+        kernel_record.resource_flags = OBMM_GSVA_RESOURCE_ADDRESS_RESERVED;
+        kernel_record.export_mem_id = out->mem_id;
+        kernel_record.export_token_id = out->tokenid;
+    }
     return mode == EXPORT_FAIL ? -1 : 0;
 }
 
@@ -317,6 +337,13 @@ int __wrap_mem_service_client_publish_allocation(
     out->descriptor_len = descriptor_len;
     memcpy(out->descriptor, descriptor, descriptor_len);
     *status = MEM_SERVICE_WIRE_STATUS_OK;
+    if (drive_worker_resume) {
+        resume_service_state = publish_cancelled ? "retiring" : "active";
+        resume_service_backed = true;
+        resume_service_segment = kernel_record.desc;
+        resume_service_mem_id = kernel_record.export_mem_id;
+        resume_service_token_id = kernel_record.export_token_id;
+    }
     if (drive_worker_loop) worker_stop = 1;
     return 0;
 }
@@ -324,16 +351,37 @@ int __wrap_mem_service_client_publish_allocation(
 int __wrap_gva_manager_unexport_segment(int fd,
     const struct obmm_gsva_segment_desc_v1 *segment, const struct obmm_cmd_export *exported)
 {
-    assert(fd == 42 && segment->segment_id == 9 + allocated && exported->mem_id == 17);
+    assert(fd == 42 &&
+           segment->segment_id == (drive_worker_resume ?
+                                      kernel_record.desc.segment_id :
+                                      9 + allocated) &&
+           exported->mem_id == 17);
     unexports++;
+    if (drive_worker_resume && mode != UNEXPORT_FAIL) {
+        kernel_record.export_mem_id = 0;
+        kernel_record.export_token_id = 0;
+    }
     return mode == UNEXPORT_FAIL ? -1 : 0;
 }
 
 int __wrap_gva_manager_retire_segment(int fd, struct obmm_cmd_gsva_retire_segment_v1 *retire)
 {
-    assert(fd == 42 && retire->segment_id == 9 + allocated && retire->epoch == 1);
-    assert(rollback_empty ? unexports == 0 : unexports == retires + 1);
+    assert(fd == 42 &&
+           retire->segment_id == (drive_worker_resume ?
+                                     kernel_record.desc.segment_id :
+                                     9 + allocated) &&
+           retire->epoch == 1);
+    if (!drive_worker_resume)
+        assert(rollback_empty ? unexports == 0 : unexports == retires + 1);
     retires++;
+    if (drive_worker_resume && mode != RETIRE_FAIL) {
+        kernel_record.desc.flags =
+            (kernel_record.desc.flags & ~OBMM_GSVA_SEG_F_ACTIVE) |
+            OBMM_GSVA_SEG_F_RETIRED;
+        kernel_record.resource_flags = 0;
+        kernel_record.export_mem_id = 0;
+        kernel_record.export_token_id = 0;
+    }
     return mode == RETIRE_FAIL ? -1 : 0;
 }
 
@@ -344,12 +392,18 @@ int __wrap_mem_service_client_reclaim_allocation(
 {
     (void)client;
     assert(!strcmp(key, "object") && !strcmp(node, "nodeA") && incarnation == 7);
-    assert(confirmed && (empty_cancel || retires == reclaims + 1));
+    assert(confirmed && (drive_worker_resume || empty_cancel ||
+                         retires == reclaims + 1));
     reclaims++;
     *status = MEM_SERVICE_WIRE_STATUS_OK;
     memset(out, 0, sizeof(*out));
     strcpy(out->state, "retired");
     out->generation = generation + (mode == BAD_RECLAIM_REPLY);
+    if (drive_worker_resume && mode != RECLAIM_FAIL &&
+        mode != BAD_RECLAIM_REPLY) {
+        resume_service_state = "retired";
+        resume_service_backed = false;
+    }
     return mode == RECLAIM_FAIL ? -1 : 0;
 }
 
@@ -363,12 +417,22 @@ int __wrap_mem_service_client_retire_object(
     snprintf(expected, sizeof(expected), "obmm-capacity-7-%" PRIu64, generation);
     assert(!strcmp(key, "object") && !strcmp(operation, expected) && has_generation);
     cancellations++;
-    *out = drive_worker_loop ? polled_work : *direct_work;
+    *out = drive_worker_resume ? resume_identity :
+           drive_worker_loop ? polled_work : *direct_work;
+    if (drive_worker_resume) {
+        strcpy(out->key, key);
+        strcpy(out->home_node, "nodeA");
+        out->provider_incarnation = 7;
+    }
     strcpy(out->state, "retiring");
     out->generation = generation + (mode == BAD_CANCEL_REPLY);
     if (mode == BAD_CANCEL_BINDING) out->provider_incarnation++;
     if (mode == BACKED_CANCEL_REPLY) out->provider_backed = true;
     *status = MEM_SERVICE_WIRE_STATUS_OK;
+    if (drive_worker_resume && mode != CANCEL_FAIL &&
+        mode != BAD_CANCEL_REPLY && mode != BAD_CANCEL_BINDING &&
+        mode != BACKED_CANCEL_REPLY)
+        resume_service_state = "retiring";
     return mode == CANCEL_FAIL ? -1 : 0;
 }
 
@@ -642,6 +706,157 @@ int main(void)
             assert(!reservation.occupied && unexports == 1 && retires == 1 && reclaims == 1);
             previous = release;
         }
+    }
+    {
+        struct worker_config resume_config = {
+            .node = "nodeA",
+            .incarnation = 7,
+            .allocation_granularity_bytes = 2097152,
+            .kernel_instance = {1},
+        };
+        struct worker_resume_object object = {0};
+        struct worker_reservation rebuilt = {0}, restored = {0};
+        bool did_restore = false;
+        FILE *resume_journal = tmpfile();
+
+        assert(resume_journal);
+        resume_identity = (struct mem_service_client_allocation){
+            .key = "object", .state = "allocating", .home_node = "nodeA",
+            .provider_incarnation = 7, .generation = 99,
+            .size_bytes = 17, .capabilities = 1,
+        };
+        object.last.work = resume_identity;
+        object.saved.occupied = true;
+        strcpy(object.saved.key, "object");
+        object.saved.generation = 99;
+        object.saved.segment = (struct obmm_gsva_segment_desc_v1){
+            .version = 1,
+            .flags = OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY |
+                     OBMM_GSVA_SEG_F_TOKEN_VALUE_REQUIRED |
+                     OBMM_GSVA_SEG_F_ACTIVE,
+            .segment_id = 409, .home_va = kernel_address,
+            .size = 2097152, .epoch = 1, .home_cna = 7,
+            .owner_node_id = 0, .node_count = 2,
+            .cache_policy = GSVA_CACHE_POLICY_WRITE_THROUGH,
+            .access_flags = OBMM_GSVA_ACCESS_READ |
+                            OBMM_GSVA_ACCESS_WRITE,
+            .token_id = 41, .token_value = 42,
+        };
+        kernel_record = (struct obmm_cmd_gsva_enumerate_v1){
+            .desc = object.saved.segment,
+            .resource_flags = OBMM_GSVA_RESOURCE_ADDRESS_RESERVED,
+        };
+        assert(!strcmp(worker_resume_resource_match(
+            &resume_config, &object.saved, &kernel_record, &rebuilt),
+            "reserved-no-export"));
+        kernel_record.export_mem_id = 17;
+        kernel_record.export_token_id = 97;
+        assert(!strcmp(worker_resume_resource_match(
+            &resume_config, &object.saved, &kernel_record, &rebuilt),
+            "export-bound"));
+        assert(rebuilt.descriptor.len == 96 && rebuilt.exported.mem_id == 17);
+        assert(worker_resume_action_for(
+                   "reserve-intent", false, NULL) == WORKER_RESUME_INVALID);
+        assert(worker_resume_action_for(
+                   "reserved", true, "reserved-no-export") ==
+               WORKER_RESUME_EXPORT_AND_PUBLISH);
+        assert(worker_resume_action_for(
+                   "export-unknown", true, "export-bound") ==
+               WORKER_RESUME_PUBLISH);
+        assert(worker_resume_action_for(
+                   "release-intent", true, "reserved-no-export") ==
+               WORKER_RESUME_RELEASE);
+        assert(worker_resume_action_for(
+                   "unbacked-retired", true, "retired-record") ==
+               WORKER_RESUME_CANCEL);
+        assert(worker_resume_action_for(
+                   "reserve-empty", false, NULL) == WORKER_RESUME_CANCEL);
+
+        drive_worker_resume = true;
+        mode = GOOD;
+        resume_service_state = "allocating";
+        resume_service_backed = false;
+        object.saved = rebuilt;
+        object.has_resource = true;
+        object.match = "export-bound";
+        object.action = WORKER_RESUME_PUBLISH;
+        strcpy(object.last.phase, "export-unknown");
+        publishes = 0;
+        assert(!worker_resume_apply(
+            42, fileno(resume_journal), &resume_config, &client,
+            &object, &restored, &did_restore));
+        assert(did_restore && restored.occupied && publishes == 1);
+
+        object.saved = restored;
+        object.match = "export-bound";
+        object.action = WORKER_RESUME_RELEASE;
+        strcpy(object.last.phase, "release-intent");
+        resume_service_state = "retiring";
+        resume_service_backed = true;
+        unexports = retires = reclaims = 0;
+        did_restore = true;
+        assert(!worker_resume_apply(
+            42, fileno(resume_journal), &resume_config, &client,
+            &object, NULL, &did_restore));
+        assert(!did_restore && unexports == 1 && retires == 1 &&
+               reclaims == 1 && !strcmp(resume_service_state, "retired"));
+
+        object.saved.exported = (struct obmm_cmd_export){0};
+        object.saved.descriptor = (struct mem_service_provider_descriptor){0};
+        object.saved.export_no_backing = false;
+        object.saved.segment.flags =
+            (object.saved.segment.flags & ~OBMM_GSVA_SEG_F_RETIRED) |
+            OBMM_GSVA_SEG_F_ACTIVE;
+        kernel_record = (struct obmm_cmd_gsva_enumerate_v1){
+            .desc = object.saved.segment,
+            .resource_flags = OBMM_GSVA_RESOURCE_ADDRESS_RESERVED,
+        };
+        object.match = "reserved-no-export";
+        object.action = WORKER_RESUME_EXPORT_AND_PUBLISH;
+        strcpy(object.last.phase, "reserved");
+        resume_service_state = "allocating";
+        resume_service_backed = false;
+        exports = publishes = 0;
+        did_restore = false;
+        assert(!worker_resume_apply(
+            42, fileno(resume_journal), &resume_config, &client,
+            &object, &restored, &did_restore));
+        assert(did_restore && exports == 1 && publishes == 1);
+
+        object.saved = restored;
+        object.saved.exported = (struct obmm_cmd_export){0};
+        object.saved.descriptor = (struct mem_service_provider_descriptor){0};
+        object.saved.export_no_backing = true;
+        object.saved.segment.flags =
+            (object.saved.segment.flags & ~OBMM_GSVA_SEG_F_RETIRED) |
+            OBMM_GSVA_SEG_F_ACTIVE;
+        kernel_record = (struct obmm_cmd_gsva_enumerate_v1){
+            .desc = object.saved.segment,
+            .resource_flags = OBMM_GSVA_RESOURCE_ADDRESS_RESERVED,
+        };
+        object.match = "reserved-no-export";
+        object.action = WORKER_RESUME_CANCEL;
+        strcpy(object.last.phase, "export-no-backing");
+        resume_service_state = "allocating";
+        resume_service_backed = false;
+        empty_cancel = true;
+        retires = reclaims = cancellations = 0;
+        did_restore = true;
+        assert(!worker_resume_apply(
+            42, fileno(resume_journal), &resume_config, &client,
+            &object, NULL, &did_restore));
+        assert(!did_restore && retires == 1 && cancellations == 1 &&
+               reclaims == 1 && !strcmp(resume_service_state, "retired"));
+        empty_cancel = false;
+        drive_worker_resume = false;
+        resume_service_state = "active";
+        resume_service_backed = true;
+        memset(&resume_identity, 0, sizeof(resume_identity));
+        memset(&resume_service_segment, 0, sizeof(resume_service_segment));
+        resume_service_mem_id = resume_service_token_id = 0;
+        assert(!fclose(resume_journal));
+        puts("gva_worker_partial_resume=pass stages=9 "
+             "reserve_intent=isolated torn_frame=isolated");
     }
     {
         char directory[] = "/tmp/gva-worker-loop-XXXXXX";

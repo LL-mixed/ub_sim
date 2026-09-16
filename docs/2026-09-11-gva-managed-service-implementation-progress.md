@@ -5460,3 +5460,42 @@ identity mismatch；没有启动 QEMU 或模型 workload。r610 输入包 SHA-25
 没有推送。该批关闭稳态 worker 崩溃后的同-kernel published reservation 续作；
 意图及部分完成事务的可证明处置、跨节点 mapping/PTO 排空、强制撤销、完整重新
 加入和重复故障矩阵继续未完成。
+
+## 2026-09-17：同 kernel 部分事务确定性续作
+
+独立服务提交 `b84b8e6accf8836798abf062c95c143ad1fa9d1e` 扩展既有
+`resume-allocations`。恢复器在任何修改前完整校验并独占 ledger，取得同一 kernel
+instance 的稳定 inventory，按 generation 聚合对象，并逐项核对服务 key、generation、
+home、incarnation、尺寸、能力与 backing 身份。预检和 inventory 二次确认全部通过
+后，才执行阶段续作：
+
+- `reserved`、带完整 segment 的 `reserve-unknown`、`export-unknown`、`exported`
+  根据库存中的 export 绑定继续 checked export 或 generation-bound publish；
+- `release-intent`、`unexported`、`retired` 根据 export/segment 终态继续 unexport、
+  retire 和 service reclaim；
+- `export-no-backing`、`unbacked-retire-intent`、`unbacked-retired`、`reserve-empty`、
+  `capacity-reject-intent`、`cancel-empty` 完成物理 retire 和未发布对象取消；
+- `published` 恢复 reservation slot，`reclaimed` 与 `cancel-confirmed` 核对终态。
+
+每次外部操作成功后先同步下一 ledger 帧；中途再次失败可从新阶段继续。裸
+`reserve-intent` 没有 segment 身份，无法唯一认领 kernel inventory 条目，因此保持
+隔离。截断、checksum 错误或 half-written frame 同样拒绝，禁止删除尾部或推断操作
+未发生。该命令仍不提供远端 holder 的 VMA/PTO 排空或强制撤销证明。
+
+本地定向门禁执行 `test_mem_service_gva_worker.py`，4 项中 3 项通过、1 项按平台
+跳过；worker 和 golden 以 AArch64 `-Werror` 交叉编译成功。n4-910c1 r611 首次
+原生运行准确暴露 golden 模拟器把“服务仍保存的 descriptor”错误地从 unexport
+后的 kernel inventory 重建，因 export ID 已清零而断言；生产代码没有触发该
+断言。修正 mock 独立保存服务 descriptor 后，r612 原生运行 4/4 通过、14.714 秒。
+golden 覆盖 9 类可判定阶段，实际执行 export/publish、unexport/retire/reclaim、
+无 backing cancel，并核对裸 reserve intent 与 torn frame 保持隔离。r612 输入包
+SHA-256 为
+`82cd28aca3bcf9784e0987419d7f8f00a0b8d50d8128b36a76d817f9fe68e488`；未启动
+QEMU 或模型 workload。
+
+服务分支已从 `5ad3ad0` 快进推送到 `b84b8e6`，远端 ref 精确核验为
+`b84b8e6accf8836798abf062c95c143ad1fa9d1e`。父仓库 gitlink 与
+`guest-linux/aarch64/mem_service.lock` 在本地同步，父仓库没有推送。该批关闭
+可由完整 segment/export 身份证明的同-kernel 部分事务实现；实际进程杀死/重启
+注入矩阵、跨节点 mapping/PTO 排空、强制撤销、完整重新加入和重复故障矩阵继续
+未完成。

@@ -122,6 +122,11 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                 "kernel_mismatch=reject service_mismatch=reject",
                 result.stdout,
             )
+            self.assertIn(
+                "gva_worker_partial_resume=pass stages=9 "
+                "reserve_intent=isolated torn_frame=isolated",
+                result.stdout,
+            )
             config = pathlib.Path(directory) / "worker.conf"
             state = pathlib.Path(directory) / "worker.state"
             good = (f"connect=unix:{directory}/absent.sock\nnode_id=nodeA\n"
