@@ -3393,6 +3393,10 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "else if (node_idx == 1) {" in retire_case
     assert "import_active = true;" in retire_case
     assert "if (import_active)" in retire_case
+    assert "home_p_tag = home_meta.export_cna & 0x00ffffffu;" in retire_case
+    assert "0, 0, 0, home_p_tag, 0, segment_id" in retire_case
+    assert retire_case.count("gsva_send_tagged_event(") == 7
+    assert "home_base, GSVA_SIZE, home_p_tag" in retire_case
     assert "coh_remote_retire dirty_write" in source
     assert "retire ACK must follow dirty holder writeback" in source
     assert "gsva_probe_revoked_cpu_read(import_region.addr" in source

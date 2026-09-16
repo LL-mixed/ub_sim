@@ -363,11 +363,11 @@ static void test_retire_while_shared(int obmm_fd, uint32_t local_cna,
     PASS();
 }
 
-static int gsva_send_event_epoch(int obmm_fd, uint32_t sub_op,
+static int gsva_send_tagged_event_epoch(int obmm_fd, uint32_t sub_op,
                            uint32_t requester_cna, uint32_t token_id,
                            uint32_t token_value, uint64_t segment_id,
-                           uint64_t home_va, uint64_t size, uint64_t epoch,
-                           int32_t *error_out)
+                           uint64_t home_va, uint64_t size, uint32_t p_tag,
+                           uint64_t epoch, int32_t *error_out)
 {
     struct obmm_cmd_gsva_event_v1 cmd = {0};
 
@@ -383,7 +383,7 @@ static int gsva_send_event_epoch(int obmm_fd, uint32_t sub_op,
     cmd.key.vmid = 0;
     cmd.key.asid = 0;
     cmd.key.pte_offset = 0;
-    cmd.key.p_tag = 0;
+    cmd.key.p_tag = p_tag;
     cmd.key.cache_policy = GSVA_CACHE_POLICY_DIRECTORY_MESI;
     cmd.key.epoch = epoch;
 
@@ -394,6 +394,17 @@ static int gsva_send_event_epoch(int obmm_fd, uint32_t sub_op,
     return 0;
 }
 
+static int gsva_send_event_epoch(int obmm_fd, uint32_t sub_op,
+                           uint32_t requester_cna, uint32_t token_id,
+                           uint32_t token_value, uint64_t segment_id,
+                           uint64_t home_va, uint64_t size, uint64_t epoch,
+                           int32_t *error_out)
+{
+    return gsva_send_tagged_event_epoch(obmm_fd, sub_op, requester_cna,
+                                        token_id, token_value, segment_id,
+                                        home_va, size, 0, epoch, error_out);
+}
+
 static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
                            uint32_t token_id, uint32_t token_value,
                            uint64_t segment_id, uint64_t home_va,
@@ -402,6 +413,17 @@ static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
     return gsva_send_event_epoch(obmm_fd, sub_op, requester_cna, token_id,
                                  token_value, segment_id, home_va, size, 1,
                                  error_out);
+}
+
+static int gsva_send_tagged_event(int obmm_fd, uint32_t sub_op,
+                           uint32_t requester_cna, uint32_t token_id,
+                           uint32_t token_value, uint64_t segment_id,
+                           uint64_t home_va, uint64_t size, uint32_t p_tag,
+                           int32_t *error_out)
+{
+    return gsva_send_tagged_event_epoch(obmm_fd, sub_op, requester_cna,
+                                        token_id, token_value, segment_id,
+                                        home_va, size, p_tag, 1, error_out);
 }
 
 /* ---- Test: token_denied ---- */
@@ -1517,7 +1539,7 @@ static void test_coh_remote_inv(int obmm_fd, uint32_t local_cna,
 
 /* ---- Test: coh_remote_wb ---- */
 static void test_coh_remote_wb(int obmm_fd, uint32_t local_cna,
-                               int node_idx, int node_count)
+                              int node_idx, int node_count)
 {
     TEST("GSVA coherence sends remote writeback over UB Link");
     struct obmm_helpers_meta metas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
@@ -2152,6 +2174,7 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     uint32_t peer_cna = 0;
     uint64_t segment_id = 0;
     uint32_t token_id = 0;
+    uint32_t home_p_tag = 0;
     uint64_t pending_seq = 0;
     bool import_active = false;
     bool retire_already_complete = false;
@@ -2184,6 +2207,7 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
 
     segment_id = home_meta.export_mem_id;
     token_id = home_meta.token_id;
+    home_p_tag = home_meta.export_cna & 0x00ffffffu;
     if (node_idx == 0) {
         rc = obmm_map_gsva_region_at(my_meta.export_mem_id,
                                      (void *)(uintptr_t)home_base,
@@ -2202,7 +2226,7 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                                OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
                                OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
                                OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
-                               0, 0, 0, 0, 0, segment_id,
+                               0, 0, 0, home_p_tag, 0, segment_id,
                                home_base, home_base, 0,
                                &import_mem_id);
         CHECK(rc == 0, "GSVA identity import should succeed");
@@ -2222,17 +2246,19 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         __sync_synchronize();
         printf("%s   coh_remote_retire ARM MMU touch va=%#" PRIx64
                " value=%#" PRIx64 "\n", TAG, home_base, value);
-        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
-                             local_cna, token_id, token_id, segment_id,
-                             home_base, GSVA_SIZE, &ev_error);
+        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                    local_cna, token_id, token_id, segment_id,
+                                    home_base, GSVA_SIZE, home_p_tag,
+                                    &ev_error);
         CHECK(rc == 0, "local ReadAcquire should reach QEMU");
         CHECK(ev_error == GSVA_OK, "local ReadAcquire should pass");
     } else if (node_idx == 1) {
         volatile uint64_t *probe = import_region.addr;
 
-        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE,
-                             local_cna, token_id, token_id, segment_id,
-                             home_base, GSVA_SIZE, &ev_error);
+        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE,
+                                    local_cna, token_id, token_id, segment_id,
+                                    home_base, GSVA_SIZE, home_p_tag,
+                                    &ev_error);
         CHECK(rc == 0, "holder WriteAcquire should reach QEMU");
         CHECK(ev_error == GSVA_OK, "holder WriteAcquire should pass");
         *probe = dirty_value;
@@ -2251,15 +2277,17 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     CHECK(rc == 0, "retire ready barrier should complete");
 
     if (node_idx == 0) {
-        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, peer_cna,
-                             token_id, token_id, segment_id, home_base,
-                             GSVA_SIZE, &ev_error);
+        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                    peer_cna, token_id, token_id, segment_id,
+                                    home_base, GSVA_SIZE, home_p_tag,
+                                    &ev_error);
         CHECK(rc == 0, "remote holder ReadAcquire should reach QEMU");
         CHECK(ev_error == GSVA_OK, "remote holder should enter sharer set");
 
-        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
-                             token_id, token_id, segment_id, home_base,
-                             GSVA_SIZE, &ev_error);
+        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE,
+                                    local_cna, token_id, token_id, segment_id,
+                                    home_base, GSVA_SIZE, home_p_tag,
+                                    &ev_error);
         CHECK(rc == 0, "Retire should reach QEMU");
         CHECK(ev_error == GSVA_ERR_COH_PENDING || ev_error == GSVA_OK,
               "retire should wait for or consume remote RetireAck");
@@ -2296,10 +2324,11 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
             ev_error = GSVA_OK;
         } else {
             for (int attempt = 0; attempt < 50; attempt++) {
-                rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_RETRY,
-                                     local_cna, (uint32_t)pending_seq, 0,
-                                     segment_id, home_base, GSVA_SIZE,
-                                     &ev_error);
+                rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_RETRY,
+                                            local_cna,
+                                            (uint32_t)pending_seq, 0,
+                                            segment_id, home_base, GSVA_SIZE,
+                                            home_p_tag, &ev_error);
                 CHECK(rc == 0, "Retry should reach QEMU");
                 if (ev_error == GSVA_OK)
                     break;
@@ -2310,9 +2339,10 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         CHECK(ev_error == GSVA_OK,
               "remote RETIRE_ACK should complete pending op");
 
-        rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
-                             local_cna, token_id, token_id, segment_id,
-                             home_base, GSVA_SIZE, &ev_error);
+        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                    local_cna, token_id, token_id, segment_id,
+                                    home_base, GSVA_SIZE, home_p_tag,
+                                    &ev_error);
         CHECK(rc == 0,
               "ReadAcquire after remote retire should reach QEMU");
         CHECK(ev_error == GSVA_ERR_SEGMENT_RETIRED,
@@ -2332,9 +2362,11 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         int fault_code = 0;
 
         for (int attempt = 0; attempt < 70; attempt++) {
-            rc = gsva_send_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
-                                 local_cna, token_id, token_id, segment_id,
-                                 home_base, GSVA_SIZE, &ev_error);
+            rc = gsva_send_tagged_event(obmm_fd,
+                                        OBMM_GSVA_EVENT_READ_ACQUIRE,
+                                        local_cna, token_id, token_id,
+                                        segment_id, home_base, GSVA_SIZE,
+                                        home_p_tag, &ev_error);
             CHECK(rc == 0, "holder retire poll should reach QEMU");
             if (ev_error == GSVA_ERR_SEGMENT_RETIRED) {
                 retired = true;
