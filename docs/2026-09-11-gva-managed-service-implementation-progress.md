@@ -5636,3 +5636,32 @@ release、package 与兼容清单由 CLI 重新生成。提交已只推送用户
 `origin/codex/gva-managed-service-completion`，远端 ref 精确核验为上述 SHA。
 父仓库只在本地同步 gitlink/lock。此批提供物理证明的控制面消费契约；OBMM/QEMU
 强制撤销生产者、PTO 访问拒绝、完整重新加入和 n4 实际故障注入仍待完成。
+
+## 2026-09-17：本地 holder 强制撤销平台原语
+
+kernel 提交 `dd07fe43c50d` 在既有 `OBMM_CMD_GSVA_EVENT_V1` payload 中增加
+`OBMM_GSVA_EVENT_LOCAL_REVOKE=8`。事件继续携带调用方 CNA、完整 GSVA key、token
+ID 和 token value，ABI 结构体及尺寸没有变化。kernel 的通用 SIM_DEC 事件路径原样
+转发这些字段。
+
+QEMU 提交 `854a8d8449` 增加 recovery-only 的本地撤销处理。入口首先要求调用方 CNA
+等于当前 bus controller CNA，并逐字段核对 key/epoch 与 route 中保存的 token。
+任何身份不一致都在物理动作前拒绝。活动 route 随即进入 `STALE` 并刷新稳定 TLB，
+阻断后续 CPU/PTO 路由；coherence pending、timeout、严格 I/O 调用尚未退出或另一
+unmap 在途时，route 保持隔离且不给成功结果。
+
+无在途访问后，路径复用远端 RETIRE 已验证的 drain：向 home 执行 fence/writeback、
+失效本地缓存、再次刷新 TLB、解除 CPU window，并把完整 route/token 保存为同 epoch
+tombstone。全部步骤成功后才清除 coherence owner、sharer 和 pending 状态并进入
+`RETIRED`。相同 key/token 的 tombstone 重放幂等成功；错 CNA、错 token、旧 epoch、
+缺失 route/coherence 对象和不完整 strict route 均失败关闭。
+
+本批只运行生产函数抽取门禁。既有 remote-retire drain 用例通过；新增 local-revoke
+用例首次发现测试拼接器重复结束大括号，修正测试边界后通过。最终目标用例覆盖正确
+撤销、pending、timeout、drain 失败、错 CNA、错 token、缺失 coherence 对象、旧
+epoch、tombstone 幂等，以及 kernel 事件值和 QEMU dispatch 接线。编译使用
+`-Wall -Wextra -Werror`，没有构建或启动本地 QEMU，也没有加载模型。
+
+当前完成的是可产生物理证明的 QEMU 原语。replacement OBMM provider 还没有调用
+该原语并向 Memory Service 提交 `fence-allocation-holder` receipt；PTO 旧访问实际
+拒绝、provider 完整重新加入和 n4 故障注入仍待完成。平台子仓库与父仓库均未推送。

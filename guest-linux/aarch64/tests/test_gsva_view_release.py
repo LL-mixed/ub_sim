@@ -123,7 +123,7 @@ int main(void) {
             self.skipTest("requires C compiler")
         source = (ROOT / "vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c").read_text()
         block = source.split("static bool sim_dec_gsva_key_exact(", 1)[1].split(
-            "\n/*\n * ubc_handle_sim_dec_message", 1
+            "\nint ubc_gsva_force_revoke_local_holder", 1
         )[0]
         program = r'''
 #include <stdint.h>
@@ -214,6 +214,140 @@ int main(void) {
 '''
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "remote-retire"
+            result = subprocess.run(
+                [compiler, "-Wall", "-Wextra", "-Werror", "-x", "c", "-",
+                 "-o", str(binary)], input=program, text=True,
+                capture_output=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run(
+                [str(binary)], capture_output=True, text=True, timeout=5
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_local_revoke_requires_exact_identity_and_physical_drain(self):
+        compiler = shutil.which("cc")
+        if not compiler:
+            self.skipTest("requires C compiler")
+        source = (ROOT / "vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c").read_text()
+        kernel_uapi = (
+            ROOT / "guest-linux/kernel_ub/include/uapi/ub/gsva.h"
+        ).read_text()
+        self.assertIn("#define OBMM_GSVA_EVENT_LOCAL_REVOKE\t8", kernel_uapi)
+        event_handler = source.split("case SIM_DEC_OP_GSVA_EVENT_V1:", 1)[1].split(
+            "\n    default:", 1
+        )[0]
+        self.assertIn("case 8: /* LocalRevoke */", event_handler)
+        self.assertIn("ubc_gsva_force_revoke_local_holder(", event_handler)
+        function = source.split("int ubc_gsva_force_revoke_local_holder(", 1)[1].split(
+            "\n}\n\n/*\n * ubc_handle_sim_dec_message", 1
+        )[0]
+        program = r'''
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <inttypes.h>
+#include <assert.h>
+#define GSVA_OK 0
+#define GSVA_ERR_BAD_VERSION -1
+#define GSVA_ERR_KEY_MISMATCH -2
+#define GSVA_ERR_STALE_EPOCH -3
+#define GSVA_ERR_TOKEN_DENIED -4
+#define GSVA_ERR_ROUTE_MISSING -5
+#define GSVA_ERR_COH_PENDING -6
+#define GSVA_ERR_COH_TIMEOUT -7
+#define GSVA_ERR_FEATURE_MISSING -12
+#define GSVA_ROUTE_ACTIVE 1
+#define GSVA_ROUTE_STALE 2
+#define GSVA_ROUTE_RETIRED 3
+#define GSVA_COH_RETIRED 4
+#define GSVA_COH_TIMEOUT 5
+#define qemu_log(...) ((void)0)
+typedef struct { uint32_t version, flags; uint64_t segment_id, home_va, size,
+    vmid, asid, pte_offset; uint32_t p_tag, cache_policy; uint64_t epoch; } GsvaKeyV1;
+typedef struct { uint32_t token_id, token_value; } Token;
+typedef struct { GsvaKeyV1 key; int state; uint32_t home_cna; Token token;
+    bool cpu_window_mapped; } GsvaRouteEntry;
+typedef struct { GsvaKeyV1 key; int state; uint32_t owner_cna;
+    uint64_t sharer_bitmap; uint32_t sharer_count, sharer_cnas[4];
+    bool pending; uint64_t pending_seq; uint32_t pending_op, pending_target;
+    uint64_t pending_ack_bitmap; uint32_t pending_ack_count, pending_ack_cnas[4];
+    uint64_t pending_start_ms; } GsvaCohObject;
+typedef struct { int unused; } GsvaRouteTable;
+typedef struct { int unused; } GsvaCohTable;
+typedef struct { struct { uint32_t cna; } parent; } BusControllerDev;
+static GsvaRouteTable g_gsva_routes;
+static GsvaCohTable g_gsva_coh;
+static GsvaRouteEntry route, tombstone, *active_route, *retired_route;
+static GsvaCohObject object, *coh_object;
+static unsigned quarantines, drains;
+static int key_result, quarantine_result, drain_result;
+static int gsva_key_validate(const GsvaKeyV1 *key)
+{ return key ? key_result : GSVA_ERR_BAD_VERSION; }
+static bool sim_dec_gsva_key_exact(const GsvaKeyV1 *a, const GsvaKeyV1 *b)
+{ return a && b && !memcmp(a, b, sizeof(*a)); }
+static void gsva_tables_init(void) {}
+static GsvaRouteEntry *gsva_route_lookup_base(GsvaRouteTable *table,
+    const GsvaKeyV1 *key) { assert(table == &g_gsva_routes && key); return active_route; }
+static GsvaRouteEntry *gsva_route_lookup_tombstone(GsvaRouteTable *table,
+    const GsvaKeyV1 *key) { assert(table == &g_gsva_routes && key); return retired_route; }
+static GsvaCohObject *gsva_coh_lookup(GsvaCohTable *table, const GsvaKeyV1 *key)
+{ assert(table == &g_gsva_coh && key); return coh_object; }
+static int ubc_gsva_quarantine_local_holder(BusControllerDev *dev,
+    const GsvaKeyV1 *key, uint32_t home)
+{ assert(dev && key && home == 7); quarantines++; route.state = GSVA_ROUTE_STALE;
+  return quarantine_result; }
+static int ubc_gsva_drain_local_holder(BusControllerDev *dev,
+    const GsvaKeyV1 *key, uint32_t home)
+{ assert(dev && key && home == 7); drains++; return drain_result; }
+int ubc_gsva_force_revoke_local_holder(''' + function + r'''
+}
+static void reset(GsvaKeyV1 key)
+{ memset(&route, 0, sizeof(route)); route.key = key; route.state = GSVA_ROUTE_ACTIVE;
+  route.home_cna = 7; route.token.token_id = 11; route.token.token_value = 53;
+  route.cpu_window_mapped = true; memset(&object, 0, sizeof(object)); object.key = key;
+  object.state = 1; object.owner_cna = 8; object.sharer_count = 2;
+  object.sharer_bitmap = 3; object.pending_seq = 9; object.pending_op = 2;
+  object.pending_target = 8; object.pending_ack_count = 1;
+  object.pending_ack_bitmap = 1; object.pending_start_ms = 4;
+  active_route = &route; retired_route = 0; coh_object = &object;
+  quarantines = drains = 0; key_result = quarantine_result = drain_result = 0; }
+int main(void) {
+  GsvaKeyV1 key = {.version=1,.segment_id=9,.home_va=4096,.size=4096,.epoch=3};
+  BusControllerDev dev = {.parent={8}};
+  reset(key);
+  assert(!ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,53));
+  assert(quarantines==1 && drains==1 && object.state==GSVA_COH_RETIRED);
+  assert(!object.owner_cna && !object.sharer_count && !object.sharer_bitmap);
+  assert(!object.pending && !object.pending_seq && !object.pending_ack_count);
+  reset(key); assert(ubc_gsva_force_revoke_local_holder(&dev,&key,6,11,53)==GSVA_ERR_BAD_VERSION);
+  assert(!quarantines && !drains);
+  reset(key); assert(ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,54)==GSVA_ERR_TOKEN_DENIED);
+  assert(!quarantines && !drains);
+  reset(key); object.pending=true;
+  assert(ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,53)==GSVA_ERR_COH_PENDING);
+  assert(quarantines==1 && !drains && object.state==1);
+  reset(key); object.state=GSVA_COH_TIMEOUT;
+  assert(ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,53)==GSVA_ERR_COH_TIMEOUT);
+  assert(quarantines==1 && !drains);
+  reset(key); drain_result=GSVA_ERR_COH_TIMEOUT;
+  assert(ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,53)==GSVA_ERR_COH_TIMEOUT);
+  assert(quarantines==1 && drains==1 && object.state==1);
+  reset(key); active_route=0; tombstone=route; tombstone.state=GSVA_ROUTE_RETIRED;
+  tombstone.cpu_window_mapped=false; retired_route=&tombstone;
+  assert(!ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,53));
+  assert(!quarantines && !drains);
+  reset(key); coh_object=0;
+  assert(ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,53)==GSVA_ERR_ROUTE_MISSING);
+  assert(!quarantines && !drains);
+  reset(key); key.epoch++;
+  assert(ubc_gsva_force_revoke_local_holder(&dev,&key,8,11,53)==GSVA_ERR_STALE_EPOCH);
+  assert(!quarantines && !drains);
+  return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "local-revoke"
             result = subprocess.run(
                 [compiler, "-Wall", "-Wextra", "-Werror", "-x", "c", "-",
                  "-o", str(binary)], input=program, text=True,

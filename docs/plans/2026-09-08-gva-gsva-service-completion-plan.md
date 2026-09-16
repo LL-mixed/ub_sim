@@ -516,6 +516,17 @@ replacement registration 单独不足、错误旧身份拒绝、1 个 holder/1 �
 已只推送授权服务分支并核验远端 ref。此项补齐控制面的物理证明消费契约；OBMM/QEMU
 实际强制撤销生产者、PTO 拒绝、完整重新加入和 n4 故障注入仍未完成。
 
+同日 M3 本地 holder 物理撤销原语续作：kernel `dd07fe43c50d` 在现有
+`OBMM_CMD_GSVA_EVENT_V1` 结构中定义 `LOCAL_REVOKE=8`，不扩展 ABI 布局；QEMU
+`854a8d8449` 仅接受本机 CNA、完整 key/epoch 及精确 GSVA token 匹配的请求。活动
+route 先进入 `STALE` 并刷新 TLB；coherence pending、timeout、严格 I/O 在途或 unmap
+在途均保持隔离并拒绝成功。通过门禁后执行 home fence/writeback、缓存失效、CPU
+window 解除映射并保留精确 tombstone，最后才把 coherence 对象置为 `RETIRED`。
+精确 tombstone 支持幂等重放；错 CNA、错 token、旧 epoch、缺失 route/coherence
+对象全部失败关闭。生产函数抽取门禁覆盖上述正负路径并通过，没有启动本地 QEMU
+或模型。该原语尚未接入 replacement provider 的恢复命令，因此 receipt 自动提交、
+PTO 实际拒绝、完整重新加入和 n4 故障注入仍未完成。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
