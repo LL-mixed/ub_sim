@@ -487,6 +487,7 @@ def model_publication_fixture():
     qemu = qemu.replace("length=64", "length=54680").replace("bytes=64", "bytes=54680")
     refs = []
     sizes = [(4, 16384, 54680, 0x1234), (5, 60784, 2048, 0x8888), (7, 62832, 8232, 0x9999)]
+    output_bytes = sizes[0][2]
     for kind, offset, length, checksum in sizes:
         refs.append(struct.pack("<QHHHHIIQQQQQIIQQQ96s64s", 0x514f424d4d524546,
             2, kind, 2, 0, 0, 0, 2, int(validator.checksum64(key.encode()), 16), offset,
@@ -505,7 +506,8 @@ def model_publication_fixture():
         marker = f"MANAGED_MODEL node={node} action=cpu-verify"
         views = (f"MANAGED_MODEL_VIEWS node={node} hidden_offset=60784 hidden_bytes=2048 "
                  "hidden_checksum=0000000000008888 kv_offset=62832 kv_bytes=8232 "
-                 "kv_checksum=0000000000009999 real_layers=1 payload_copies=0 status=pass\n")
+                 f"kv_checksum=0000000000009999 real_layers=1 serialized_bytes={output_bytes} "
+                 "payload_copies=0 status=pass\n")
         guests[node] = guests[node].replace(marker, views + marker)
     guests[0] = guests[0].replace("MANAGED_MODEL node=0 action=submitted",
         transition(0, 1, 0) + "MANAGED_MODEL node=0 action=submitted")

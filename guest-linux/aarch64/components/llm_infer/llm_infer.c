@@ -101,6 +101,7 @@ int llm_infer_decode_range_result(const void *result, size_t length,
     decoded.output_tensor_checksum = entry[9];
     decoded.range_checksum = entry[10];
     decoded.real_layers = entry[11];
+    decoded.serialized_bytes = header + header_bytes + table_bytes;
     *out = decoded;
     return 0;
 }

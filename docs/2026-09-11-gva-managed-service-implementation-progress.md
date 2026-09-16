@@ -5145,3 +5145,41 @@ n4-910c1 隔离目录
 本批关闭 W5 多 home 所需的控制面 placement 前置能力。实际 W5 serving loop、
 同时多 home 物理运行、跨 range/step 生命周期和 2/3/8-node 两模型多步矩阵仍待
 接入与验证，M2 和总目标保持进行中。
+
+## 2026-09-16：受管理结果的精确序列化边界
+
+`llm_infer_range_result` 新增 `serialized_bytes`。公共解码器在完成 range table
+magic、entry count/width、entry checksum、range 身份、hidden/KV 长度及 KV
+checksum 校验后，返回 `table_offset + 64 + table_bytes`。调用方可以给解码器
+完整 allocation 容量，返回值只覆盖实际写入的序列化结果。新增夹具在有效结果
+后追加 4096 bytes sentinel，确认 hidden/KV 边界和 `serialized_bytes` 保持在
+原结果末端；截断、错误表指针及错误表字段继续 fail-closed，失败结果全零。
+
+固定 managed model probe 的 CLI 输出增加 `serialized_bytes`，validator 要求
+producer 与 reader 的值相同且等于当前离线 oracle 的 54680 bytes。result V2
+stage 改用解码所得精确长度，并直接从同一 output mapping 计算 Memory Service
+checksum；hidden/KV 子视图保持现有 allocation-relative offset 和 checksum。
+单层诊断仍要求精确长度等于配置 oracle，因此该改动没有放宽 r540 的数值和
+边界门禁，也没有把预分配尾部发布给 reader。
+
+本地轻量验证：结果解码 11/11、managed validator 33/33、managed 应用契约
+9 个执行用例通过，15 个环境用例按预期跳过，`git diff --check` 通过。
+
+n4-910c1 使用父仓库 `711f305`、mem_service `e133b01` 的离线 bundle 建立
+隔离 checkout，并覆盖当前 kernel/QEMU 工作树中已有的 GVA/GSVA 源码提交。
+最终门禁使用 `ub-sim-gva-asan:r49`、`--network none`、`--pull never`、冻结
+Cargo registry/target、GCC15 和 Simpler 要求的 PTO pin `594817f`：
+
+- Python 完整 `unittest discover` 执行 598 项，593 通过、5 项既有环境跳过、
+  零失败/错误，119.806 秒；日志为 `managed-result-size-python-r577.log`。
+- Rust 完整 workspace 共 43 个顶层 harness，976 通过、16 ignored、零失败；
+  容器 exit 0，日志为 `managed-result-size-rust-r580.log`。
+
+失败环境记录保留：首个远端副本缺少 kernel/QEMU/OBMM 子模块；宿主缺少 Cargo
+和 sanitizer；前三个容器依次缺少 Git safe-directory、冻结 Cargo registry 和
+正确的 Simpler PTO pin。它们没有形成通过证据。最终两套通过门禁使用同一候选
+源码，且没有下载依赖或启动模型/QEMU workload。
+
+本批只补齐 callable 4 result 的精确发布边界。持续 W5 serving loop、terminal
+token 受管理发布、跨 range/step lease 和两模型 2/3/8-node 多步实际矩阵仍待
+实现与验证；M2 和总目标保持进行中。

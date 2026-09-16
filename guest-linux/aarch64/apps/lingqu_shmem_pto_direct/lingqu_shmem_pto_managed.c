@@ -1432,9 +1432,10 @@ static int stage_model_output(struct managed_state *output,
     const unsigned kinds[] = {MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_OUTPUT,
         MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT, MEM_SERVICE_OBMM_KIND_MODEL_KV_STATE};
     for (unsigned i = 0; i < 3; ++i) {
+        uint64_t result_bytes = output->decoded_output.serialized_bytes;
         struct mem_service_client_reference_view view = {
             .offset = i ? decoded[i]->offset : MODEL_OUTPUT_OFFSET,
-            .len = i ? decoded[i]->bytes : output->config.model_output_bytes,
+            .len = i ? decoded[i]->bytes : result_bytes,
             .object_kind = kinds[i], .owner_entity = output->config.node,
             .producer_entity = output->config.node,
         };
@@ -1442,7 +1443,10 @@ static int stage_model_output(struct managed_state *output,
         int rc = mem_service_client_prepare_managed_reference(&output->client, channel,
             &output->allocation, mapping, lifecycle, &view, &output->reference, &status);
         if (rc) return rc;
-        uint64_t checksum = i ? decoded[i]->service_checksum : output->config.model_output_checksum;
+        uint64_t checksum = i ? decoded[i]->service_checksum :
+            mem_service_provider_checksum64(
+                (const unsigned char *)mapping->base + MODEL_OUTPUT_OFFSET,
+                result_bytes);
         if (output->reference.object.payload_checksum != checksum) return -EIO;
         output->output_view = i;
         rc = reference_transition(output, MEM_SERVICE_REFERENCE_STAGE);
@@ -1514,15 +1518,16 @@ static int model_output_callback(void *opaque,
     rc = llm_infer_decode_range_result(bytes + data_offset, length,
         MODEL_OUTPUT_OFFSET, &expected, &result);
     if (rc) return rc;
-    if (!result.kv.bytes) return -EPROTO;
+    if (!result.kv.bytes || result.serialized_bytes != length) return -EPROTO;
     state->output->decoded_output = result;
     printf("MANAGED_MODEL_VIEWS node=%u hidden_offset=%" PRIu64
         " hidden_bytes=%" PRIu64 " hidden_checksum=%016" PRIx64
         " kv_offset=%" PRIu64 " kv_bytes=%" PRIu64 " kv_checksum=%016" PRIx64
-        " real_layers=%" PRIu64 " payload_copies=0 status=pass\n",
+        " real_layers=%" PRIu64 " serialized_bytes=%" PRIu64
+        " payload_copies=0 status=pass\n",
         state->config.node, result.hidden.offset, result.hidden.bytes,
         result.hidden.service_checksum, result.kv.offset, result.kv.bytes,
-        result.kv.service_checksum, result.real_layers);
+        result.kv.service_checksum, result.real_layers, result.serialized_bytes);
     /* No write is permitted in the gap or beyond the serialized result. */
     for (uint64_t i = W5_MANAGED_MODEL_CONTROL_BYTES; !reader && i < MODEL_OUTPUT_OFFSET; ++i)
         if (bytes[i] != 0xa5) return -EIO;

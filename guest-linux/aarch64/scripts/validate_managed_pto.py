@@ -953,7 +953,9 @@ def validate_model_output_publication(guests, mappings, output_bytes, output_che
     views = [records(text, "MANAGED_MODEL_VIEWS") for text in guests]
     require(all(len(rows) == 1 and rows[0].get("node") == str(node) and
                 rows[0].get("status") == "pass" and rows[0].get("payload_copies") == "0"
-                and rows[0].get("real_layers") == "1" for node, rows in enumerate(views)),
+                and rows[0].get("real_layers") == "1" and
+                number(rows[0], "serialized_bytes") == output_bytes
+                for node, rows in enumerate(views)),
             "model result views missing")
     require({k: v for k, v in views[0][0].items() if k != "node"} ==
             {k: v for k, v in views[1][0].items() if k != "node"},

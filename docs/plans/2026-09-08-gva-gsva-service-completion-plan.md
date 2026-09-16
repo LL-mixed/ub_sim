@@ -526,6 +526,17 @@ package 与 release 契约已按依赖顺序更新。n4-910c1 的完整服务回
 gitlink/lock 本地同步。此项只关闭按请求选择 home 的控制面能力；同时多 home
 W5 serving、物理地址区间协调及 2/3/8-node 多步矩阵继续未完成。
 
+受管理结果边界续作：`llm_infer_decode_range_result()` 现在从已校验的 range
+table 返回精确 `serialized_bytes`，把模型实际写入长度与 output allocation
+预留容量分开。managed model CLI 记录并校验该长度；完整 result V2 以精确长度
+和实际 Memory Service checksum stage，不能把未写入的尾部容量发布给 reader。
+保留固定单层 probe 对离线 oracle 长度的严格相等检查，额外容量夹具验证解析器
+只返回实际结果边界。n4-910c1 的完整根仓库 Python 回归为 598 项、593 通过、
+5 项既有环境跳过、零失败/错误；Rust workspace 的 43 个顶层 harness 为
+976 通过、16 ignored、零失败。两套门禁均使用 network-none 容器、冻结 Cargo
+registry 和锁定 Simpler PTO pin。该项为 serving loop 提供精确发布边界，仍未
+接通连续 decode、terminal token、跨 range/step 生命周期或两模型运行矩阵。
+
 W5 serving 对象命名约定：输出 allocation 使用
 `w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>`，均为固定宽度
 小写十六进制；run/request 非零。该完整 key 由 producer 在 allocate 时确定，

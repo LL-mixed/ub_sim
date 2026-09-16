@@ -23,6 +23,8 @@ struct llm_infer_result_view {
 struct llm_infer_range_result {
     struct llm_infer_result_view hidden, kv;
     uint64_t input_checksum, output_tensor_checksum, range_checksum, real_layers;
+    /* Exact bytes written by the serialized result, excluding spare capacity. */
+    uint64_t serialized_bytes;
 };
 
 /* Decode an already completed and CPU-visible result under the caller's SDK

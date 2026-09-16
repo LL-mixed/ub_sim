@@ -44,7 +44,8 @@ class View(ctypes.Structure):
 class Result(ctypes.Structure):
     _fields_ = [("hidden", View), ("kv", View), ("input_checksum", ctypes.c_uint64),
                 ("output_tensor_checksum", ctypes.c_uint64),
-                ("range_checksum", ctypes.c_uint64), ("real_layers", ctypes.c_uint64)]
+                ("range_checksum", ctypes.c_uint64), ("real_layers", ctypes.c_uint64),
+                ("serialized_bytes", ctypes.c_uint64)]
 
 
 def fixture(nodes=2, node=0, layers=28, kv=b"previous-kv"):
@@ -174,12 +175,24 @@ class ManagedResultTest(unittest.TestCase):
                     self.assertEqual(result.hidden.bytes, 32)
                     self.assertEqual(result.kv.offset, result.hidden.offset + 32)
                     self.assertEqual(result.kv.bytes, len(b"previous-kv"))
+                    self.assertEqual(result.serialized_bytes, len(data))
                     for view in (result.hidden, result.kv):
                         start = view.offset - 16384
                         payload = data[start:start + view.bytes]
                         self.assertEqual(view.model_checksum, checksum(payload))
                         self.assertEqual(view.service_checksum, checksum(payload, False))
                         self.assertNotEqual(view.model_checksum, view.service_checksum)
+
+    def test_reports_exact_serialized_bytes_when_capacity_is_larger(self):
+        data, identity = fixture()
+        serialized_bytes = len(data)
+        data.extend(b"\xa5" * 4096)
+        rc, result = self.call(data, identity)
+        self.assertEqual(rc, 0)
+        self.assertEqual(result.serialized_bytes, serialized_bytes)
+        self.assertLess(result.serialized_bytes, len(data))
+        self.assertEqual(result.kv.offset + result.kv.bytes,
+                         16384 + result.serialized_bytes)
 
     def test_no_kv_returns_no_reference_view(self):
         data, identity = fixture(kv=b"")
