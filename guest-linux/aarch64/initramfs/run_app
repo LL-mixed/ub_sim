@@ -1482,6 +1482,11 @@ mem_service_object_share_holder_recovery() {
       echo "session_id=holder-recovery-controller"
       echo "connect=$connect"
       echo "request_timeout_ms=30000"
+      echo "provider=obmm"
+      echo "provider_node_id=$node"
+      echo "provider_node_count=2"
+      echo "provider_generation=$((incarnation + 1))"
+      echo "provider_import_region_bytes=2097152"
       echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
       echo "op=wait_state key=$ready_key state=active timeout_ms=60000 poll_ms=50"
     } >/tmp/holder-recovery-controller.conf

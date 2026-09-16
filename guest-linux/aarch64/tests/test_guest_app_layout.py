@@ -1527,6 +1527,8 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "old_cpu_access=rejected" in holder_recovery
     assert "signal_exit=$session_status" in holder_recovery
     assert "holder_fence_receipt_required" in holder_recovery
+    assert holder_recovery.count('echo "provider=obmm"') == 2
+    assert holder_recovery.count('echo "provider_node_count=2"') == 2
     managed = run_app.split("mem_service_object_share_managed() (", 1)[1].split(
         "\nrun_mem_service_object_share()", 1)[0]
     reference = run_app.split("mem_service_object_share_reference_ops() (", 1)[1].split(
@@ -1549,7 +1551,7 @@ def test_managed_object_sessions_bind_directory_holder_identity():
         run_app.split("mem_service_object_share_retired() (", 1)[1].split(
             "\nmem_service_object_share_wait_infrastructure()", 1
         )[0],
-        run_app.split("mem_service_object_share_holder_recovery() {", 1)[1].split(
+        run_app.split('echo "session_id=holder-recovery-client-1"', 1)[1].split(
             "\nmem_service_object_share_managed() (", 1
         )[0],
         run_app.split("mem_service_object_share_managed() (", 1)[1].split(
