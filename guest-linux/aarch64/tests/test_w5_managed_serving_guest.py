@@ -36,8 +36,8 @@ class W5ManagedServingGuestTest(unittest.TestCase):
                                     check=True, timeout=10)
             self.assertEqual(
                 result.stdout.strip(),
-                "w5_managed_serving_guest=pass callable=4 inputs=2 outputs=4 "
-                "terminal_v2=1")
+                "w5_managed_serving_guest=pass callable=4 inputs=2 outputs=5 "
+                "terminal_v2=1 token_v2=1")
 
 
 if __name__ == "__main__":

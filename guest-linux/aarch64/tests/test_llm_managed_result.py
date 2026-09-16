@@ -60,6 +60,7 @@ class Terminal(ctypes.Structure):
 
 class Result(ctypes.Structure):
     _fields_ = [("hidden", View), ("kv", View), ("terminal_view", View),
+                ("token_view", View),
                 ("input_checksum", ctypes.c_uint64),
                 ("output_tensor_checksum", ctypes.c_uint64),
                 ("range_checksum", ctypes.c_uint64), ("real_layers", ctypes.c_uint64),
@@ -233,6 +234,8 @@ class ManagedResultTest(unittest.TestCase):
                                      checksum(data, False))
                     self.assertEqual(bytes(result.terminal_view),
                                      bytes(ctypes.sizeof(View)))
+                    self.assertEqual(bytes(result.token_view),
+                                     bytes(ctypes.sizeof(View)))
                     self.assertEqual(result.terminal_present, 0)
                     for view in (result.hidden, result.kv):
                         start = view.offset - 16384
@@ -273,6 +276,11 @@ class ManagedResultTest(unittest.TestCase):
         self.assertEqual(
             result.terminal_view.service_checksum,
             checksum(data[LOGITS:LOGITS + terminal_bytes], False))
+        self.assertEqual(result.token_view.offset, 16384 + TOKEN_TEXT_ENTRY)
+        self.assertEqual(result.token_view.bytes, 64)
+        self.assertEqual(result.token_view.model_checksum, 0x4567)
+        self.assertEqual(result.token_view.service_checksum,
+                         checksum(data[TOKEN_TEXT_ENTRY:TOKEN_TEXT_ENTRY + 64], False))
         terminal = result.terminal
         self.assertEqual(terminal.step, 7)
         self.assertEqual(terminal.sampled_token, 11)

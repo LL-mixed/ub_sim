@@ -15,6 +15,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.guest_runner = self.script_dir / "run_llm_infer_eight_node_guest.sh"
         self.runtime_runner = self.script_dir / "run_w5_inference_cluster_runtime.sh"
         self.launcher = self.script_dir / "launch_ub_eight_node_headless.sh"
+        self.initramfs_builder = self.script_dir / "build_initramfs.sh"
         self.infer_source = (
             self.repo / "guest-linux" / "aarch64" / "apps" / "llm_infer" / "llm_infer.c"
         )
@@ -250,6 +251,38 @@ class W5ClusterTopologyTest(unittest.TestCase):
             infer_source,
         )
         self.assertIn("pipeline_start_barrier", runtime_source)
+
+    def test_managed_serving_bootstraps_one_control_plane_and_all_home_workers(self):
+        source = self.guest_runner.read_text(encoding="utf-8")
+
+        self.assertIn('SIM_W5_MANAGED_SERVING="${SIM_W5_MANAGED_SERVING:-0}"', source)
+        self.assertIn("start_w5_managed_service()", source)
+        self.assertIn("listen=\\$SIM_W5_MANAGED_CONNECT", source)
+        self.assertIn('echo "required_provider=guest-node-\\$i"', source)
+        self.assertIn('/bin/linqu_gva_manager --bootstrap --node-id "\\$node"', source)
+        self.assertIn(
+            "/bin/linqu_mem_service_provider_obmm serve-allocations", source
+        )
+        self.assertIn("allocation_policy=kernel-selected-noncontiguous", source)
+        self.assertIn("SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000", source)
+        self.assertIn("managed-model-provider-fingerprint", source)
+        self.assertIn("managed-model-provider: .*completion=success", source)
+
+    def test_managed_llm_link_check_matches_production_sources(self):
+        source = self.initramfs_builder.read_text(encoding="utf-8")
+        start = source.index("  local llm_infer_pto_sources=(")
+        end = source.index("  local common_mem_service_sources=(", start)
+        link_sources = source[start:end]
+
+        for variable in (
+            "W5_MANAGED_OBJECT_GUEST_SRC",
+            "W5_MANAGED_RUNTIME_GUEST_SRC",
+            "W5_MANAGED_SERVING_GUEST_SRC",
+            "MEM_SERVICE_MAPPING_OWNER_SRC",
+            "MEM_SERVICE_PROVIDER_OBMM_SRC",
+        ):
+            with self.subTest(variable=variable):
+                self.assertIn(variable, link_sources)
 
     def test_guest_launcher_log_matching_does_not_require_ripgrep(self):
         source = self.guest_runner.read_text(encoding="utf-8")

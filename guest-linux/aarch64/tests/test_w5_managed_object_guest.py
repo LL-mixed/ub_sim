@@ -24,7 +24,7 @@ class W5ManagedObjectGuestTest(unittest.TestCase):
             self.assertEqual(
                 result.stdout.strip(),
                 "w5_managed_object_guest=pass writer_lifecycle=1 "
-                "reader_lifecycle=1 owner_cleanup=1")
+                "reader_lifecycle=1 writer_abort=1 owner_cleanup=1")
 
 
 if __name__ == "__main__":

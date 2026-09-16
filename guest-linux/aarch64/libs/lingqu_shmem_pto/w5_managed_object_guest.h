@@ -99,6 +99,13 @@ int w5_managed_writer_seal(
     struct w5_managed_object_guest *object,
     enum mem_service_wire_status *status_out);
 
+/* Fail-closed cleanup for a writer that cannot be sealed. RETIRE is requested
+ * before its holder is released, so staged references can never become live.
+ * Any uncertain cleanup result retains *object for an exact retry. */
+int w5_managed_writer_abort(
+    struct w5_managed_object_guest **object,
+    enum mem_service_wire_status *status_out);
+
 /* Readers close after the original completion. Writers close only after SEAL.
  * Success destroys the owner and frees the object. Failure retains *object. */
 int w5_managed_object_close(

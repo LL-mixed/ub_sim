@@ -33,6 +33,7 @@ static unsigned adopts;
 static unsigned releases;
 static unsigned closes;
 static unsigned destroys;
+static unsigned retires;
 static unsigned char backing[65536];
 static struct lingqu_object_ref_wire_v2 published;
 
@@ -44,7 +45,7 @@ static void fill_allocation(struct mem_service_client_allocation *allocation,
     strcpy(allocation->state, "active");
     strcpy(allocation->owner_session, session);
     allocation->generation = 7;
-    allocation->version = begins ? 3 : 2;
+    allocation->version = allocations > begins ? 2 : 3;
     allocation->size_bytes = sizeof(backing);
     allocation->capabilities = MEM_SERVICE_CLIENT_MANAGED_CAP_MAP;
     strcpy(allocation->home_node, "guest-node-3");
@@ -97,6 +98,7 @@ int mem_service_client_allocate_object_at_home(
     assert(strcmp(home_node, "guest-node-3") == 0);
     ++allocations;
     fill_allocation(allocation_out, request->session_id);
+    allocation_out->version = 2;
     strcpy(allocation_out->state, "allocating");
     *status_out = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
@@ -391,12 +393,30 @@ int mem_service_client_release_object(
     assert(0);
 }
 
+int mem_service_client_retire_object(
+    const struct mem_service_client *client, const char *key,
+    const char *idempotency_key, bool has_expected_generation,
+    uint64_t expected_generation,
+    struct mem_service_client_allocation *allocation_out,
+    enum mem_service_wire_status *status_out)
+{
+    (void)client;
+    assert(key[0] && strstr(idempotency_key, "abort-retire"));
+    assert(has_expected_generation && expected_generation == 7);
+    fill_allocation(allocation_out, "writer-session");
+    strcpy(allocation_out->state, "retiring");
+    *status_out = MEM_SERVICE_WIRE_STATUS_OK;
+    ++retires;
+    return 0;
+}
+
 int main(void)
 {
     struct mem_service_client client = {.connect_spec = "unix:/tmp/service"};
     struct mem_service_provider_channel channel = {0};
     struct mem_service_access_domain domain = {&channel};
     struct w5_managed_object_guest *writer = NULL;
+    struct w5_managed_object_guest *aborted_writer = NULL;
     struct w5_managed_object_guest *reader = NULL;
     struct mem_service_mapping_lease *cpu = NULL;
     struct mem_service_mapping_access_view access;
@@ -447,9 +467,14 @@ int main(void)
     assert(mem_service_mapping_lease_release(cpu) == 0);
     assert(w5_managed_object_close(&reader, &status) == 0 && !reader);
 
-    assert(allocations == 1 && begins == 1 && stages == 1 && seals == 1);
-    assert(resolves == 1 && acquires == 1 && maps == 2 && adopts == 2);
-    assert(closes == 2 && destroys == 2 && releases == 2);
-    puts("w5_managed_object_guest=pass writer_lifecycle=1 reader_lifecycle=1 owner_cleanup=1");
+    assert(w5_managed_writer_open(&client, &channel, &domain, &writer_config,
+                                  &aborted_writer, &status) == 0);
+    assert(w5_managed_writer_abort(&aborted_writer, &status) == 0 &&
+           !aborted_writer);
+
+    assert(allocations == 2 && begins == 2 && stages == 1 && seals == 1);
+    assert(resolves == 1 && acquires == 1 && maps == 3 && adopts == 3);
+    assert(closes == 3 && destroys == 3 && releases == 3 && retires == 1);
+    puts("w5_managed_object_guest=pass writer_lifecycle=1 reader_lifecycle=1 writer_abort=1 owner_cleanup=1");
     return 0;
 }

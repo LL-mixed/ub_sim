@@ -27,7 +27,7 @@ static int output_key(const struct w5_managed_serving_operation *operation,
     unsigned index, char *out, size_t capacity)
 {
     static const char *const suffixes[W5_MANAGED_SERVING_MAX_OUTPUTS] = {
-        "/result", "/hidden", "/kv", "/terminal",
+        "/result", "/hidden", "/kv", "/terminal", "/token",
     };
     const struct mem_service_client_allocation *allocation =
         w5_managed_object_allocation(operation->request.writer);
@@ -157,6 +157,11 @@ static int stage_next(struct w5_managed_serving_operation *operation,
         view.len = decoded->terminal_view.bytes;
         view.object_kind = MEM_SERVICE_OBMM_KIND_MODEL_TERMINAL_RESULT;
         break;
+    case 4:
+        view.offset = decoded->token_view.offset;
+        view.len = decoded->token_view.bytes;
+        view.object_kind = MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT;
+        break;
     default:
         return -EINVAL;
     }
@@ -200,7 +205,7 @@ int w5_managed_serving_finish(
         if (rc) return rc;
         operation->output_visible = true;
     }
-    required = operation->result.decoded.terminal_present ? 4U : 3U;
+    required = operation->result.decoded.terminal_present ? 5U : 3U;
     while (operation->staged < required) {
         rc = stage_next(operation, status_out);
         if (rc) return rc;

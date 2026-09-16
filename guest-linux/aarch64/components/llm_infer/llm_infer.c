@@ -50,12 +50,15 @@ static uint64_t result_checksum(const unsigned char *bytes, size_t length,
 static int llm_infer_decode_terminal_result(const unsigned char *bytes,
     size_t metadata_end, const struct llm_infer_range_identity *expected,
     uint64_t allocation_offset, struct llm_infer_terminal_result *out,
-    struct llm_infer_result_view *view_out)
+    struct llm_infer_result_view *view_out,
+    struct llm_infer_result_view *token_view_out)
 {
     struct llm_infer_terminal_result decoded = {0};
     struct llm_infer_result_view decoded_view = {0};
+    struct llm_infer_result_view decoded_token_view = {0};
     unsigned matches = 0;
-    if (!bytes || !expected || !out || !view_out || !expected->vocab_size)
+    if (!bytes || !expected || !out || !view_out || !token_view_out ||
+        !expected->vocab_size)
         return -EINVAL;
     for (size_t header = 0; header + LLM_INFER_LOGITS_HEADER_BYTES <= metadata_end;
          header += 8) {
@@ -169,10 +172,18 @@ static int llm_infer_decode_terminal_result(const unsigned char *bytes,
             .service_checksum = result_checksum(bytes + header,
                                                 terminal_bytes, false),
         };
+        decoded_token_view = (struct llm_infer_result_view) {
+            .offset = allocation_offset + token_base,
+            .bytes = LLM_INFER_TOKEN_TEXT_ENTRY_BYTES,
+            .model_checksum = decoded.text_checksum,
+            .service_checksum = result_checksum(bytes + token_base,
+                LLM_INFER_TOKEN_TEXT_ENTRY_BYTES, false),
+        };
     }
     if (matches != 1) return -EPROTO;
     *out = decoded;
     *view_out = decoded_view;
+    *token_view_out = decoded_token_view;
     return 0;
 }
 
@@ -247,7 +258,7 @@ int llm_infer_decode_range_result(const void *result, size_t length,
     if (expected->layer_end == expected->total_layers) {
         int rc = llm_infer_decode_terminal_result(bytes, (size_t)header,
             expected, allocation_offset, &decoded.terminal,
-            &decoded.terminal_view);
+            &decoded.terminal_view, &decoded.token_view);
         if (rc) return rc;
         decoded.terminal_present = 1;
     }

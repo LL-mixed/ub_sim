@@ -26,6 +26,7 @@ struct w5_managed_object_guest {
     uint64_t timeout_ms;
     uint32_t pin_limit;
     bool writer;
+    bool allocation_requested;
     bool holder_owned;
     bool reference_mapping;
     bool begun;
@@ -202,6 +203,7 @@ int w5_managed_writer_open(
     request.session_id = object->session;
     request.size_bytes = config->size_bytes;
     request.capabilities = MEM_SERVICE_CLIENT_MANAGED_CAP_MAP;
+    object->allocation_requested = true;
     rc = mem_service_client_allocate_object_at_home(client, &request,
         config->home_node, &object->allocation, status_out);
     if (rc) return rc;
@@ -457,6 +459,72 @@ int w5_managed_writer_seal(
     rc = mem_service_mapping_owner_destroy(object->owner);
     if (!rc) object->owner = NULL;
     return rc;
+}
+
+int w5_managed_writer_abort(
+    struct w5_managed_object_guest **object_ptr,
+    enum mem_service_wire_status *status_out)
+{
+    struct w5_managed_object_guest *object;
+    struct mem_service_client_allocation retired;
+    char retire_operation[80];
+    int rc;
+
+    if (!object_ptr || !*object_ptr || !status_out)
+        return -EINVAL;
+    object = *object_ptr;
+    if (!object->writer || object->sealed)
+        return -EINVAL;
+    if (!object->allocation_requested) {
+        free(object);
+        *object_ptr = NULL;
+        *status_out = MEM_SERVICE_WIRE_STATUS_OK;
+        return 0;
+    }
+    if (object->allocation.generation == 0)
+        return -EAGAIN;
+    rc = operation_id(object, "abort-retire", retire_operation,
+                      sizeof(retire_operation));
+    if (rc)
+        return rc;
+    rc = mem_service_client_retire_object(object->client, object->key,
+        retire_operation, true,
+        object->allocation.generation, &retired, status_out);
+    if (rc)
+        return rc;
+    object->allocation = retired;
+    if (object->owner) {
+        rc = mem_service_mapping_owner_close(object->owner, status_out);
+        if (rc)
+            return rc;
+        rc = mem_service_mapping_owner_destroy(object->owner);
+        if (rc)
+            return rc;
+        object->owner = NULL;
+    }
+    if (object->lifecycle.pending || object->mapping.binding.mapped) {
+        rc = mem_service_client_unmap_managed_allocation(object->client,
+            object->channel, &object->mapping, &object->lifecycle, status_out);
+        if (rc)
+            return rc;
+    }
+    if (object->holder_owned) {
+        char release_operation[80];
+
+        rc = operation_id(object, "release", release_operation,
+                          sizeof(release_operation));
+        if (rc)
+            return rc;
+        rc = mem_service_client_release_object(object->client, object->key,
+            release_operation, object->session, true,
+            object->allocation.generation, &object->allocation, status_out);
+        if (rc)
+            return rc;
+        object->holder_owned = false;
+    }
+    free(object);
+    *object_ptr = NULL;
+    return 0;
 }
 
 int w5_managed_object_close(

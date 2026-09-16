@@ -7,7 +7,7 @@
 #include "components/llm_infer/llm_infer.h"
 
 #define W5_MANAGED_SERVING_MAX_INPUTS 2u
-#define W5_MANAGED_SERVING_MAX_OUTPUTS 4u
+#define W5_MANAGED_SERVING_MAX_OUTPUTS 5u
 
 struct w5_managed_serving_request {
     struct w5_managed_object_guest *writer;
@@ -55,9 +55,9 @@ int w5_managed_serving_poll(
     struct lingqu_shmem_pto_completion *completion_out);
 
 /* After successful completion: release compute pins, establish CPU visibility,
- * decode exact bounds, stage result/hidden/KV and optional terminal V2 views,
- * release the CPU pin, then atomically seal the writer allocation. Retry the
- * same operation after any uncertain service result. */
+ * decode exact bounds, stage result/hidden/KV and optional terminal/token V2
+ * views, release the CPU pin, then atomically seal the writer allocation.
+ * Retry the same operation after any uncertain service result. */
 int w5_managed_serving_finish(
     struct w5_managed_serving_operation *operation,
     struct w5_managed_serving_result *result_out,

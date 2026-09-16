@@ -27,12 +27,15 @@ static unsigned publishes;
 static unsigned waits;
 static unsigned stages;
 static unsigned releases;
-static const char *stage_suffixes[] = {"/result", "/hidden", "/kv", "/terminal"};
+static const char *stage_suffixes[] = {
+    "/result", "/hidden", "/kv", "/terminal", "/token",
+};
 static const unsigned stage_kinds[] = {
     MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_OUTPUT,
     MEM_SERVICE_OBMM_KIND_HIDDEN_RANGE_RUNTIME_OUTPUT,
     MEM_SERVICE_OBMM_KIND_MODEL_KV_STATE,
     MEM_SERVICE_OBMM_KIND_MODEL_TERMINAL_RESULT,
+    MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT,
 };
 
 struct mem_service_mapping_owner *w5_managed_object_owner(
@@ -98,7 +101,7 @@ int w5_managed_writer_stage(
     enum mem_service_wire_status *status_out)
 {
     (void)object; (void)cpu_lease;
-    assert(stages < 4 && strstr(reference_key, stage_suffixes[stages]));
+    assert(stages < 5 && strstr(reference_key, stage_suffixes[stages]));
     assert(view->object_kind == stage_kinds[stages]);
     assert(view->owner_entity == 2 && view->producer_entity == 2);
     memset(reference_out, 0, sizeof(*reference_out));
@@ -114,7 +117,7 @@ int w5_managed_writer_seal(
     struct w5_managed_object_guest *object,
     enum mem_service_wire_status *status_out)
 {
-    assert(stages == 4);
+    assert(stages == 5);
     object->sealed = 1;
     *status_out = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
@@ -222,6 +225,9 @@ int llm_infer_decode_range_result(const void *result, size_t result_bytes,
     out->terminal_view = (struct llm_infer_result_view) {
         .offset = 20000, .bytes = 512, .service_checksum = 0x33,
     };
+    out->token_view = (struct llm_infer_result_view) {
+        .offset = 20512, .bytes = 64, .service_checksum = 0x44,
+    };
     out->terminal_present = 1;
     out->terminal.step = expected->step;
     out->terminal.sampled_token = 99;
@@ -292,9 +298,9 @@ int main(void)
     assert(w5_managed_serving_poll(operation, &completion) == 0);
     assert(completion.op_id == 41 && completion.status == 1);
     assert(w5_managed_serving_finish(operation, &result, &status) == 0);
-    assert(result.reference_count == 4 && result.decoded.terminal.sampled_token == 99);
-    assert(writer.sealed && waits == 1 && stages == 4 && releases == 1);
+    assert(result.reference_count == 5 && result.decoded.terminal.sampled_token == 99);
+    assert(writer.sealed && waits == 1 && stages == 5 && releases == 1);
     assert(w5_managed_serving_release(&operation) == 0 && !operation);
-    puts("w5_managed_serving_guest=pass callable=4 inputs=2 outputs=4 terminal_v2=1");
+    puts("w5_managed_serving_guest=pass callable=4 inputs=2 outputs=5 terminal_v2=1 token_v2=1");
     return 0;
 }

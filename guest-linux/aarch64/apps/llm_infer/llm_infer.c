@@ -34,6 +34,8 @@
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
 #include "qwen3_pto_guest.h"
+#include "w5_managed_runtime_guest.h"
+#include "w5_managed_serving_guest.h"
 
 #define DT_ROOT "/proc/device-tree"
 #define UBC_RESOURCE_BASE_FALLBACK 0x18000000000ULL
@@ -272,6 +274,16 @@ struct w5_pto_ub_gm_hidden_result {
     uint64_t backing_offset;
     uint64_t checksum;
     uint64_t tile_count;
+};
+
+struct w5_managed_round_state {
+    struct w5_managed_object_guest *writer;
+    struct w5_managed_object_guest *token;
+    struct w5_managed_object_guest *hidden;
+    struct w5_managed_object_guest *kv;
+    struct w5_managed_serving_operation *operation;
+    struct w5_managed_serving_result result;
+    void *metadata;
 };
 
 static uint64_t qwen3_serving_effective_decode_step(uint64_t decode_step);
@@ -2375,6 +2387,423 @@ static int model_pto_terminal_record(const struct qwen3_pto_guest_output *output
     record->text_checksum = record->candidate_text_checksums[0];
     record->piece_word0 = record->candidate_piece_word0[0];
     record->piece_word1 = record->candidate_piece_word1[0];
+    return 0;
+}
+
+static uint64_t w5_managed_identity_hash(const char *text)
+{
+    uint64_t hash = UINT64_C(1469598103934665603);
+
+    if (!text || !text[0]) return 1;
+    for (const unsigned char *cursor = (const unsigned char *)text;
+         *cursor; ++cursor)
+        hash = (hash ^ *cursor) * UINT64_C(1099511628211);
+    return hash ? hash : 1;
+}
+
+static int w5_managed_reference_key(char *out, size_t capacity,
+                                    uint64_t run, uint64_t request,
+                                    uint32_t producer, uint64_t step,
+                                    const char *suffix)
+{
+    char allocation[65];
+    int length;
+
+    if (!out || !suffix || !suffix[0] ||
+        llm_infer_managed_object_key(allocation, sizeof(allocation), run,
+                                     request, producer, step) != 0)
+        return -EINVAL;
+    length = snprintf(out, capacity, "%s/%s", allocation, suffix);
+    return length < 0 || (size_t)length >= capacity ? -ENAMETOOLONG : 0;
+}
+
+static int w5_managed_read_token(
+    struct w5_managed_object_guest *object,
+    uint64_t expected_step,
+    uint64_t vocab_size,
+    uint64_t *token_out)
+{
+    const struct lingqu_object_ref_wire_v2 *reference;
+    struct mem_service_mapping_lease *lease = NULL;
+    struct mem_service_mapping_access_view view;
+    uint64_t words[8];
+    int rc;
+
+    if (!object || !token_out || !vocab_size) return -EINVAL;
+    reference = w5_managed_object_reference(object);
+    if (!reference ||
+        reference->object.object_kind != MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT ||
+        reference->object.payload_bytes != MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES)
+        return -ESTALE;
+    rc = w5_managed_object_acquire_cpu(object, 0,
+        MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES,
+        MEM_SERVICE_CLIENT_MAP_READ, &lease, &view);
+    if (rc) return rc;
+    memcpy(words, view.base, sizeof(words));
+    rc = mem_service_mapping_lease_release(lease);
+    if (rc) return rc;
+    if (words[0] != expected_step || words[1] >= vocab_size) return -EPROTO;
+    *token_out = words[1];
+    return 0;
+}
+
+static void w5_managed_terminal_record(
+    const struct llm_infer_terminal_result *source,
+    struct llm_terminal_token_record *target)
+{
+    memset(target, 0, sizeof(*target));
+    target->sampled_token = source->sampled_token;
+    target->runner_up_token = source->runner_up_token;
+    target->margin_milli = source->margin_milli;
+    target->logits_checksum = source->logits_checksum;
+    target->text_checksum = source->text_checksum;
+    target->top_logit_bits = source->top_logit_bits;
+    target->runner_up_logit_bits = source->runner_up_logit_bits;
+    target->full_vocab_checked_token_count =
+        source->full_vocab_checked_token_count;
+    target->full_vocab_logits_checksum = source->full_vocab_logits_checksum;
+    target->piece_word0 = source->piece_word0;
+    target->piece_word1 = source->piece_word1;
+    target->candidate_count = source->candidate_count;
+    for (uint64_t index = 0;
+         index < source->candidate_count && index < LLM_INFER_TERMINAL_CANDIDATES;
+         ++index) {
+        target->candidate_tokens[index] = source->candidate_tokens[index];
+        target->candidate_logit_bits[index] = source->candidate_logit_bits[index];
+        target->candidate_text_checksums[index] =
+            source->candidate_text_checksums[index];
+        target->candidate_piece_bytes[index] = source->candidate_piece_bytes[index];
+        target->candidate_piece_word0[index] =
+            source->candidate_piece_word0[index];
+        target->candidate_piece_word1[index] =
+            source->candidate_piece_word1[index];
+    }
+}
+
+static int w5_managed_round_close(struct w5_managed_round_state *state)
+{
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    int rc;
+
+    if (!state) return -EINVAL;
+    if (state->operation) {
+        rc = w5_managed_serving_release(&state->operation);
+        if (rc) return rc;
+    }
+    if (state->hidden) {
+        rc = w5_managed_object_close(&state->hidden, &status);
+        if (rc) return rc;
+    }
+    if (state->kv) {
+        rc = w5_managed_object_close(&state->kv, &status);
+        if (rc) return rc;
+    }
+    if (state->token) {
+        rc = w5_managed_object_close(&state->token, &status);
+        if (rc) return rc;
+    }
+    if (state->writer) {
+        rc = w5_managed_object_close(&state->writer, &status);
+        if (rc == -EBUSY)
+            rc = w5_managed_writer_abort(&state->writer, &status);
+        if (rc) return rc;
+    }
+    if (state->metadata) {
+        if (munmap(state->metadata, W5_PTO_UB_GM_METADATA_BYTES) != 0)
+            return -errno;
+        state->metadata = NULL;
+    }
+    memset(&state->result, 0, sizeof(state->result));
+    return 0;
+}
+
+static int w5_managed_open_reader(
+    struct w5_managed_runtime_guest *runtime,
+    const char *reference_key,
+    uint32_t local_node,
+    uint64_t step,
+    char role,
+    uint64_t timeout_ms,
+    struct w5_managed_object_guest **object_out)
+{
+    struct w5_managed_reader_config config;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
+    char operation[48];
+    int length;
+
+    if (!runtime || !reference_key || !object_out || *object_out)
+        return -EINVAL;
+    length = snprintf(session, sizeof(session),
+                      "managed-%08" PRIx32 "-%016" PRIx64 "-%c",
+                      local_node, step, role);
+    if (length < 0 || (size_t)length >= sizeof(session))
+        return -ENAMETOOLONG;
+    length = snprintf(operation, sizeof(operation),
+                      "m-%08" PRIx32 "-%016" PRIx64 "-%c",
+                      local_node, step, role);
+    if (length < 0 || (size_t)length >= sizeof(operation))
+        return -ENAMETOOLONG;
+    config = (struct w5_managed_reader_config) {
+        .reference_key = reference_key,
+        .session_id = session,
+        .operation_prefix = operation,
+        .timeout_ms = timeout_ms,
+        .pin_limit = 8,
+    };
+    return w5_managed_reader_open(w5_managed_runtime_client(runtime),
+        w5_managed_runtime_channel(runtime),
+        w5_managed_runtime_domain(runtime), &config, object_out, &status);
+}
+
+static int w5_managed_load_previous_token(
+    struct w5_managed_runtime_guest *runtime,
+    struct w5_managed_round_state *state,
+    uint64_t run,
+    uint64_t request,
+    uint32_t local_node,
+    uint32_t pipeline_nodes,
+    uint64_t step,
+    uint64_t vocab_size,
+    uint64_t timeout_ms,
+    uint64_t *token_out)
+{
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    char reference_key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
+    int rc;
+
+    if (!runtime || !state || !pipeline_nodes || step == 0 || !token_out)
+        return -EINVAL;
+    rc = w5_managed_reference_key(reference_key, sizeof(reference_key), run,
+        request, pipeline_nodes - 1U, step - 1U, "token");
+    if (!rc)
+        rc = w5_managed_open_reader(runtime, reference_key, local_node, step,
+                                    't', timeout_ms, &state->token);
+    if (!rc)
+        rc = w5_managed_read_token(state->token, step - 1U, vocab_size,
+                                   token_out);
+    if (!rc && local_node != 0U)
+        rc = w5_managed_object_close(&state->token, &status);
+    return rc;
+}
+
+static int w5_managed_run_model_range(
+    struct w5_managed_runtime_guest *runtime,
+    struct w5_managed_round_state *state,
+    volatile uint8_t *ep_mmio,
+    uint64_t run,
+    uint64_t serving_request,
+    uint32_t local_node,
+    uint32_t layer_start,
+    uint32_t layer_end,
+    uint32_t next_node,
+    uint32_t pipeline_nodes,
+    uint32_t total_layers,
+    uint64_t hidden_bytes,
+    uint64_t decode_step,
+    uint64_t vocab_size,
+    uint64_t artifact_fingerprint,
+    uint32_t requester_cna,
+    uint64_t timeout_ms,
+    uint64_t output_capacity,
+    struct llm_model_range_runtime_forward *forward_out,
+    struct llm_terminal_token_record *terminal_out,
+    bool *terminal_ready_out)
+{
+    const uint64_t output_offset =
+        (W5_MANAGED_MODEL_CONTROL_BYTES + PAGE_SIZE_BYTES - 1U) &
+        ~(PAGE_SIZE_BYTES - 1U);
+    const struct mem_service_client *client;
+    const struct mem_service_provider_channel *channel;
+    struct mem_service_access_domain *domain;
+    struct w5_managed_serving_request operation_request;
+    struct w5_managed_writer_config writer_config;
+    struct lingqu_shmem_pto_completion completion;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    uint8_t prompt_prefix[W5_MANAGED_MODEL_PREFIX_BYTES];
+    char allocation_key[65];
+    char reference_key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
+    char home_node[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN];
+    char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
+    char operation[48];
+    uint64_t metadata_iova = 0;
+    uint64_t allocation_bytes;
+    uint64_t started_ms;
+    int length;
+    int rc;
+
+    if (!runtime || !state || !ep_mmio || !pipeline_nodes ||
+        local_node >= pipeline_nodes || layer_start >= layer_end ||
+        layer_end > total_layers || !hidden_bytes || hidden_bytes > UINT32_MAX ||
+        !vocab_size ||
+        !artifact_fingerprint || !requester_cna || !timeout_ms ||
+        !output_capacity || !forward_out || !terminal_out ||
+        !terminal_ready_out || state->writer || state->hidden || state->kv ||
+        state->operation || state->metadata)
+        return -EINVAL;
+    if (decode_step > 0 && local_node == 0U && !state->token)
+        return -EINVAL;
+    if (output_offset > UINT64_MAX - output_capacity)
+        return -EOVERFLOW;
+    allocation_bytes = output_offset + output_capacity;
+    client = w5_managed_runtime_client(runtime);
+    channel = w5_managed_runtime_channel(runtime);
+    domain = w5_managed_runtime_domain(runtime);
+    if (!client || !channel || !domain)
+        return -ENODEV;
+
+    if (layer_start > 0U) {
+        rc = w5_managed_reference_key(reference_key, sizeof(reference_key),
+            run, serving_request, local_node - 1U, decode_step, "hidden");
+        if (!rc)
+            rc = w5_managed_open_reader(runtime, reference_key, local_node,
+                                        decode_step, 'h', timeout_ms,
+                                        &state->hidden);
+        if (rc)
+            return rc;
+    }
+    if (decode_step > 0U) {
+        rc = w5_managed_reference_key(reference_key, sizeof(reference_key),
+            run, serving_request, local_node, decode_step - 1U, "kv");
+        if (!rc)
+            rc = w5_managed_open_reader(runtime, reference_key, local_node,
+                                        decode_step, 'k', timeout_ms,
+                                        &state->kv);
+        if (rc)
+            return rc;
+    }
+    rc = llm_infer_managed_object_key(allocation_key, sizeof(allocation_key),
+        run, serving_request, local_node, decode_step);
+    length = snprintf(home_node, sizeof(home_node), "guest-node-%u",
+                      local_node);
+    if (rc || length < 0 || (size_t)length >= sizeof(home_node))
+        return rc ? rc : -ENAMETOOLONG;
+    length = snprintf(session, sizeof(session),
+                      "managed-w-%08" PRIx32 "-%016" PRIx64,
+                      local_node, decode_step);
+    if (length < 0 || (size_t)length >= sizeof(session))
+        return -ENAMETOOLONG;
+    length = snprintf(operation, sizeof(operation),
+                      "mw-%08" PRIx32 "-%016" PRIx64,
+                      local_node, decode_step);
+    if (length < 0 || (size_t)length >= sizeof(operation))
+        return -ENAMETOOLONG;
+    writer_config = (struct w5_managed_writer_config) {
+        .key = allocation_key,
+        .home_node = home_node,
+        .session_id = session,
+        .operation_prefix = operation,
+        .size_bytes = allocation_bytes,
+        .timeout_ms = timeout_ms,
+        .pin_limit = 8,
+    };
+    rc = w5_managed_writer_open(client, channel, domain, &writer_config,
+                                &state->writer, &status);
+    if (rc)
+        return rc;
+
+    state->metadata = mmap(NULL, W5_PTO_UB_GM_METADATA_BYTES,
+                           PROT_READ | PROT_WRITE,
+                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (state->metadata == MAP_FAILED) {
+        state->metadata = NULL;
+        return -errno;
+    }
+    memset(state->metadata, 0, W5_PTO_UB_GM_METADATA_BYTES);
+    rc = lingqu_shmem_sim_phys_for_virt(state->metadata, &metadata_iova);
+    if (rc)
+        return rc;
+    read_segment_bytes(ep_mmio, 0, prompt_prefix, sizeof(prompt_prefix));
+    memset(&operation_request, 0, sizeof(operation_request));
+    operation_request.writer = state->writer;
+    if (layer_start > 0U)
+        operation_request.inputs[operation_request.input_count++] =
+            state->hidden;
+    else if (decode_step > 0U)
+        operation_request.inputs[operation_request.input_count++] =
+            state->token;
+    if (decode_step > 0U)
+        operation_request.inputs[operation_request.input_count++] = state->kv;
+    operation_request.compute = w5_managed_runtime_compute(runtime);
+    operation_request.endpoint = w5_managed_runtime_endpoint(runtime);
+    operation_request.op_id = UINT64_C(0x4d00000000000000) |
+        ((uint64_t)local_node << 48) | (decode_step + 1U);
+    operation_request.request_id = run ^
+        ((serving_request << 17) | (serving_request >> 47)) ^
+        ((uint64_t)local_node << 32) ^ (decode_step + 1U);
+    if (!operation_request.request_id)
+        operation_request.request_id = decode_step + 1U;
+    operation_request.artifact_fingerprint = artifact_fingerprint;
+    operation_request.requester_cna = requester_cna;
+    operation_request.levels[0] = LLM_MODEL_RANGE_TASK_MAGIC;
+    operation_request.levels[1] = local_node;
+    operation_request.levels[2] = layer_start;
+    operation_request.levels[3] = layer_end;
+    operation_request.levels[4] = next_node;
+    operation_request.levels[5] = pipeline_nodes;
+    operation_request.levels[6] = total_layers;
+    operation_request.levels[7] = (uint32_t)hidden_bytes;
+    operation_request.prompt_prefix = prompt_prefix;
+    operation_request.prompt_prefix_bytes = sizeof(prompt_prefix);
+    operation_request.output_offset = output_offset;
+    operation_request.output_capacity = output_capacity;
+    operation_request.metadata = state->metadata;
+    operation_request.metadata_bytes = W5_PTO_UB_GM_METADATA_BYTES;
+    operation_request.metadata_iova = metadata_iova;
+    operation_request.expected = (struct llm_infer_range_identity) {
+        .node = local_node,
+        .layer_start = layer_start,
+        .layer_end = layer_end,
+        .next_node = next_node,
+        .pipeline_nodes = pipeline_nodes,
+        .total_layers = total_layers,
+        .hidden_bytes = hidden_bytes,
+        .step = decode_step,
+        .vocab_size = vocab_size,
+    };
+    rc = w5_managed_serving_prepare(&operation_request, &state->operation);
+    if (!rc)
+        rc = w5_managed_serving_submit(state->operation);
+    if (rc)
+        return rc;
+    started_ms = monotonic_ms();
+    do {
+        rc = w5_managed_serving_poll(state->operation, &completion);
+        if (rc != -EAGAIN)
+            break;
+        usleep(10000);
+    } while (monotonic_ms() - started_ms < timeout_ms);
+    if (rc == -EAGAIN)
+        return -ETIMEDOUT;
+    if (rc || !lingqu_shmem_pto_completion_succeeded(&completion))
+        return rc ? rc : -EIO;
+    rc = w5_managed_serving_finish(state->operation, &state->result, &status);
+    if (rc)
+        return rc;
+
+    memset(forward_out, 0, sizeof(*forward_out));
+    forward_out->node = local_node;
+    forward_out->layer_start = layer_start;
+    forward_out->layer_end = layer_end;
+    forward_out->layer_count = layer_end - layer_start;
+    forward_out->real_layers = state->result.decoded.real_layers;
+    forward_out->next_node = next_node;
+    forward_out->input_checksum = state->result.decoded.input_checksum;
+    forward_out->output_checksum =
+        state->result.decoded.output_tensor_checksum;
+    forward_out->payload_offset = state->result.decoded.hidden.offset;
+    forward_out->payload_bytes = state->result.decoded.hidden.bytes;
+    forward_out->payload_checksum =
+        state->result.decoded.hidden.service_checksum;
+    forward_out->kv_payload_offset = state->result.decoded.kv.offset;
+    forward_out->kv_payload_bytes = state->result.decoded.kv.bytes;
+    forward_out->kv_payload_checksum =
+        state->result.decoded.kv.service_checksum;
+    forward_out->range_checksum = state->result.decoded.range_checksum;
+    *terminal_ready_out = state->result.decoded.terminal_present != 0;
+    if (*terminal_ready_out)
+        w5_managed_terminal_record(&state->result.decoded.terminal,
+                                   terminal_out);
     return 0;
 }
 
@@ -10300,6 +10729,17 @@ int main(int argc, char **argv)
     bool qwen3_pre_resolved_range_input = false;
     bool w5_pto_ub_gm_probe_enabled = false;
     bool w5_qwen3_pto = false;
+    bool w5_managed_serving = false;
+    struct w5_managed_runtime_guest *w5_managed_runtime = NULL;
+    struct w5_managed_round_state w5_managed_round;
+    struct llm_terminal_token_record w5_managed_terminal_token;
+    bool w5_managed_terminal_ready = false;
+    uint64_t w5_managed_run = 0;
+    uint64_t w5_managed_request = 0;
+    uint64_t w5_managed_artifact_fingerprint = 0;
+    uint64_t w5_managed_output_capacity = 0;
+    uint64_t w5_managed_import_region_bytes = 0;
+    const char *w5_managed_connect = NULL;
     struct qwen3_pto_guest_operation *qwen3_pto_operation = NULL;
     struct qwen3_pto_guest_output qwen3_pto_output = {0};
     struct mem_service_object_payload_view qwen3_pto_previous_kv = {0};
@@ -10330,6 +10770,9 @@ int main(int argc, char **argv)
     memset(&w5_pto_ub_gm_hidden_result,
            0,
            sizeof(w5_pto_ub_gm_hidden_result));
+    memset(&w5_managed_round, 0, sizeof(w5_managed_round));
+    memset(&w5_managed_terminal_token, 0,
+           sizeof(w5_managed_terminal_token));
     resolve_role(role, sizeof(role));
     memset(&qwen3_engram_config, 0, sizeof(qwen3_engram_config));
     cluster_observer_mode = env_bool_is_one("LINQU_W4_ALLOW_OBSERVER_ONLY");
@@ -10339,6 +10782,12 @@ int main(int argc, char **argv)
     w5_pto_ub_gm_probe_enabled =
         env_bool_is_one("SIM_W5_PTO_UB_GM_PROBE");
     w5_qwen3_pto = env_bool_is_one("SIM_W5_QWEN3_PTO");
+    w5_managed_serving = env_bool_is_one("SIM_W5_MANAGED_SERVING");
+    if (w5_managed_serving && w5_qwen3_pto) {
+        fprintf(stderr,
+                "[w4_guest] fail managed callable 4 conflicts with callable 3\n");
+        return 1;
+    }
     if (w5_qwen3_pto && (w5_pto_ub_gm_probe_enabled || !is_qwen3_profile())) {
         fprintf(stderr, "[w4_guest] fail model PTO requires Qwen3 and excludes mechanism probes\n");
         return 1;
@@ -10373,9 +10822,11 @@ int main(int argc, char **argv)
     }
     w5_pto_ub_gm_artifact_fingerprint = env_u64_base0_or_default(
         "SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT", 0);
+    w5_managed_artifact_fingerprint = env_u64_base0_or_default(
+        "SIM_W5_MANAGED_ARTIFACT_FINGERPRINT", 0);
     w5_pto_ub_gm_timeout_ms = env_u64_or_default(
         "SIM_W5_PTO_UB_GM_TIMEOUT_MS", 300000ULL);
-    if (w5_pto_ub_gm_probe_enabled || w5_qwen3_pto) {
+    if (w5_pto_ub_gm_probe_enabled || w5_qwen3_pto || w5_managed_serving) {
         char requester_cna_text[64];
         char direct_enabled_text[16];
         char *end = NULL;
@@ -10385,7 +10836,8 @@ int main(int argc, char **argv)
         memset(direct_enabled_text, 0, sizeof(direct_enabled_text));
         if (!enable_db_cluster || !env_nonempty("SIM_UAPI_W5_PROFILE") ||
             (w5_pto_ub_gm_publish_output && !is_qwen3_profile()) ||
-            w5_pto_ub_gm_artifact_fingerprint == 0 ||
+            (w5_managed_serving ? w5_managed_artifact_fingerprint :
+                                  w5_pto_ub_gm_artifact_fingerprint) == 0 ||
             w5_pto_ub_gm_timeout_ms == 0 ||
             !cmdline_get_value("linqu_shmem_pto_direct",
                                direct_enabled_text,
@@ -10395,13 +10847,14 @@ int main(int argc, char **argv)
                                requester_cna_text,
                                sizeof(requester_cna_text))) {
             fprintf(stderr,
-                    "[w4_guest] fail W5 PTO UB_GM probe configuration"
+                    "[w4_guest] fail W5 PTO UB_GM dispatch configuration"
                     " memory_service=%u w5_profile=%u fingerprint=0x%016" PRIx64
                     " timeout_ms=%" PRIu64
                     " publish_output=%u direct=%s requester_cna=%s\n",
                     enable_db_cluster ? 1U : 0U,
                     env_nonempty("SIM_UAPI_W5_PROFILE") ? 1U : 0U,
-                    w5_pto_ub_gm_artifact_fingerprint,
+                    w5_managed_serving ? w5_managed_artifact_fingerprint :
+                                         w5_pto_ub_gm_artifact_fingerprint,
                     w5_pto_ub_gm_timeout_ms,
                     w5_pto_ub_gm_publish_output ? 1U : 0U,
                     direct_enabled_text[0] ? direct_enabled_text : "missing",
@@ -10421,7 +10874,7 @@ int main(int argc, char **argv)
             return 1;
         }
         w5_pto_ub_gm_requester_cna = (uint32_t)requester_cna_value;
-        printf("[w4_guest] stage w5_pto_ub_gm_probe_config"
+        printf("[w4_guest] stage %s"
                " fingerprint=0x%016" PRIx64
                " requester_cna=0x%08" PRIx32
                " timeout_ms=%" PRIu64
@@ -10429,7 +10882,10 @@ int main(int argc, char **argv)
                " program=%s"
                " source=lingqu_memory_service target=simpler_pto"
                " address_space=UB_GM status=ok\n",
-               w5_pto_ub_gm_artifact_fingerprint,
+               w5_managed_serving ? "w5_managed_serving_transport_config" :
+                                    "w5_pto_ub_gm_probe_config",
+               w5_managed_serving ? w5_managed_artifact_fingerprint :
+                                    w5_pto_ub_gm_artifact_fingerprint,
                w5_pto_ub_gm_requester_cna,
                w5_pto_ub_gm_timeout_ms,
                w5_pto_ub_gm_publish_output ? 1U : 0U,
@@ -10638,9 +11094,10 @@ int main(int argc, char **argv)
     uapi_completion_timeout_ms = env_u64_or_default("SIM_W4_UAPI_COMPLETION_TIMEOUT_MS",
                                                     W4_DEFAULT_TIMEOUT_MS);
     decode_round_barrier_enabled =
-        env_bool_is_one("SIM_QWEN3_DECODE_ROUND_BARRIER") ||
-        (guest_decode_steps > 1U && enable_db_cluster &&
-         (is_qwen3_profile() || is_deepseek_v4_flash_profile()));
+        !w5_managed_serving &&
+        (env_bool_is_one("SIM_QWEN3_DECODE_ROUND_BARRIER") ||
+         (guest_decode_steps > 1U && enable_db_cluster &&
+          (is_qwen3_profile() || is_deepseek_v4_flash_profile())));
     if (decode_round_barrier_enabled) {
         const char *run_id = getenv("SIM_W5_RUN_ID");
         const char *batch_id = getenv("SIM_W5_BATCH_ID");
@@ -10667,6 +11124,74 @@ int main(int argc, char **argv)
     }
     guest_decode_step_limit = guest_decode_step + guest_decode_steps;
     cluster_node_count = w4_cluster_node_count();
+    if (w5_managed_serving) {
+        const char *run_id = getenv("SIM_W5_RUN_ID");
+        const char *serving_request_id = getenv("SIM_W5_SERVING_REQUEST_ID");
+        struct w5_managed_runtime_config runtime_config;
+        uint64_t max_mappings = env_u64_or_default(
+            "SIM_W5_MANAGED_MAX_MAPPINGS", 16);
+        int managed_rc;
+
+        if (!run_id || !run_id[0]) run_id = "default-run";
+        if (!serving_request_id || !serving_request_id[0])
+            serving_request_id = getenv("SIM_W5_BATCH_ID");
+        if (!serving_request_id || !serving_request_id[0])
+            serving_request_id = "default-request";
+        w5_managed_connect = getenv("SIM_W5_MANAGED_CONNECT");
+        w5_managed_output_capacity = env_u64_or_default(
+            "SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES", 32ULL * 1024ULL * 1024ULL);
+        w5_managed_import_region_bytes = env_u64_or_default(
+            "SIM_W5_MANAGED_IMPORT_REGION_BYTES", 256ULL * 1024ULL * 1024ULL);
+        w5_managed_run = w5_managed_identity_hash(run_id);
+        w5_managed_request = w5_managed_identity_hash(serving_request_id);
+        if (!w5_managed_connect || !w5_managed_connect[0] ||
+            !w4_runtime_range_pipeline_enabled(cluster_node_count) ||
+            (!is_qwen3_profile() && !is_deepseek_v4_flash_profile()) ||
+            qwen3_engram_config.enabled || qwen3_memory_decision_config.enabled ||
+            qwen3_prefix_cache_replay_suffix_token_count ||
+            sampler_config.top_k != 1 ||
+            w5_managed_output_capacity < 65536 ||
+            w5_managed_output_capacity > W5_MANAGED_MODEL_MAX_VIEW_BYTES ||
+            w5_managed_output_capacity % PAGE_SIZE_BYTES ||
+            w5_managed_import_region_bytes < w5_managed_output_capacity ||
+            max_mappings == 0 || max_mappings > UINT32_MAX) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed serving configuration"
+                    " connect=%u nodes=%u profile=%s engram=%u memory=%u"
+                    " top_k=%" PRIu64 " output_capacity=%" PRIu64
+                    " import_region=%" PRIu64 " max_mappings=%" PRIu64 "\n",
+                    w5_managed_connect && w5_managed_connect[0] ? 1U : 0U,
+                    cluster_node_count, w4_runtime_model_key(),
+                    qwen3_engram_config.enabled ? 1U : 0U,
+                    qwen3_memory_decision_config.enabled ? 1U : 0U,
+                    sampler_config.top_k, w5_managed_output_capacity,
+                    w5_managed_import_region_bytes, max_mappings);
+            return 1;
+        }
+        runtime_config = (struct w5_managed_runtime_config) {
+            .connect_spec = w5_managed_connect,
+            .timeout_ms = w5_pto_ub_gm_timeout_ms,
+            .import_region_bytes = w5_managed_import_region_bytes,
+            .max_mappings = (uint32_t)max_mappings,
+        };
+        managed_rc = w5_managed_runtime_open(&runtime_config,
+                                             &w5_managed_runtime);
+        if (managed_rc != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed serving runtime open rc=%d\n",
+                    managed_rc);
+            if (w5_managed_runtime)
+                (void)w5_managed_runtime_close(&w5_managed_runtime);
+            return 1;
+        }
+        printf("[w4_guest] stage w5_managed_serving_runtime_open"
+               " run=0x%016" PRIx64 " request=0x%016" PRIx64
+               " nodes=%u output_capacity=%" PRIu64
+               " import_region=%" PRIu64
+               " callable=4 control=mem_service data=obmm status=ok\n",
+               w5_managed_run, w5_managed_request, cluster_node_count,
+               w5_managed_output_capacity, w5_managed_import_region_bytes);
+    }
     init_supernode_clock(&supernode_clock);
     {
         uint32_t local_node = UINT32_MAX;
@@ -11876,6 +12401,15 @@ int main(int argc, char **argv)
     }
 
 decode_round_start:
+    if (w5_managed_round.writer || w5_managed_round.token ||
+        w5_managed_round.hidden || w5_managed_round.kv ||
+        w5_managed_round.operation || w5_managed_round.metadata) {
+        fprintf(stderr,
+                "[w4_guest] fail managed serving previous round retained"
+                " step=%" PRIu64 "\n",
+                guest_decode_step);
+        goto out;
+    }
     if (guest_decode_step == 0) {
         qwen3_terminal_token_count = 0;
         memset(qwen3_terminal_tokens, 0, sizeof(qwen3_terminal_tokens));
@@ -11966,12 +12500,15 @@ decode_round_start:
     memset(&w5_pto_ub_gm_hidden_result,
            0,
            sizeof(w5_pto_ub_gm_hidden_result));
+    memset(&w5_managed_terminal_token, 0,
+           sizeof(w5_managed_terminal_token));
+    w5_managed_terminal_ready = false;
     bool delay_decode_round_start_log =
         is_qwen3_profile() && enable_db_cluster &&
         llm_infer_qwen3_range_pipeline_enabled(cluster_node_count) &&
         guest_decode_step == 0;
     memset(&counts, 0, sizeof(counts));
-    memset(&runtime_forward, 0, sizeof(runtime_forward));
+    model_range_runtime_forward_release(&runtime_forward);
     memset(&qwen3_pto_previous_kv, 0, sizeof(qwen3_pto_previous_kv));
     model_runtime_forward_ready = false;
     qwen3_round_input_token_count = 0;
@@ -12075,7 +12612,7 @@ decode_round_start:
     }
 
     setup_ms = monotonic_ms();
-    if (enable_db_cluster) {
+    if (enable_db_cluster && !w5_managed_serving) {
         uint64_t stage_start_ms = monotonic_ms();
         uint32_t cluster_runtime_node = UINT32_MAX;
 
@@ -12160,7 +12697,7 @@ decode_round_start:
         round_layer_start = layer_start;
         round_layer_end = layer_end;
         round_next_node = next_node;
-        if (layer_start > 0U) {
+        if (layer_start > 0U && !w5_managed_serving) {
             uint64_t scheduler_wait_start_ms = monotonic_ms();
             struct mem_service_obmm_range_flow_request range_request;
             struct mem_service_scheduler_work_item scheduler_item;
@@ -12417,7 +12954,48 @@ decode_round_start:
     if (seed_kvcache_payload(ep_mmio, default_segment) != 0) {
         goto out;
     }
-    if (enable_db_cluster && guest_decode_step > 0 &&
+    if (w5_managed_serving && guest_decode_step > 0) {
+        uint32_t local_node = UINT32_MAX;
+        uint64_t previous_token = 0;
+        uint64_t stage_start_ms = monotonic_ms();
+        int managed_rc;
+
+        input_wait_start_ms = stage_start_ms;
+        if (!w4_cluster_role_index(role, cluster_node_count, &local_node)) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed token local node invalid"
+                    " role=%s nodes=%u\n",
+                    role, cluster_node_count);
+            goto out;
+        }
+        managed_rc = w5_managed_load_previous_token(w5_managed_runtime,
+            &w5_managed_round, w5_managed_run, w5_managed_request,
+            local_node, cluster_node_count, guest_decode_step,
+            w4_runtime_vocab_size(), w5_pto_ub_gm_timeout_ms,
+            &previous_token);
+        if (managed_rc != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed previous token resolve"
+                    " node=%u step=%" PRIu64 " rc=%d\n",
+                    local_node + 1U, guest_decode_step, managed_rc);
+            goto out;
+        }
+        qwen3_terminal_tokens[guest_decode_step - 1U] = previous_token;
+        qwen3_terminal_token_count = guest_decode_step;
+        input_found_ms = monotonic_ms();
+        input_loaded_ms = input_found_ms;
+        input_wait_ms = input_found_ms - stage_start_ms;
+        input_source_node = cluster_node_count - 1U;
+        input_wait_attempts = 1U;
+        printf("[w4_guest] stage w5_managed_previous_token_loaded"
+               " node=%u step=%" PRIu64 " producer=node%u"
+               " previous_step=%" PRIu64 " token=%" PRIu64
+               " source=mem_service_v2 target=prompt_history"
+               " callable=4 status=ok\n",
+               local_node + 1U, guest_decode_step, cluster_node_count,
+               guest_decode_step - 1U, previous_token);
+    }
+    if (!w5_managed_serving && enable_db_cluster && guest_decode_step > 0 &&
         qwen3_terminal_token_count < guest_decode_step &&
         (is_deepseek_v4_flash_profile() ||
          (is_qwen3_profile() &&
@@ -12723,7 +13301,7 @@ decode_round_start:
         }
     }
     descriptor_ms = monotonic_ms() - descriptor_ms;
-    if (is_deepseek_v4_flash_profile() &&
+    if (!w5_managed_serving && is_deepseek_v4_flash_profile() &&
         w4_runtime_range_pipeline_enabled(cluster_node_count) &&
         enable_db_cluster) {
         uint32_t dispatch_node = 0U;
@@ -12907,7 +13485,7 @@ decode_round_start:
             }
         }
     }
-    if (is_qwen3_profile() && enable_db_cluster &&
+    if (!w5_managed_serving && is_qwen3_profile() && enable_db_cluster &&
         llm_infer_qwen3_range_pipeline_enabled(cluster_node_count)) {
         uint32_t dispatch_node = 0U;
         uint32_t layer_start = 0U;
@@ -13355,6 +13933,131 @@ decode_round_start:
 
     compute_start_ms = monotonic_ms();
     compute_window_ms = compute_start_ms;
+    if (w5_managed_serving) {
+        uint64_t raw_sampled_token = 0;
+        bool terminal_owner =
+            round_dispatch_node + 1U == cluster_node_count;
+        int managed_rc;
+
+        managed_rc = w5_managed_run_model_range(w5_managed_runtime,
+            &w5_managed_round, ep_mmio, w5_managed_run,
+            w5_managed_request, round_dispatch_node, round_layer_start,
+            round_layer_end, round_next_node, cluster_node_count,
+            w4_runtime_total_layers(),
+            w4_runtime_handoff_hidden_bytes(guest_decode_step),
+            guest_decode_step, w4_runtime_vocab_size(),
+            w5_managed_artifact_fingerprint, w5_pto_ub_gm_requester_cna,
+            w5_pto_ub_gm_timeout_ms, w5_managed_output_capacity,
+            &runtime_forward, &w5_managed_terminal_token,
+            &w5_managed_terminal_ready);
+        if (managed_rc != 0 ||
+            w5_managed_terminal_ready != terminal_owner ||
+            runtime_forward.payload_bytes !=
+                w4_runtime_handoff_hidden_bytes(guest_decode_step)) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed model range"
+                    " node=%u step=%" PRIu64 " layers=[%u,%u)"
+                    " rc=%d terminal=%u expected_terminal=%u"
+                    " hidden_bytes=%" PRIu64 " expected_hidden=%" PRIu64
+                    "\n",
+                    round_dispatch_node + 1U, guest_decode_step,
+                    round_layer_start, round_layer_end, managed_rc,
+                    w5_managed_terminal_ready ? 1U : 0U,
+                    terminal_owner ? 1U : 0U,
+                    runtime_forward.payload_bytes,
+                    w4_runtime_handoff_hidden_bytes(guest_decode_step));
+            goto out;
+        }
+        compute_done_ms = monotonic_ms();
+        compute_window_ms = compute_done_ms - compute_start_ms;
+        publish_start_ms = compute_start_ms;
+        range_publish_start_ms = compute_start_ms;
+        range_publish_done_ms = compute_done_ms;
+        publish_done_ms = compute_done_ms;
+        publish_ms = compute_window_ms;
+        verify_done_ms = compute_done_ms;
+        range_publish_ms = compute_window_ms;
+        counts.chipbackend = 1;
+        counts.success = 1;
+        model_runtime_forward_ready = true;
+        if (w5_managed_terminal_ready) {
+            terminal_publish_start_ms = compute_start_ms;
+            if (llm_infer_apply_top_k_sampler(&sampler_config,
+                    &w5_managed_terminal_token, round_dispatch_node,
+                    guest_decode_step, qwen3_round_decode_position,
+                    &raw_sampled_token) != 0 ||
+                raw_sampled_token !=
+                    w5_managed_round.result.decoded.terminal.sampled_token) {
+                fprintf(stderr,
+                        "[w4_guest] fail managed terminal selection mismatch"
+                        " node=%u step=%" PRIu64
+                        " raw=%" PRIu64 " published=%" PRIu64 "\n",
+                        round_dispatch_node + 1U, guest_decode_step,
+                        raw_sampled_token,
+                        w5_managed_round.result.decoded.terminal.sampled_token);
+                goto out;
+            }
+            model_log_terminal_logits_observation(round_dispatch_node,
+                guest_decode_step, &w5_managed_terminal_token,
+                "managed_callable4_logits");
+            qwen3_step_terminal_observed = true;
+            if (guest_decode_step <
+                sizeof(qwen3_terminal_tokens) /
+                    sizeof(qwen3_terminal_tokens[0])) {
+                qwen3_terminal_tokens[guest_decode_step] = raw_sampled_token;
+                qwen3_terminal_token_count = guest_decode_step + 1U;
+            }
+            if (is_deepseek_v4_flash_profile()) {
+                printf("[w4_guest] stage deepseek_v4_flash_stream_token"
+                       " node=%u step=%" PRIu64 " token=%" PRIu64
+                       " runner_up=%" PRIu64
+                       " logits_checksum=0x%016" PRIx64
+                       " source=managed_callable4_logits"
+                       " target=stream_output status=ok\n",
+                       round_dispatch_node + 1U, guest_decode_step,
+                       w5_managed_terminal_token.sampled_token,
+                       w5_managed_terminal_token.runner_up_token,
+                       w5_managed_terminal_token.logits_checksum);
+                if (guest_decode_step == 0U) {
+                    printf("[w4_guest] stage deepseek_v4_flash_first_token"
+                           " node=%u step=0 token=%" PRIu64
+                           " runner_up=%" PRIu64
+                           " logits_checksum=0x%016" PRIx64
+                           " source=managed_callable4_logits"
+                           " target=stream_output status=ok\n",
+                           round_dispatch_node + 1U,
+                           w5_managed_terminal_token.sampled_token,
+                           w5_managed_terminal_token.runner_up_token,
+                           w5_managed_terminal_token.logits_checksum);
+                }
+            }
+            terminal_publish_done_ms = compute_done_ms;
+            terminal_publish_ms = compute_window_ms;
+        }
+        printf("[w4_guest] stage w5_managed_model_range_complete"
+               " node=%u step=%" PRIu64 " layers=[%u,%u) next=%u"
+               " callable=4 inputs=%u outputs=%u"
+               " hidden_bytes=%" PRIu64 " kv_bytes=%" PRIu64
+               " allocation_home=guest-node-%u"
+               " terminal=%u status=ok\n",
+               round_dispatch_node + 1U, guest_decode_step,
+               round_layer_start, round_layer_end, round_next_node + 1U,
+               (round_layer_start > 0U || guest_decode_step > 0U) +
+                   (guest_decode_step > 0U),
+               w5_managed_round.result.reference_count,
+               runtime_forward.payload_bytes,
+               runtime_forward.kv_payload_bytes, round_dispatch_node,
+               w5_managed_terminal_ready ? 1U : 0U);
+        managed_rc = w5_managed_round_close(&w5_managed_round);
+        if (managed_rc != 0) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed model round close"
+                    " node=%u step=%" PRIu64 " rc=%d\n",
+                    round_dispatch_node + 1U, guest_decode_step, managed_rc);
+            goto out;
+        }
+        goto model_after_compute_publish;
+    }
     if (w5_qwen3_pto) {
         struct qwen3_pto_guest_geometry geometry = {
             .first = round_layer_start, .end = round_layer_end,
@@ -14172,7 +14875,8 @@ model_publish_runtime_range:
         }
     }
 model_after_compute_publish:
-    if (w5_qwen3_pto) goto qwen3_no_work_item_service_coverage;
+    if (w5_qwen3_pto || w5_managed_serving)
+        goto qwen3_no_work_item_service_coverage;
     publish_done_ms = monotonic_ms();
     if (terminal_publish_done_ms > terminal_publish_start_ms) {
         terminal_publish_ms = terminal_publish_done_ms - terminal_publish_start_ms;
@@ -14208,6 +14912,23 @@ model_after_compute_publish:
            counts.success, counts.retryable, counts.fatal);
 
 qwen3_no_work_item_service_coverage:
+    if (w5_managed_serving) {
+        if (!model_runtime_forward_ready || counts.chipbackend != 1 ||
+            counts.success != 1 || counts.fatal ||
+            w5_managed_round.writer || w5_managed_round.token ||
+            w5_managed_round.hidden || w5_managed_round.kv ||
+            w5_managed_round.operation || w5_managed_round.metadata) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed serving round incomplete"
+                    " node=%u step=%" PRIu64 "\n",
+                    round_dispatch_node + 1U, guest_decode_step);
+            goto out;
+        }
+        printf("[w4_guest] assessment managed_model_complete=true"
+               " legacy_range_publish=not_run service_probe=not_run"
+               " dispatch_path=mem_service_managed_callable4\n");
+        goto qwen3_after_service_coverage;
+    }
     if (w5_qwen3_pto) {
         if (!model_runtime_forward_ready || counts.chipbackend != 1 || counts.fatal) goto out;
         printf("[w4_guest] assessment model_pto_complete=true service_probe=not_run"
@@ -14598,6 +15319,18 @@ qwen3_after_service_coverage:
     }
 
 out:
+    if (w5_managed_round.writer || w5_managed_round.token ||
+        w5_managed_round.hidden || w5_managed_round.kv ||
+        w5_managed_round.operation || w5_managed_round.metadata) {
+        int cleanup_rc = w5_managed_round_close(&w5_managed_round);
+
+        if (cleanup_rc != 0) {
+            fprintf(stderr,
+                    "[w4_guest] managed serving cleanup retained rc=%d\n",
+                    cleanup_rc);
+            rc = 1;
+        }
+    }
     if (qwen3_pto_operation) {
         int release_rc = qwen3_pto_guest_release(qwen3_pto_operation);
         if (release_rc) fprintf(stderr, "[w4_guest] model PTO release retained rc=%d\n", release_rc);
@@ -14608,6 +15341,16 @@ out:
         qwen3_engram_config.token_projection_count = 0;
     }
     model_range_runtime_forward_release(&runtime_forward);
+    if (w5_managed_runtime) {
+        int cleanup_rc = w5_managed_runtime_close(&w5_managed_runtime);
+
+        if (cleanup_rc != 0) {
+            fprintf(stderr,
+                    "[w4_guest] managed runtime cleanup retained rc=%d\n",
+                    cleanup_rc);
+            rc = 1;
+        }
+    }
     if (cq != MAP_FAILED) {
         munmap(cq, PAGE_SIZE_BYTES);
     }

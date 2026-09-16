@@ -133,6 +133,16 @@ SIMPLER_HOST_MATMUL_MANIFEST="${SIMPLER_HOST_MATMUL_MANIFEST:-/tmp/simpler-host-
 SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/tmp/simpler-host-engram-context-artifacts/host_engram_context_manifest.json}"
 SIM_W5_PTO_UB_GM_PROBE="${SIM_W5_PTO_UB_GM_PROBE:-0}"
 SIM_W5_QWEN3_PTO="${SIM_W5_QWEN3_PTO:-0}"
+SIM_W5_MANAGED_SERVING="${SIM_W5_MANAGED_SERVING:-0}"
+SIM_W5_MANAGED_CONNECT="${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
+SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
+SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES="${SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES:-33554432}"
+SIM_W5_MANAGED_IMPORT_REGION_BYTES="${SIM_W5_MANAGED_IMPORT_REGION_BYTES:-268435456}"
+SIM_W5_MANAGED_MAX_MAPPINGS="${SIM_W5_MANAGED_MAX_MAPPINGS:-16}"
+SIM_W5_MANAGED_APERTURE_BASE="${SIM_W5_MANAGED_APERTURE_BASE:-0x700000000000}"
+SIM_W5_MANAGED_APERTURE_SIZE="${SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000}"
+SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="${SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES:-2097152}"
+SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="${SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE:-1000000}"
 export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
 SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
 SIM_W5_PTO_UB_GM_PROGRAM="${SIM_W5_PTO_UB_GM_PROGRAM:-quadratic}"
@@ -541,6 +551,61 @@ validate_w5_pto_ub_gm_probe() {
   return 0
 }
 
+validate_w5_managed_serving() {
+  case "$SIM_W5_MANAGED_SERVING" in
+    0)
+      return 0
+      ;;
+    1)
+      ;;
+    *)
+      trace "FAIL: SIM_W5_MANAGED_SERVING must be 0 or 1"
+      return 1
+      ;;
+  esac
+  if [[ -z "$SIM_UAPI_W5_PROFILE" ||
+        "$SIM_LINGQU_SHMEM_PTO_ENABLE" != "1" ||
+        "$SIM_W5_QWEN3_PTO" != "0" ||
+        "$SIM_W5_PTO_UB_GM_PROBE" != "0" ||
+        "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" != "0" ||
+        "$SIM_QWEN3_GUEST_ENGRAM" != "0" ||
+        "$SIM_QWEN3_SAMPLER_TOP_K" != "1" ]]; then
+    trace "FAIL: managed serving requires a W5 profile, direct access, top_k=1, and disables callable-1/callable-3/engram"
+    return 1
+  fi
+  if [[ -z "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" ||
+        "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" == "0" ||
+        "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" == "0x0" ]]; then
+    trace "FAIL: managed serving requires a nonzero SIM_W5_MANAGED_ARTIFACT_FINGERPRINT from sim-cli managed-model-provider-fingerprint"
+    return 1
+  fi
+  if [[ "$SIM_W5_MANAGED_CONNECT" != tcp:10.0.0.1:* ]]; then
+    trace "FAIL: managed serving control endpoint must use nodeA IPv4, got $SIM_W5_MANAGED_CONNECT"
+    return 1
+  fi
+  local numeric
+  for numeric in \
+      "$SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES" \
+      "$SIM_W5_MANAGED_IMPORT_REGION_BYTES" \
+      "$SIM_W5_MANAGED_MAX_MAPPINGS" \
+      "$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES" \
+      "$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE"; do
+    if [[ ! "$numeric" =~ '^[1-9][0-9]*$' ]]; then
+      trace "FAIL: managed serving numeric configuration must be positive decimal, got $numeric"
+      return 1
+    fi
+  done
+  if (( SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES < 65536 ||
+        SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES % 4096 != 0 ||
+        SIM_W5_MANAGED_IMPORT_REGION_BYTES < SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES ||
+        SIM_W5_MANAGED_MAX_MAPPINGS > 64 )); then
+    trace "FAIL: managed serving output/import/mapping capacity is invalid"
+    return 1
+  fi
+  trace "prepare: managed serving connect=$SIM_W5_MANAGED_CONNECT nodes=$SIM_W5_CLUSTER_NODE_COUNT aperture_base=$SIM_W5_MANAGED_APERTURE_BASE aperture_size=$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=kernel-selected-noncontiguous"
+  return 0
+}
+
 validate_qwen3_weights_path() {
   if ! is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     return 0
@@ -937,6 +1002,16 @@ export SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE"
 export SIM_W5_RUN_ID="$RUN_ID_BASE"
 export SIM_W5_PTO_UB_GM_PROBE="$SIM_W5_PTO_UB_GM_PROBE"
 export SIM_W5_QWEN3_PTO="$SIM_W5_QWEN3_PTO"
+export SIM_W5_MANAGED_SERVING="$SIM_W5_MANAGED_SERVING"
+export SIM_W5_MANAGED_CONNECT="$SIM_W5_MANAGED_CONNECT"
+export SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT"
+export SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES="$SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES"
+export SIM_W5_MANAGED_IMPORT_REGION_BYTES="$SIM_W5_MANAGED_IMPORT_REGION_BYTES"
+export SIM_W5_MANAGED_MAX_MAPPINGS="$SIM_W5_MANAGED_MAX_MAPPINGS"
+export SIM_W5_MANAGED_APERTURE_BASE="$SIM_W5_MANAGED_APERTURE_BASE"
+export SIM_W5_MANAGED_APERTURE_SIZE="$SIM_W5_MANAGED_APERTURE_SIZE"
+export SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES"
+export SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE"
 export SIM_W5_QWEN3_PTO_TOKEN_TABLE="/tmp/qwen3_pto_token_table.bin"
 export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
 export SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM"
@@ -1166,6 +1241,111 @@ apply_serving_request_line() {
   return 0
 }
 
+managed_node_index() {
+  case "\$LINQU_UB_ROLE" in
+    nodeA) echo 0 ;;
+    nodeB) echo 1 ;;
+    nodeC) echo 2 ;;
+    nodeD) echo 3 ;;
+    nodeE) echo 4 ;;
+    nodeF) echo 5 ;;
+    nodeG) echo 6 ;;
+    nodeH) echo 7 ;;
+    *) return 1 ;;
+  esac
+}
+
+wait_managed_service_command() {
+  local operation="\$1"
+  local attempts=0
+
+  while [ "\$attempts" -lt 120 ]; do
+    if /bin/busybox timeout 2 /bin/linqu_mem_service "\$operation" \
+        --connect "\$SIM_W5_MANAGED_CONNECT" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempts=\$((attempts + 1))
+    /bin/busybox sleep 1
+  done
+  return 1
+}
+
+start_w5_managed_service() {
+  local node incarnation ordinal i
+
+  if [ "\$SIM_W5_MANAGED_SERVING" != "1" ]; then
+    return 0
+  fi
+  node="\$(managed_node_index)" || return 1
+  incarnation=\$((SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE + node))
+  /bin/busybox ip link set lo up || return 1
+  if [ "\$node" = "0" ]; then
+    /bin/busybox rm -f /tmp/w5-managed.store \
+      /tmp/w5-managed.store.journal /tmp/w5-managed.daemon.conf
+    {
+      echo "listen=\$SIM_W5_MANAGED_CONNECT"
+      echo "store=/tmp/w5-managed.store"
+      echo "node_id=guest-node-0"
+      echo "cluster_id=w5-managed-serving"
+      echo "auth_mode=trusted-guest-network"
+      i=0
+      while [ "\$i" -lt "\$LINQU_UB_NODE_COUNT" ]; do
+        ordinal=\$((i + 1))
+        echo "network_peer=guest-node-\$i@10.0.0.\$ordinal"
+        echo "required_provider=guest-node-\$i"
+        i=\$((i + 1))
+      done
+      echo "allocation_home_provider=guest-node-0"
+      echo "provider_lease_ms=120000"
+    } >/tmp/w5-managed.daemon.conf
+    /bin/linqu_mem_service serve --config /tmp/w5-managed.daemon.conf &
+    W5_MANAGED_DAEMON_PID=\$!
+    export W5_MANAGED_DAEMON_PID
+  fi
+  if ! /bin/linqu_gva_manager --bootstrap --node-id "\$node" \
+      --node-count "\$LINQU_UB_NODE_COUNT" --generation "\$incarnation" \
+      --aperture-base "\$SIM_W5_MANAGED_APERTURE_BASE" \
+      --aperture-size "\$SIM_W5_MANAGED_APERTURE_SIZE"; then
+    log "FAIL: managed GVA bootstrap node=\$node"
+    return 1
+  fi
+  if ! wait_managed_service_command health; then
+    log "FAIL: managed service health timeout connect=\$SIM_W5_MANAGED_CONNECT"
+    return 1
+  fi
+  if ! /bin/linqu_mem_service provider-register \
+      --connect "\$SIM_W5_MANAGED_CONNECT" \
+      --node-id "guest-node-\$node" --incarnation "\$incarnation" \
+      --readiness-generation "\$incarnation" --capabilities 1; then
+    log "FAIL: managed provider registration node=\$node"
+    return 1
+  fi
+  /bin/busybox rm -f "/tmp/w5-managed.worker.\$node.state"
+  {
+    echo "connect=\$SIM_W5_MANAGED_CONNECT"
+    echo "node_id=guest-node-\$node"
+    echo "state_file=/tmp/w5-managed.worker.\$node.state"
+    echo "incarnation=\$incarnation"
+    echo "readiness_generation=\$incarnation"
+    echo "allocation_granularity_bytes=\$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES"
+    echo "fast_allocation=1"
+  } >"/tmp/w5-managed.worker.\$node.conf"
+  /bin/linqu_mem_service_provider_obmm serve-allocations \
+    --config "/tmp/w5-managed.worker.\$node.conf" &
+  W5_MANAGED_WORKER_PID=\$!
+  export W5_MANAGED_WORKER_PID
+  if ! wait_managed_service_command ready; then
+    log "FAIL: managed service readiness timeout node=\$node"
+    return 1
+  fi
+  if ! kill -0 "\$W5_MANAGED_WORKER_PID" >/dev/null 2>&1; then
+    log "FAIL: managed OBMM provider worker exited node=\$node"
+    return 1
+  fi
+  log "managed_service ready node=\$node incarnation=\$incarnation connect=\$SIM_W5_MANAGED_CONNECT aperture_base=\$SIM_W5_MANAGED_APERTURE_BASE aperture_size=\$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=kernel-selected-noncontiguous"
+  return 0
+}
+
 run_llm_infer_once() {
   local request_index="\${1:-0}"
   local request_step_base="\${2:-\$request_index}"
@@ -1329,6 +1509,11 @@ run_serving_nodea_worker_queue() {
     request_index=\$((request_index + 1))
   done
 }
+
+if ! start_w5_managed_service; then
+  log "FAIL: managed service startup role=\$LINQU_UB_ROLE"
+  enter_shell
+fi
 
 if [ "\$SIM_W5_SERVING_QUEUE" = "1" ]; then
   if [ "\$SIM_W5_SERVING_INGRESS" = "nodeA" ] && [ "\$LINQU_UB_ROLE" != "nodeA" ]; then
@@ -1817,6 +2002,28 @@ validate_node_log() {
   idx="$(node_index "$node_id")"
   remote_idx=$((idx % SIM_W5_CLUSTER_NODE_COUNT + 1))
 
+  if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]; then
+    local expected_managed_steps="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
+
+    assert_log_has "$log_file" "\\[w4guest8:initramfs\\] managed_service ready node=$((idx - 1)) .*allocation_policy=kernel-selected-noncontiguous" "$node_id managed service readiness" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=4 control=mem_service data=obmm status=ok" "$node_id managed runtime" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=4 .*status=ok" "$expected_managed_steps" "$node_id managed model ranges" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable4" "$expected_managed_steps" "$node_id managed completion gate" || return 1
+    assert_log_count "$qemu_log" "managed-model-provider: .*completion=success" "$expected_managed_steps" "$node_id callable-4 provider completions" || return 1
+    if (( idx == SIM_W5_CLUSTER_NODE_COUNT )); then
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*terminal=1 status=ok" "$expected_managed_steps" "$node_id managed terminal ranges" || return 1
+      if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+        assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_stream_token node=${idx} .*source=managed_callable4_logits .*status=ok" "$expected_managed_steps" "$node_id managed DeepSeek stream" || return 1
+      fi
+    else
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*terminal=0 status=ok" "$expected_managed_steps" "$node_id managed nonterminal ranges" || return 1
+    fi
+    assert_log_absent "$log_file" "stage db_cluster_mode=resource_backed_uapi|stage model_range_forward_runtime_output_publish|backing=ub_ssd_gsva" "$node_id legacy managed data path" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] pass" "$expected_managed_steps" "$node_id managed passes" || return 1
+    assert_log_absent "$log_file" "\\[w4_guest\\] fail|\\[w4guest8:initramfs\\] FAIL:" "$node_id managed failures" || return 1
+    return 0
+  fi
+
   if [[ "$SIM_W5_QWEN3_PTO" == "1" ]]; then
     assert_log_count "$log_file" "stage w5_qwen3_pto_range_complete node=${idx} .*callable=3 numerical_backend=simpler_pto .*status=ok" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id complete PTO model ranges" || return 1
     assert_log_count "$log_file" "assessment model_pto_complete=true service_probe=not_run" "$SIM_QWEN3_GUEST_DECODE_STEPS" "$node_id PTO completion gate" || return 1
@@ -2062,6 +2269,10 @@ validate_serving_request_node_log() {
     fi
   fi
   assert_log_count "$log_file" "\\[w4guest8:initramfs\\] serving_entry request_done .* role=${node_id}" "$expected_requests" "$node_id W5 serving request completions" || return 1
+  if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]; then
+    validate_node_log "$node_id" "$log_file" || return 1
+    return 0
+  fi
   assert_log_count "$log_file" "\\[w4_guest\\] pass" "$expected_passes" "$node_id W5 serving decode passes" || return 1
   if (( expected_requests > 1 )); then
     assert_log_has "$log_file" "\\[ub_obmm_pool\\] import_pa_bias=[1-9][0-9]*MB bytes=0x[0-9a-f]+" "$node_id W5 serving second-request import PA bias" || return 1
@@ -2148,6 +2359,7 @@ prepare_environment() {
   validate_qwen3_runtime_object_view_source || return 1
   validate_w5_profile_runtime || return 1
   validate_w5_pto_ub_gm_probe || return 1
+  validate_w5_managed_serving || return 1
   resolve_w5_serving_requests_config || return 1
   validate_qwen3_engram_context_refs || return 1
   if is_model_range_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
