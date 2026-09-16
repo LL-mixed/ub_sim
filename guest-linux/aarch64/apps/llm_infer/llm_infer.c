@@ -2551,6 +2551,9 @@ static int w5_managed_open_reader(
         return -ENAMETOOLONG;
     config = (struct w5_managed_reader_config) {
         .reference_key = reference_key,
+        .holder_node_id = w5_managed_runtime_client_node_id(runtime),
+        .holder_provider_incarnation =
+            w5_managed_runtime_client_provider_incarnation(runtime),
         .session_id = session,
         .operation_prefix = operation,
         .timeout_ms = timeout_ms,
@@ -2700,6 +2703,9 @@ static int w5_managed_run_model_range(
     writer_config = (struct w5_managed_writer_config) {
         .key = allocation_key,
         .home_node = home_node,
+        .holder_node_id = w5_managed_runtime_client_node_id(runtime),
+        .holder_provider_incarnation =
+            w5_managed_runtime_client_provider_incarnation(runtime),
         .session_id = session,
         .operation_prefix = operation,
         .size_bytes = allocation_bytes,
@@ -11140,6 +11146,12 @@ int main(int argc, char **argv)
         struct w5_managed_runtime_config runtime_config;
         uint64_t max_mappings = env_u64_or_default(
             "SIM_W5_MANAGED_MAX_MAPPINGS", 16);
+        uint64_t provider_incarnation_base = env_u64_or_default(
+            "SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE", 1000000);
+        uint64_t client_provider_incarnation = 0;
+        uint32_t managed_local_node = UINT32_MAX;
+        char managed_client_node[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN] = "";
+        int managed_node_length = -1;
         int managed_rc;
 
         if (!run_id || !run_id[0]) run_id = "default-run";
@@ -11154,7 +11166,19 @@ int main(int argc, char **argv)
             "SIM_W5_MANAGED_IMPORT_REGION_BYTES", 256ULL * 1024ULL * 1024ULL);
         w5_managed_run = w5_managed_identity_hash(run_id);
         w5_managed_request = w5_managed_identity_hash(serving_request_id);
+        if (w4_cluster_role_index(role, cluster_node_count,
+                                  &managed_local_node) &&
+            provider_incarnation_base <= UINT64_MAX - managed_local_node) {
+            client_provider_incarnation =
+                provider_incarnation_base + managed_local_node;
+            managed_node_length = snprintf(managed_client_node,
+                sizeof(managed_client_node), "guest-node-%u",
+                managed_local_node);
+        }
         if (!w5_managed_connect || !w5_managed_connect[0] ||
+            managed_node_length < 0 ||
+            (size_t)managed_node_length >= sizeof(managed_client_node) ||
+            !client_provider_incarnation ||
             !w4_runtime_range_pipeline_enabled(cluster_node_count) ||
             (!is_qwen3_profile() && !is_deepseek_v4_flash_profile()) ||
             qwen3_engram_config.enabled || qwen3_memory_decision_config.enabled ||
@@ -11180,6 +11204,8 @@ int main(int argc, char **argv)
         }
         runtime_config = (struct w5_managed_runtime_config) {
             .connect_spec = w5_managed_connect,
+            .client_node_id = managed_client_node,
+            .client_provider_incarnation = client_provider_incarnation,
             .timeout_ms = w5_pto_ub_gm_timeout_ms,
             .import_region_bytes = w5_managed_import_region_bytes,
             .max_mappings = (uint32_t)max_mappings,
@@ -11198,9 +11224,11 @@ int main(int argc, char **argv)
                " run=0x%016" PRIx64 " request=0x%016" PRIx64
                " nodes=%u output_capacity=%" PRIu64
                " import_region=%" PRIu64
+               " holder_node=%s holder_incarnation=%" PRIu64
                " callable=4 control=mem_service data=obmm status=ok\n",
                w5_managed_run, w5_managed_request, cluster_node_count,
-               w5_managed_output_capacity, w5_managed_import_region_bytes);
+               w5_managed_output_capacity, w5_managed_import_region_bytes,
+               managed_client_node, client_provider_incarnation);
     }
     init_supernode_clock(&supernode_clock);
     {
@@ -15278,6 +15306,11 @@ qwen3_after_service_coverage:
             .client = w5_managed_runtime_client(w5_managed_runtime),
             .channel = w5_managed_runtime_channel(w5_managed_runtime),
             .domain = w5_managed_runtime_domain(w5_managed_runtime),
+            .holder_node_id =
+                w5_managed_runtime_client_node_id(w5_managed_runtime),
+            .holder_provider_incarnation =
+                w5_managed_runtime_client_provider_incarnation(
+                    w5_managed_runtime),
             .object_key = llm_infer_managed_object_key,
             .run = w5_managed_run,
             .request = w5_managed_request,

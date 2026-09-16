@@ -567,6 +567,18 @@ terminal V2 使用独立 kind 13，公共 decoder 返回其精确连续表 view�
 `b5812c4` 已推送并锁定，18 项定向测试通过。该 building block 尚未替换
 `apps/llm_infer` 的 callable 3 分支，不能据此关闭 W5 serving 或 M2。
 
+holder 身份续作：独立服务把每个 managed holder 绑定到
+`(node_id, provider_incarnation)`，checkpoint 升级为 v2 并兼容读取 v1；provider
+失联、注销或实例替换时按精确 home/holder 身份隔离相关资源。node-aware SDK
+把同一 holder 身份贯穿 reference acquire、map-begin、unmap 及不确定清理重试。
+W5 writer 在 allocate/ACTIVE 后显式 acquire，不能再把 allocation 误当成 holder；
+reader 和最终 token 栅栏同样核对完整节点身份。独立服务提交 `69082dd`、
+`f2bf359` 已仅推送授权分支，父仓库 gitlink/lock 本地锁定到 `f2bf359`。独立
+mapping/reference 定向测试 5 项通过；父仓库受影响的 managed runtime/object/
+request/serving/topology/PTO 契约共 49 项，34 项通过、15 项环境跳过。没有启动
+本地 QEMU、模型或多节点 workload。该项补齐生产 fencing 的 holder 归属前提；
+恢复协调、可执行 fencing、worker 恢复、重新加入及实际 W5 矩阵继续未完成。
+
 W5 serving 对象命名约定：输出 allocation 使用
 `w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>`，均为固定宽度
 小写十六进制；run/request 非零。该完整 key 由 producer 在 allocate 时确定，
@@ -1202,8 +1214,8 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 b5812c4；callable 4 主循环及请求级退役已完成本地构建/契约门禁 | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a 保存 worker 内核出生身份；r435 实际 worker 崩溃后 segment/export 核对、跨内核日志拒绝及隔离保留通过 | 生产恢复协调、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 f2bf359；callable 4 主循环、请求级退役及精确 holder 身份已完成本地构建/契约门禁 | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a 保存 worker 内核出生身份；r435 实际 worker 崩溃后 segment/export 核对、跨内核日志拒绝及隔离保留通过；69082dd/f2bf359 将 holder 归属绑定到节点/provider incarnation 并持久化 | 生产恢复协调、可执行故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

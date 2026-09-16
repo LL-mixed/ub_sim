@@ -16,6 +16,8 @@ struct w5_managed_runtime_guest {
     struct lingqu_shmem_mem_service_context *compute;
     struct lingqu_shmem_pto_endpoint *endpoint;
     char connect_spec[128];
+    char client_node_id[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN];
+    uint64_t client_provider_incarnation;
 };
 
 int w5_managed_runtime_open(
@@ -26,20 +28,27 @@ int w5_managed_runtime_open(
     struct mem_service_provider_obmm_config provider_config;
     struct mem_service_provider_registration registration;
     struct lingqu_shmem_pto_endpoint_info endpoint_info;
-    size_t connect_length;
+    size_t connect_length, node_length;
     int rc;
     if (!config || !runtime_out || !config->connect_spec ||
         !config->connect_spec[0] || !config->timeout_ms ||
+        !config->client_node_id || !config->client_node_id[0] ||
+        !config->client_provider_incarnation ||
         !config->import_region_bytes || !config->max_mappings ||
         config->max_mappings > MEM_SERVICE_PROVIDER_OBMM_MAX_MAPPINGS)
         return -EINVAL;
     *runtime_out = NULL;
     connect_length = strlen(config->connect_spec);
-    if (connect_length >= sizeof(runtime->connect_spec)) return -ENAMETOOLONG;
+    node_length = strlen(config->client_node_id);
+    if (connect_length >= sizeof(runtime->connect_spec) ||
+        node_length >= sizeof(runtime->client_node_id)) return -ENAMETOOLONG;
     runtime = calloc(1, sizeof(*runtime));
     if (!runtime) return -ENOMEM;
     *runtime_out = runtime;
     memcpy(runtime->connect_spec, config->connect_spec, connect_length + 1);
+    memcpy(runtime->client_node_id, config->client_node_id, node_length + 1);
+    runtime->client_provider_incarnation =
+        config->client_provider_incarnation;
     runtime->client.connect_spec = runtime->connect_spec;
     mem_service_wire_client_options_init(&runtime->client.wire_options);
     runtime->client.wire_options.timeout_ms = config->timeout_ms;
@@ -100,6 +109,18 @@ struct lingqu_shmem_pto_endpoint *w5_managed_runtime_endpoint(
     struct w5_managed_runtime_guest *runtime)
 {
     return runtime ? runtime->endpoint : NULL;
+}
+
+const char *w5_managed_runtime_client_node_id(
+    const struct w5_managed_runtime_guest *runtime)
+{
+    return runtime ? runtime->client_node_id : NULL;
+}
+
+uint64_t w5_managed_runtime_client_provider_incarnation(
+    const struct w5_managed_runtime_guest *runtime)
+{
+    return runtime ? runtime->client_provider_incarnation : 0;
 }
 
 int w5_managed_runtime_close(struct w5_managed_runtime_guest **runtime_ptr)

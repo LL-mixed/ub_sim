@@ -80,6 +80,10 @@ static void fill_allocation(struct mem_service_client_allocation *allocation,
                 sizeof(allocation->holders[holder].session_id),
                 "managed-final-%08" PRIx32, holder);
             allocation->holders[holder].generation = allocation->generation;
+            snprintf(allocation->holders[holder].node_id,
+                sizeof(allocation->holders[holder].node_id),
+                "guest-node-%u", holder);
+            allocation->holders[holder].provider_incarnation = 1000 + holder;
         }
     }
 }
@@ -98,6 +102,8 @@ int w5_managed_reader_open(
 
     assert(client && channel && domain && config && object_out && !*object_out);
     assert(strcmp(config->session_id, "managed-final-00000002") == 0);
+    assert(strcmp(config->holder_node_id, "guest-node-2") == 0);
+    assert(config->holder_provider_incarnation == 1002);
     assert(strncmp(config->operation_prefix, "mf-00000002-", 12) == 0);
     length = strlen(config->reference_key);
     assert(length > 6 && strcmp(config->reference_key + length - 6, "/token") == 0);
@@ -199,6 +205,8 @@ int main(void)
         .client = &client,
         .channel = &channel,
         .domain = &domain,
+        .holder_node_id = "guest-node-2",
+        .holder_provider_incarnation = 1002,
         .object_key = test_object_key,
         .run = test_run,
         .request = test_request,

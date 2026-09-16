@@ -13,6 +13,8 @@ struct w5_managed_object_guest;
 struct w5_managed_writer_config {
     const char *key;
     const char *home_node;
+    const char *holder_node_id;
+    uint64_t holder_provider_incarnation;
     const char *session_id;
     const char *operation_prefix;
     uint64_t size_bytes;
@@ -22,6 +24,8 @@ struct w5_managed_writer_config {
 
 struct w5_managed_reader_config {
     const char *reference_key;
+    const char *holder_node_id;
+    uint64_t holder_provider_incarnation;
     const char *session_id;
     const char *operation_prefix;
     uint64_t timeout_ms;

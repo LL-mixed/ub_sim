@@ -103,6 +103,9 @@ static int open_final_reader(struct w5_managed_request_cleanup *cleanup)
         return -ENAMETOOLONG;
     reader_config = (struct w5_managed_reader_config) {
         .reference_key = cleanup->final_reference_key,
+        .holder_node_id = cleanup->config.holder_node_id,
+        .holder_provider_incarnation =
+            cleanup->config.holder_provider_incarnation,
         .session_id = session,
         .operation_prefix = operation,
         .timeout_ms = cleanup->config.timeout_ms,
@@ -138,13 +141,21 @@ static bool expected_final_holders(
 
         for (expected = 0; expected < cleanup->config.node_count; ++expected) {
             char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
+            char node_id[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN];
+            int length;
 
             if (final_session(session, sizeof(session), expected) != 0)
+                return false;
+            length = snprintf(node_id, sizeof(node_id), "guest-node-%u",
+                              expected);
+            if (length < 0 || (size_t)length >= sizeof(node_id))
                 return false;
             if (strcmp(allocation->holders[holder].session_id, session) == 0) {
                 if (seen[expected] ||
                     allocation->holders[holder].generation !=
-                        cleanup->final_allocation.generation)
+                        cleanup->final_allocation.generation ||
+                    strcmp(allocation->holders[holder].node_id, node_id) != 0 ||
+                    !allocation->holders[holder].provider_incarnation)
                     return false;
                 seen[expected] = true;
                 matched = true;
@@ -337,6 +348,8 @@ int w5_managed_request_cleanup_create(
 
     if (!config || !cleanup_out || *cleanup_out || !config->client ||
         !config->channel || !config->domain || !config->object_key ||
+        !config->holder_node_id || !config->holder_node_id[0] ||
+        !config->holder_provider_incarnation ||
         !config->run || !config->request || !config->step_count ||
         !config->timeout_ms || !config->node_count ||
         config->local_node >= config->node_count ||

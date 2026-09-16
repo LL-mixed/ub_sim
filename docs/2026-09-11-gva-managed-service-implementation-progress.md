@@ -5302,3 +5302,34 @@ shell 语法通过；`llm_infer` AArch64 静态链接成功。没有在本地启
 多节点 workload。上述结果证明代码候选可构建及其控制状态机契约，尚未证明真实
 guest holder 集合、OBMM reclaim 时序、两模型连续 decode 或 2/3/8-node 矩阵；
 M2 和总目标保持进行中。
+
+## 2026-09-16：holder 身份绑定与 W5 生命周期修正
+
+独立服务提交 `69082dd` 将 managed holder 从 session-only 状态扩展为
+`(node_id, provider_incarnation, session)`。直接 acquire、reference acquire 和
+map-begin 在 daemon 侧核对目标节点当前活动的 provider incarnation；provider
+失联、注销或实例替换时，按精确 home/holder 身份隔离相关 allocation、mapping
+和引用。checkpoint 升级为 `mem_service_store_managed_v2`，保留 v1 读取兼容；
+未知旧 holder 继续采用保守隔离，不能因缺少归属信息解除恢复要求。
+
+后续提交 `f2bf359` 增加 node-aware reference map/unmap SDK。初次 map-begin、
+正常 unmap 和不确定清理重试使用同一 holder node/incarnation；旧 API 与 lifecycle
+结构 ABI 保持兼容。两个提交均已仅推送获授权的独立服务分支，远端分支精确指向
+`f2bf359ba19b3b358cf9b5d13d236508f67ff2e3`；父仓库 gitlink 与
+`guest-linux/aarch64/mem_service.lock` 本地同步到该提交。
+
+W5 writer 的旧实现曾在 allocate 后直接标记 `holder_owned=true`，但 allocation
+不会创建 holder。当前 writer 等待 allocation ACTIVE 后显式调用 node-aware
+acquire，再进入 reference BEGIN/map；失败清理只释放已经确认取得的 holder。
+reader 的 acquire、map、unmap 及 cleanup retry 全程携带 runtime 提供的本节点与
+provider incarnation。最终 token 栅栏对每个参与节点核对 session、
+`guest-node-N`、非零 provider incarnation 和同一 generation，避免 session 名称
+相同但 provider 身份已经变化时误判 holder 集合完整。
+
+独立服务的 managed mapping/reference 定向测试 5 项通过，host artifact 构建
+通过。父仓库受影响的 runtime、object、request、serving、topology 与 PTO 契约
+共执行 49 项，34 项通过、15 项既有环境跳过，零失败；`git diff --check` 通过。
+本批没有启动本地 QEMU、模型或多节点 workload。上述证据只证明源码候选和控制
+生命周期契约；实际 guest holder 集合、生产恢复协调、可执行 fencing、worker
+恢复、节点重新加入及两模型连续 decode 仍待实现或在 n4 验收。M2、M3 与总目标
+保持进行中。

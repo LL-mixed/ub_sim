@@ -12,6 +12,8 @@ struct w5_managed_runtime_guest;
 
 struct w5_managed_runtime_config {
     const char *connect_spec;
+    const char *client_node_id;
+    uint64_t client_provider_incarnation;
     uint64_t timeout_ms;
     uint64_t import_region_bytes;
     uint32_t max_mappings;
@@ -37,6 +39,12 @@ struct lingqu_shmem_mem_service_context *w5_managed_runtime_compute(
 
 struct lingqu_shmem_pto_endpoint *w5_managed_runtime_endpoint(
     struct w5_managed_runtime_guest *runtime);
+
+const char *w5_managed_runtime_client_node_id(
+    const struct w5_managed_runtime_guest *runtime);
+
+uint64_t w5_managed_runtime_client_provider_incarnation(
+    const struct w5_managed_runtime_guest *runtime);
 
 /* All objects and callable operations must be drained first. Failure retains
  * *runtime for an exact cleanup retry. */

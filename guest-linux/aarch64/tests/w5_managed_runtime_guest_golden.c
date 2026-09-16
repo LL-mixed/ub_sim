@@ -146,6 +146,8 @@ int main(void)
     struct w5_managed_runtime_guest *runtime = NULL;
     struct w5_managed_runtime_config config = {
         .connect_spec = "unix:/tmp/mem-service.sock",
+        .client_node_id = "guest-node-3",
+        .client_provider_incarnation = 1000003,
         .timeout_ms = 300000,
         .import_region_bytes = 64 * 1024 * 1024,
         .max_mappings = 8,
@@ -156,6 +158,10 @@ int main(void)
     assert(w5_managed_runtime_domain(runtime));
     assert(w5_managed_runtime_compute(runtime));
     assert(w5_managed_runtime_endpoint(runtime));
+    assert(!strcmp(w5_managed_runtime_client_node_id(runtime),
+                   "guest-node-3"));
+    assert(w5_managed_runtime_client_provider_incarnation(runtime) ==
+           1000003);
     assert(w5_managed_runtime_close(&runtime) == 0 && !runtime);
     assert(closed == 4);
     puts("w5_managed_runtime_guest=pass provider_selected_by_adapter=1 cleanup=4");

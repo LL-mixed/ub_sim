@@ -28,6 +28,7 @@ static unsigned stages;
 static unsigned seals;
 static unsigned resolves;
 static unsigned acquires;
+static unsigned holder_acquires;
 static unsigned maps;
 static unsigned adopts;
 static unsigned releases;
@@ -56,6 +57,8 @@ static void fill_allocation(struct mem_service_client_allocation *allocation,
     allocation->holder_count = 1;
     strcpy(allocation->holders[0].session_id, session);
     allocation->holders[0].generation = allocation->generation;
+    strcpy(allocation->holders[0].node_id, "guest-node-3");
+    allocation->holders[0].provider_incarnation = 11;
 }
 
 static void fill_reference(struct lingqu_object_ref_wire_v2 *reference,
@@ -116,6 +119,25 @@ int mem_service_client_inspect_allocation(
     return 0;
 }
 
+int mem_service_client_acquire_object_at_node(
+    const struct mem_service_client *client, const char *key,
+    const char *idempotency_key, const char *session_id,
+    const char *holder_node_id, uint64_t holder_provider_incarnation,
+    bool has_expected_generation, uint64_t expected_generation,
+    struct mem_service_client_allocation *allocation_out,
+    enum mem_service_wire_status *status_out)
+{
+    (void)client;
+    assert(key[0] && strstr(idempotency_key, "acquire"));
+    assert(!strcmp(holder_node_id, "guest-node-3"));
+    assert(holder_provider_incarnation == 11);
+    assert(has_expected_generation && expected_generation == 7);
+    fill_allocation(allocation_out, session_id);
+    *status_out = MEM_SERVICE_WIRE_STATUS_OK;
+    ++holder_acquires;
+    return 0;
+}
+
 int mem_service_client_reference_transition(
     const struct mem_service_client *client,
     const struct mem_service_reference_request *request,
@@ -148,16 +170,30 @@ int mem_service_client_reference_transition(
         fill_allocation(&result_out->allocation, "reader-session");
         result_out->reference = published;
         break;
-    case MEM_SERVICE_REFERENCE_ACQUIRE:
-        assert(request->access == LINGQU_OBJECT_REF_V2_READ);
-        assert(memcmp(&request->reference, &published, sizeof(published)) == 0);
-        ++acquires;
-        fill_allocation(&result_out->allocation, request->session_id);
-        result_out->reference = request->reference;
-        break;
     default:
         assert(0);
     }
+    return 0;
+}
+
+int mem_service_client_reference_transition_at_node(
+    const struct mem_service_client *client,
+    const struct mem_service_reference_request *request,
+    const char *holder_node_id, uint64_t holder_provider_incarnation,
+    struct mem_service_client_reference_result *result_out,
+    enum mem_service_wire_status *status_out)
+{
+    (void)client;
+    assert(request->action == MEM_SERVICE_REFERENCE_ACQUIRE);
+    assert(request->access == LINGQU_OBJECT_REF_V2_READ);
+    assert(memcmp(&request->reference, &published, sizeof(published)) == 0);
+    assert(!strcmp(holder_node_id, "guest-node-3"));
+    assert(holder_provider_incarnation == 11);
+    memset(result_out, 0, sizeof(*result_out));
+    fill_allocation(&result_out->allocation, request->session_id);
+    result_out->reference = request->reference;
+    *status_out = MEM_SERVICE_WIRE_STATUS_OK;
+    ++acquires;
     return 0;
 }
 
@@ -201,17 +237,20 @@ int mem_service_client_map_managed_allocation(
     return 0;
 }
 
-int mem_service_client_map_managed_reference(
+int mem_service_client_map_managed_reference_at_node(
     const struct mem_service_client *client,
     const struct mem_service_provider_channel *channel,
     const struct lingqu_object_ref_wire_v2 *reference,
     const char *session_id, const char *operation_id,
+    const char *holder_node_id, uint64_t holder_provider_incarnation,
     struct mem_service_client_object_mapping *mapping,
     struct mem_service_client_reference_lifecycle *lifecycle,
     enum mem_service_wire_status *status_out)
 {
     struct mem_service_client_allocation allocation;
     (void)client; (void)channel;
+    assert(!strcmp(holder_node_id, "guest-node-3"));
+    assert(holder_provider_incarnation == 11);
     fill_allocation(&allocation, session_id);
     map_common(&allocation, MEM_SERVICE_CLIENT_MAP_READ, mapping,
                &lifecycle->mapping, session_id, operation_id);
@@ -369,14 +408,17 @@ int mem_service_client_unmap_managed_allocation(
     assert(0);
 }
 
-int mem_service_client_unmap_managed_reference(
+int mem_service_client_unmap_managed_reference_at_node(
     const struct mem_service_client *client,
     const struct mem_service_provider_channel *channel,
     struct mem_service_client_object_mapping *mapping,
     struct mem_service_client_reference_lifecycle *lifecycle,
+    const char *holder_node_id, uint64_t holder_provider_incarnation,
     enum mem_service_wire_status *status_out)
 {
     (void)client; (void)channel; (void)mapping; (void)lifecycle; (void)status_out;
+    assert(!strcmp(holder_node_id, "guest-node-3"));
+    assert(holder_provider_incarnation == 11);
     assert(0);
 }
 
@@ -427,6 +469,7 @@ int main(void)
     char reference_key[96];
     struct w5_managed_writer_config writer_config = {
         .key = key, .home_node = "guest-node-3", .session_id = "writer-session",
+        .holder_node_id = "guest-node-3", .holder_provider_incarnation = 11,
         .operation_prefix = "writer-op", .size_bytes = sizeof(backing),
         .timeout_ms = 1000, .pin_limit = 8,
     };
@@ -455,6 +498,7 @@ int main(void)
 
     struct w5_managed_reader_config reader_config = {
         .reference_key = reference_key, .session_id = "reader-session",
+        .holder_node_id = "guest-node-3", .holder_provider_incarnation = 11,
         .operation_prefix = "reader-op", .timeout_ms = 1000, .pin_limit = 8,
     };
     assert(w5_managed_reader_open(&client, &channel, &domain, &reader_config,
@@ -473,7 +517,8 @@ int main(void)
            !aborted_writer);
 
     assert(allocations == 2 && begins == 2 && stages == 1 && seals == 1);
-    assert(resolves == 1 && acquires == 1 && maps == 3 && adopts == 3);
+    assert(resolves == 1 && acquires == 1 && holder_acquires == 2 &&
+           maps == 3 && adopts == 3);
     assert(closes == 3 && destroys == 3 && releases == 3 && retires == 1);
     puts("w5_managed_object_guest=pass writer_lifecycle=1 reader_lifecycle=1 writer_abort=1 owner_cleanup=1");
     return 0;

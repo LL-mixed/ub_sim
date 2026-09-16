@@ -22,7 +22,9 @@ struct w5_managed_object_guest {
     struct lingqu_object_ref_wire_v2 reference;
     char key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
     char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
+    char holder_node_id[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN];
     char operation_prefix[48];
+    uint64_t holder_provider_incarnation;
     uint64_t timeout_ms;
     uint32_t pin_limit;
     bool writer;
@@ -72,12 +74,15 @@ static struct w5_managed_object_guest *create_object(
     const struct mem_service_provider_channel *channel,
     struct mem_service_access_domain *domain,
     const char *session,
+    const char *holder_node_id,
+    uint64_t holder_provider_incarnation,
     const char *operation_prefix,
     uint64_t timeout_ms,
     uint32_t pin_limit)
 {
     struct w5_managed_object_guest *object;
-    if (!client || !channel || !domain || !session || !operation_prefix ||
+    if (!client || !channel || !domain || !session || !holder_node_id ||
+        !holder_provider_incarnation || !operation_prefix ||
         !timeout_ms || !pin_limit ||
         pin_limit > MEM_SERVICE_MAPPING_OWNER_MAX_PINS) return NULL;
     object = calloc(1, sizeof(*object));
@@ -87,7 +92,10 @@ static struct w5_managed_object_guest *create_object(
     object->domain = domain;
     object->timeout_ms = timeout_ms;
     object->pin_limit = pin_limit;
+    object->holder_provider_incarnation = holder_provider_incarnation;
     if (copy_text(object->session, sizeof(object->session), session) ||
+        copy_text(object->holder_node_id, sizeof(object->holder_node_id),
+                  holder_node_id) ||
         copy_text(object->operation_prefix, sizeof(object->operation_prefix),
                   operation_prefix)) {
         free(object);
@@ -132,8 +140,12 @@ static int transition(struct w5_managed_object_guest *object,
         request.access = LINGQU_OBJECT_REF_V2_READ;
     memset(&result, 0, sizeof(result));
     *status_out = MEM_SERVICE_WIRE_STATUS_INTERNAL;
-    rc = mem_service_client_reference_transition(object->client, &request,
-                                                  &result, status_out);
+    rc = action == MEM_SERVICE_REFERENCE_ACQUIRE ?
+        mem_service_client_reference_transition_at_node(object->client,
+            &request, object->holder_node_id,
+            object->holder_provider_incarnation, &result, status_out) :
+        mem_service_client_reference_transition(object->client, &request,
+                                                 &result, status_out);
     if (!rc) *result_out = result;
     return rc;
 }
@@ -184,12 +196,15 @@ int w5_managed_writer_open(
     struct w5_managed_object_guest *object;
     struct mem_service_client_allocate request = {0};
     struct mem_service_client_reference_result result;
-    char idempotency[80], map_operation[80];
+    char idempotency[80], acquire_operation[80], map_operation[80];
     int rc;
     if (!config || !object_out || !status_out || !config->size_bytes ||
-        !config->home_node || !config->home_node[0]) return -EINVAL;
+        !config->home_node || !config->home_node[0] ||
+        !config->holder_node_id || !config->holder_node_id[0] ||
+        !config->holder_provider_incarnation) return -EINVAL;
     *object_out = NULL;
     object = create_object(client, channel, domain, config->session_id,
+        config->holder_node_id, config->holder_provider_incarnation,
         config->operation_prefix, config->timeout_ms, config->pin_limit);
     if (!object) return -EINVAL;
     *object_out = object;
@@ -207,9 +222,17 @@ int w5_managed_writer_open(
     rc = mem_service_client_allocate_object_at_home(client, &request,
         config->home_node, &object->allocation, status_out);
     if (rc) return rc;
-    object->holder_owned = true;
     rc = wait_allocation_active(object, status_out);
     if (rc) return rc;
+    rc = operation_id(object, "acquire", acquire_operation,
+                      sizeof(acquire_operation));
+    if (rc) return rc;
+    rc = mem_service_client_acquire_object_at_node(client, object->key,
+        acquire_operation, object->session, object->holder_node_id,
+        object->holder_provider_incarnation, true,
+        object->allocation.generation, &object->allocation, status_out);
+    if (rc) return rc;
+    object->holder_owned = true;
     rc = transition(object, MEM_SERVICE_REFERENCE_BEGIN, object->key, NULL,
                     &result, status_out);
     if (rc) return rc;
@@ -238,9 +261,12 @@ int w5_managed_reader_open(
     char map_operation[80];
     uint64_t start;
     int rc;
-    if (!config || !object_out || !status_out) return -EINVAL;
+    if (!config || !object_out || !status_out || !config->holder_node_id ||
+        !config->holder_node_id[0] || !config->holder_provider_incarnation)
+        return -EINVAL;
     *object_out = NULL;
     object = create_object(client, channel, domain, config->session_id,
+        config->holder_node_id, config->holder_provider_incarnation,
         config->operation_prefix, config->timeout_ms, config->pin_limit);
     if (!object) return -EINVAL;
     *object_out = object;
@@ -268,9 +294,10 @@ int w5_managed_reader_open(
     object->holder_owned = true;
     rc = operation_id(object, "map", map_operation, sizeof(map_operation));
     if (rc) return rc;
-    rc = mem_service_client_map_managed_reference(client, channel,
-        &object->reference, object->session, map_operation, &object->mapping,
-        &object->reference_lifecycle, status_out);
+    rc = mem_service_client_map_managed_reference_at_node(client, channel,
+        &object->reference, object->session, map_operation,
+        object->holder_node_id, object->holder_provider_incarnation,
+        &object->mapping, &object->reference_lifecycle, status_out);
     if (rc) return rc;
     object->reference_mapping = true;
     object->lifecycle = object->reference_lifecycle.mapping;
@@ -546,9 +573,10 @@ int w5_managed_object_close(
     }
     if (object->lifecycle.pending || object->mapping.binding.mapped) {
         rc = object->reference_mapping ?
-            mem_service_client_unmap_managed_reference(object->client,
+            mem_service_client_unmap_managed_reference_at_node(object->client,
                 object->channel, &object->mapping, &object->reference_lifecycle,
-                status_out) :
+                object->holder_node_id,
+                object->holder_provider_incarnation, status_out) :
             mem_service_client_unmap_managed_allocation(object->client,
                 object->channel, &object->mapping, &object->lifecycle, status_out);
         if (rc) return rc;

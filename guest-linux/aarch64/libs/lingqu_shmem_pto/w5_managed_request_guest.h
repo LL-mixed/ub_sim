@@ -19,6 +19,8 @@ struct w5_managed_request_cleanup_config {
     const struct mem_service_client *client;
     const struct mem_service_provider_channel *channel;
     struct mem_service_access_domain *domain;
+    const char *holder_node_id;
+    uint64_t holder_provider_incarnation;
     w5_managed_request_object_key_fn object_key;
     uint64_t run;
     uint64_t request;
