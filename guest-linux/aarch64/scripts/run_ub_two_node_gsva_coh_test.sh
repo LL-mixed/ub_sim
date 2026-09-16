@@ -21,6 +21,15 @@ QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 RUN_ID="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_gsva_coh_${RANDOM}}"
+VALIDATE_ONLY=0
+if [[ "${1:-}" == "--validate-only" ]]; then
+  VALIDATE_ONLY=1
+  shift
+fi
+if (( $# != 0 )); then
+  echo "usage: $0 [--validate-only]" >&2
+  exit 2
+fi
 
 GSVA_TEST_MODE="${GSVA_TEST_MODE:-all}"
 GSVA_MODE="${GSVA_MODE:-arm_mmu}"
@@ -39,26 +48,12 @@ if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then
   esac
 fi
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
-
-source "$SCRIPT_DIR/qemu_ub_common.sh"
-APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
-QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
-ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
-
-if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
-  APPEND_EXTRA="${APPEND_EXTRA} pmd_mapping=25%"
-fi
-
-mkdir -p "$LOG_DIR/${RUN_ID}"
 NODEA_GUEST_LOG="$LOG_DIR/${RUN_ID}/nodeA_guest.log"
 NODEB_GUEST_LOG="$LOG_DIR/${RUN_ID}/nodeB_guest.log"
 NODEA_QEMU_LOG="$LOG_DIR/${RUN_ID}/nodeA_qemu.log"
 NODEB_QEMU_LOG="$LOG_DIR/${RUN_ID}/nodeB_qemu.log"
 NODEA_PID_FILE="$OUT_DIR/ub_nodeA.gsva_coh.${RUN_ID}.pid"
 NODEB_PID_FILE="$OUT_DIR/ub_nodeB.gsva_coh.${RUN_ID}.pid"
-
-rm -rf "$SHARED_DIR"
-mkdir -p "$SHARED_DIR"
 
 cleanup() {
   local pid_file
@@ -75,7 +70,6 @@ cleanup() {
     fi
   done
 }
-trap 'cleanup' EXIT INT TERM
 
 start_node() {
   local node_name="$1"
@@ -413,8 +407,9 @@ validate_coh_logs() {
       echo "[gsva_coh] FAIL: peer lacks RETIRE TLB flush evidence" >&2
       return 1
     fi
-    if ! grep -q 'OBMM_COH_WB' "$NODEB_QEMU_LOG"; then
-      echo "[gsva_coh] FAIL: peer lacks dirty writeback evidence" >&2
+    if ! grep -q 'OBMM_COH_FENCE req_id=' "$NODEA_QEMU_LOG" ||
+       ! grep -q 'OBMM_COH_FENCE_ACK.*status=0' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: peer lacks successful physical writeback fence" >&2
       return 1
     fi
     if ! grep -Eq 'GSVA_UNMAP: .*tombstone=yes' "$NODEB_QEMU_LOG"; then
@@ -464,6 +459,31 @@ validate_coh_logs() {
     fi
   fi
 }
+
+if [[ "$VALIDATE_ONLY" == "1" ]]; then
+  if [[ ! -f "$NODEA_GUEST_LOG" || ! -f "$NODEB_GUEST_LOG" ||
+        ! -f "$NODEA_QEMU_LOG" || ! -f "$NODEB_QEMU_LOG" ]]; then
+    echo "[gsva_coh] FAIL: validation logs are incomplete for run_id=$RUN_ID" >&2
+    exit 1
+  fi
+  validate_coh_logs
+  echo "[gsva_coh] PASS: existing run validated run_id=$RUN_ID"
+  exit 0
+fi
+
+source "$SCRIPT_DIR/qemu_ub_common.sh"
+APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
+QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
+ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+
+if [[ "$APPEND_EXTRA" != *"pmd_mapping="* ]]; then
+  APPEND_EXTRA="${APPEND_EXTRA} pmd_mapping=25%"
+fi
+
+mkdir -p "$LOG_DIR/${RUN_ID}"
+rm -rf "$SHARED_DIR"
+mkdir -p "$SHARED_DIR"
+trap 'cleanup' EXIT INT TERM
 
 echo "[gsva_coh] run_id=$RUN_ID mode=$GSVA_TEST_MODE"
 echo "[gsva_coh] starting nodeA and nodeB..."

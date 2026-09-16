@@ -3415,8 +3415,18 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "GSVA_TLB: flush reason=remote_retire_drained" in runner
     assert "GSVA_UNMAP: .*tombstone=yes" in runner
     assert "GSVA_COH: home retire route finalized" in runner
+    assert "OBMM_COH_FENCE req_id=" in runner
+    assert "OBMM_COH_FENCE_ACK.*status=0" in runner
+    assert "OBMM_COH_WB" not in runner
     assert "coh_remote_retire writeback_verified" in runner
     assert "coh_remote_retire revoked_cpu signal=" in runner
+    assert "--validate-only" in runner
+    assert runner.index('if [[ "$VALIDATE_ONLY" == "1" ]]') < runner.index(
+        'source "$SCRIPT_DIR/qemu_ub_common.sh"'
+    )
+    assert runner.index('if [[ "$VALIDATE_ONLY" == "1" ]]') < runner.index(
+        'rm -rf "$SHARED_DIR"'
+    )
 
     transport_default = runner.split(
         'if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then', 1
