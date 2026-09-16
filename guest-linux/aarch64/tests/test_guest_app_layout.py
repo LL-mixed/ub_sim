@@ -3385,6 +3385,14 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "GSVA remote retire drains a physical holder before ACK" in source
     assert "ready_generation = 0x475356410618ULL" in source
     assert "done_generation = 0x475356410628ULL" in source
+    retire_case = source.split("static void test_coh_remote_retire", 1)[1].split(
+        "static void usage", 1
+    )[0]
+    assert "if (node_idx == 0) {" in retire_case
+    assert "obmm_map_gsva_region_at(my_meta.export_mem_id" in retire_case
+    assert "else if (node_idx == 1) {" in retire_case
+    assert "import_active = true;" in retire_case
+    assert "if (import_active)" in retire_case
     assert "coh_remote_retire dirty_write" in source
     assert "retire ACK must follow dirty holder writeback" in source
     assert "gsva_probe_revoked_cpu_read(import_region.addr" in source

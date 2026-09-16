@@ -2153,6 +2153,7 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     uint64_t segment_id = 0;
     uint32_t token_id = 0;
     uint64_t pending_seq = 0;
+    bool import_active = false;
     bool retire_already_complete = false;
     int rc;
 
@@ -2183,7 +2184,12 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
 
     segment_id = home_meta.export_mem_id;
     token_id = home_meta.token_id;
-    if (node_idx <= 1) {
+    if (node_idx == 0) {
+        rc = obmm_map_gsva_region_at(my_meta.export_mem_id,
+                                     (void *)(uintptr_t)home_base,
+                                     GSVA_SIZE, false, &import_region);
+        CHECK(rc == 0, "home GSVA mmap should succeed");
+    } else if (node_idx == 1) {
         if (!obmm_alloc_import_pas(1, GSVA_SIZE, import_pas, import_osync,
                                    OBMM_IMPORT_CACHE_AUTO)) {
             obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
@@ -2200,6 +2206,7 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                                home_base, home_base, 0,
                                &import_mem_id);
         CHECK(rc == 0, "GSVA identity import should succeed");
+        import_active = true;
 
         rc = obmm_map_gsva_region_at(import_mem_id,
                                      (void *)(uintptr_t)home_base,
@@ -2360,8 +2367,9 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
 
     if (node_idx <= 1) {
         obmm_unmap_region(&import_region);
-        obmm_do_unimport(obmm_fd, import_mem_id);
     }
+    if (import_active)
+        obmm_do_unimport(obmm_fd, import_mem_id);
     obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
     PASS();
 }
