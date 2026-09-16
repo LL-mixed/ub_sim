@@ -137,8 +137,9 @@ static uint64_t llm_infer_env_u64_or(const char *name, uint64_t fallback)
 
 uint64_t llm_infer_qwen3_pipeline_nodes(void)
 {
-    return llm_infer_env_u64_or("SIM_QWEN3_DENSE_TP_NODES",
-                                LLM_INFER_QWEN3_DEFAULT_PIPELINE_NODES);
+    uint64_t tensor_shards = llm_infer_env_u64_or("SIM_QWEN3_DENSE_TP_NODES",
+        LLM_INFER_QWEN3_DEFAULT_PIPELINE_NODES);
+    return llm_infer_env_u64_or("SIM_W5_CLUSTER_NODE_COUNT", tensor_shards);
 }
 
 uint64_t llm_infer_qwen3_total_layers(void)

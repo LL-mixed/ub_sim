@@ -229,6 +229,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn three_node_pipeline_keeps_eight_tensor_shards() {
+        const CHILD: &str = "MANAGED_MODEL_THREE_NODE_PP_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+            for (key, _) in std::env::vars_os() {
+                if key.to_string_lossy().starts_with("SIM_") {
+                    child.env_remove(key);
+                }
+            }
+            assert!(child
+                .args([
+                    "--exact",
+                    "managed_model_input::tests::three_node_pipeline_keeps_eight_tensor_shards",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("SIM_UAPI_W4_CHIPBACKEND_PROFILE", "qwen3_dense")
+                .env("SIM_W5_CLUSTER_NODE_COUNT", "3")
+                .env("SIM_QWEN3_DENSE_TP_NODES", "8")
+                .status()
+                .unwrap()
+                .success());
+            return;
+        }
+        assert_eq!(qwen3_dense_runtime_pipeline_nodes(), 3);
+        assert_eq!(qwen3_dense_runtime_profile_from_env().tp_nodes, 8);
+        let ranges = [(0, 0, 10, 1), (1, 10, 19, 2), (2, 19, 28, 0)];
+        for (node, first, end, next) in ranges {
+            let task = TaskKey {
+                logical_system: LogicalSystemId(1),
+                scope_depth: 8,
+                task_id: 457,
+                coord: HierarchyCoord {
+                    levels: [0x5133_060b, node, first, end, next, 3, 28, 262_144],
+                },
+            };
+            let contract = model_range_compute_contract(&task).unwrap().unwrap();
+            assert_eq!(
+                (contract.node, contract.layer_start, contract.layer_end),
+                (node, first, end)
+            );
+            let mut wrong_width = task;
+            wrong_width.coord.levels[5] = 8;
+            assert!(model_range_compute_contract(&wrong_width).is_err());
+        }
+    }
+
+    #[test]
     fn kv_capacity_includes_each_serialized_layer_header() {
         let profile = QWEN3_DENSE_REFERENCE_PROFILE;
         let state = vec![0.5; (profile.num_key_value_heads * profile.head_dim) as usize];

@@ -1,10 +1,12 @@
 """Exercise the production result decoder without devices or model weights."""
 import ctypes
+import os
 import pathlib
 import struct
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 META = 39424
@@ -85,6 +87,21 @@ class ManagedResultTest(unittest.TestCase):
                                    ctypes.c_uint64, ctypes.c_uint64,
                                    ctypes.c_uint32, ctypes.c_uint64]
         cls.object_key.restype = ctypes.c_int
+        cls.pipeline_nodes = cls.library.llm_infer_qwen3_pipeline_nodes
+        cls.pipeline_nodes.restype = ctypes.c_uint64
+
+    def test_pipeline_width_is_independent_of_tensor_shard_count(self):
+        for nodes in (2, 3, 8):
+            with self.subTest(nodes=nodes), mock.patch.dict(os.environ, {
+                "SIM_W5_CLUSTER_NODE_COUNT": str(nodes),
+                "SIM_QWEN3_DENSE_TP_NODES": "8",
+            }):
+                self.assertEqual(self.pipeline_nodes(), nodes)
+        with mock.patch.dict(os.environ, {
+            "SIM_W5_CLUSTER_NODE_COUNT": "",
+            "SIM_QWEN3_DENSE_TP_NODES": "8",
+        }):
+            self.assertEqual(self.pipeline_nodes(), 8)
 
     def test_canonical_managed_serving_key_and_untouched_failures(self):
         key = ctypes.create_string_buffer(65)

@@ -2065,6 +2065,10 @@ fn qwen3_dense_runtime_tp_nodes() -> u64 {
     )
 }
 
+fn qwen3_dense_runtime_pipeline_nodes() -> u64 {
+    qwen3_dense_env_u64("SIM_W5_CLUSTER_NODE_COUNT", qwen3_dense_runtime_tp_nodes())
+}
+
 fn qwen3_dense_runtime_total_layers() -> u64 {
     qwen3_dense_env_u64(
         "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",
@@ -5805,7 +5809,7 @@ fn model_range_compute_contract(
                     || u64::from(contract.hidden_bytes) == decode_hidden_bytes)
         }
         _ => {
-            contract.pipeline_nodes == qwen3_dense_runtime_tp_nodes() as u32
+            contract.pipeline_nodes == qwen3_dense_runtime_pipeline_nodes() as u32
                 && contract.total_layers == qwen3_dense_runtime_total_layers() as u32
                 && (u64::from(contract.hidden_bytes) == qwen3_dense_runtime_hidden_range_bytes()
                     || u64::from(contract.hidden_bytes)
