@@ -429,6 +429,20 @@ r567 Rust workspace 零失败；PP3/TP8 门禁与配置测试通过。该项只�
 启动和调用路径的 PP/TP 耦合，不证明 callable 4 serving 闭环或任一模型矩阵；
 两模型 2/3/8-node、4/8-step 实际 guest 验收仍待执行。
 
+2026-09-16 M3 恢复续作：独立服务提交 `f402b13` 增加具名 recovery reclaim，
+要求精确旧 home 身份、全部 required provider ready，并逐个核对 holder 节点已
+使用新 incarnation；`0cb0401` 增加按旧 home incarnation 枚举 QUARANTINED
+义务的 recovery poll。`ed80575` 接入 OBMM lost-home worker 恢复：完整校验并
+独占旧 ledger，要求 replacement incarnation 与 kernel instance 均变化、新库存
+未复用旧 segment ID，逐项完成服务退役后原子归档旧 ledger。三个提交已仅推送
+授权服务分支，远端精确指向
+`ed80575160221c60a5f586f99bd660976670e10e`；父仓库 gitlink/lock 本地同步。
+本地 host/schema/package/release/API ABI 门禁、26 项 provider-backed allocation
+契约及 AArch64 worker `-Werror` 交叉编译通过；实际 golden 和故障恢复尚待 n4。
+当前实现只关闭 home guest/kernel 已替换的 backing 消失恢复子集；同 kernel
+reservation 续作、跨节点映射/计算排空证明、强制撤销及重新加入运行矩阵继续
+保持未完成，M3 与总目标仍为进行中。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1214,8 +1228,8 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 f2bf359；callable 4 主循环、请求级退役及精确 holder 身份已完成本地构建/契约门禁 | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a 保存 worker 内核出生身份；r435 实际 worker 崩溃后 segment/export 核对、跨内核日志拒绝及隔离保留通过；69082dd/f2bf359 将 holder 归属绑定到节点/provider incarnation 并持久化 | 生产恢复协调、可执行故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 ed80575；callable 4 主循环、请求级退役及精确 holder 身份已完成本地构建/契约门禁 | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档 | lost-home 实际 n4 故障矩阵、同 kernel reservation 续作、跨节点物理排空/强制撤销及完整重新加入仍未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

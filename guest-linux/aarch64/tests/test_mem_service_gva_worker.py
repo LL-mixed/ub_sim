@@ -92,7 +92,10 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                        "gva_manager_retire_segment", "mem_service_client_reclaim_allocation",
                        "mem_service_client_retire_object",
                        "open", "close", "ioctl", "fsync", "mem_service_client_provider_refresh",
-                       "mem_service_client_poll_allocation", "mem_service_client_provider_deregister"]
+                       "mem_service_client_poll_allocation", "mem_service_client_provider_deregister",
+                       "mem_service_client_poll_recovery_allocation",
+                       "mem_service_client_recover_allocation",
+                       "mem_service_client_inspect_allocation"]
             built = subprocess.run(
                 command + [str(ROOT / "guest-linux/aarch64/tests/mem_service_gva_worker_golden.c")]
                 + list(map(str, sources[2:]))
@@ -109,6 +112,10 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                           result.stdout)
             self.assertIn("gva_worker_durable_ledger=pass identity=1 corruption=1 torn=1 writer_lock=1",
                           result.stdout)
+            self.assertIn(
+                "gva_worker_recovery=pass kernel_replaced=1 service_reclaim=1 archive_retry=1",
+                result.stdout,
+            )
             config = pathlib.Path(directory) / "worker.conf"
             state = pathlib.Path(directory) / "worker.state"
             good = (f"connect=unix:{directory}/absent.sock\nnode_id=nodeA\n"

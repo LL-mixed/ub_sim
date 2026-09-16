@@ -5333,3 +5333,44 @@ provider incarnation。最终 token 栅栏对每个参与节点核对 session、
 生命周期契约；实际 guest holder 集合、生产恢复协调、可执行 fencing、worker
 恢复、节点重新加入及两模型连续 decode 仍待实现或在 n4 验收。M2、M3 与总目标
 保持进行中。
+
+## 2026-09-16：受 fencing 约束的恢复回收与 lost-home worker
+
+独立服务提交 `f402b13` 在现有 reclaim operation 上增加显式恢复模式。服务只
+接受当前活动 home provider，要求请求携带 allocation 原 home incarnation、
+全部 required provider ready；每个现存 holder 必须具有完整节点/provider 身份，
+且该节点已以不同 incarnation 重新加入。原 home 仍存活时，服务清除已完成
+fencing 的 holder/mapping 并推进到 RETIRING，由正常 worker 完成物理回收；
+home 已替换时，仅接受 replacement provider 的 backing-gone 确认并直接退役。
+旧 holder、V1/不完整恢复域和 checkpoint 写入不确定继续锁住 recovery gate。
+
+提交 `0cb0401` 扩展既有 poll operation，增加 typed SDK 与 `poll-recovery` CLI，
+允许当前 home 按 `(node_id, fenced_incarnation, generation)` 完整枚举
+QUARANTINED 义务。普通 allocation poll 语义保持不变。该枚举覆盖旧 ledger
+已有记录，也覆盖服务已记录意图但 worker 从未领取的对象；读取本身不修改状态，
+不提供物理证明。wire schema、package/release manifest 及安装 SDK 同步更新。
+
+提交 `ed80575` 增加 OBMM
+`recover-allocation-state --config <old> --replacement-config <new>`。命令要求两份
+配置保持 endpoint、node、state file、粒度和分配模式一致，replacement 使用新
+incarnation。它独占并完整校验旧 ledger，读取稳定 kernel 全量库存，要求当前
+kernel instance 与 worker 出生身份不同，并拒绝新库存复用任一旧 segment ID。
+replacement provider 必须已经登记且目录 ready；命令逐项 poll/recover 服务义务，
+确认 ledger 的每个当前对象均已 RETIRED，随后把旧 ledger 原子归档为
+`.recovered-<old>-by-<new>` 并同步目录。任一不确定结果保留原 ledger；归档后的
+重复执行重新检查服务终态，不会重复回收。只有归档完成后才允许 replacement
+配置创建新 worker ledger。
+
+三个提交已仅推送用户授权的独立服务分支，远端精确 SHA 为
+`ed80575160221c60a5f586f99bd660976670e10e`。父仓库只在本地同步 gitlink 与
+`guest-linux/aarch64/mem_service.lock`，没有推送。定向验证包括：host build；
+wire/package/release/API ABI fixture；生成 manifest 逐字一致；provider-backed
+allocation 26 项全通过；lost-home 终态补充用例通过；OBMM provider/worker 使用
+AArch64 compiler 和 `-Werror` 构建成功。新增 golden 覆盖相同 kernel 拒绝、
+replacement kernel 恢复、service reclaim、ledger 归档及归档后重试；本地 macOS
+只完成该 golden 的交叉编译，未执行 AArch64 runtime。
+
+该批只实现 home guest/kernel 已替换、旧 backing 随旧 kernel 消失的恢复子集。
+相同 kernel instance 的 reservation 续作、跨节点 CPU/PTO 映射与计算排空证明、
+强制撤销、实际失联节点重新加入及重复故障矩阵仍须在 n4 完成。M3 和总目标继续
+保持进行中。
