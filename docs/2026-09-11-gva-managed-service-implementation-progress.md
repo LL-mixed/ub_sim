@@ -5499,3 +5499,46 @@ QEMU 或模型 workload。
 可由完整 segment/export 身份证明的同-kernel 部分事务实现；实际进程杀死/重启
 注入矩阵、跨节点 mapping/PTO 排空、强制撤销、完整重新加入和重复故障矩阵继续
 未完成。
+
+## 2026-09-17：无法续作 ledger 的显式 provider 隔离
+
+独立服务提交 `3e21a0497c5eefddde6dcb908831ba458685250a` 新增
+`quarantine-allocation-state --config <path>`。该入口解决裸 `reserve-intent`、
+torn frame 或后续 checksum 失败无法安全选择物理后继操作时，旧 provider 仍可能
+等待 lease 才进入隔离的问题。
+
+命令只信任完整且通过 checksum 的首个 `worker-start` 帧，并要求其中 endpoint、
+state file、node/incarnation、粒度和 fast-allocation 模式与严格配置全部一致。它以
+写锁证明没有协作中的 worker，复核打开文件及路径 inode、尺寸和时间戳不变，然后
+对首帧绑定的旧 provider incarnation 执行精确 deregister。服务收到成功注销后立即
+调用 provider-loss 路径，隔离该身份关联的 allocation、holder 和 mapping。目录
+返回 `NOT_FOUND` 或 `STALE_REF` 分别证明旧实例已经缺席或已被新实例替换，命令将
+其作为幂等完成；其他状态和传输失败均拒绝。
+
+后续 ledger 帧会被扫描并报告为 `complete`、`torn` 或 `invalid`，其内容不授权任何
+segment/export 操作。该入口不打开 `/dev/obmm`、不改写/截断 ledger、不回收 backing、
+不解除隔离，并固定输出 `scope=provider-control-plane`、`backing_reconciled=0` 和
+`resource_reconciliation_required=1`。首帧损坏、配置错配、活动 writer 以及执行前
+快照变化都在发送控制操作前失败；控制操作后检测到文件变化时会显式报告 provider
+终态，避免把已经发生的隔离隐藏成可安全重试的未知动作。
+
+本批唯一一次本地定向门禁为：
+
+```text
+python3 -m unittest guest-linux/aarch64/tests/test_mem_service_gva_worker.py
+Ran 4 tests in 4.621s
+OK (skipped=1)
+```
+
+本机为 macOS，跳过项是仅限原生 Linux/AArch64 的执行阶段；产品 worker 与 golden
+仍由 AArch64 交叉编译器在 `-Wall -Wextra -Werror` 下构建成功。golden 源码新增完整
+ledger、invalid tail、torn tail、首帧损坏拒绝、活动 writer 拒绝，以及
+OK/NOT_FOUND/STALE_REF 三种幂等控制终态断言；这些执行断言留到最终 n4 目标验收时
+原生运行，本批没有启动 QEMU、模型或远端测试。
+
+服务提交已只推送用户授权的
+`origin/codex/gva-managed-service-completion`，远端 `ls-remote` 精确返回上述完整
+SHA。父仓库只在本地同步 gitlink 与 `guest-linux/aarch64/mem_service.lock`，没有
+推送。真实 guest 的裸 reserve-intent/torn 故障注入、隔离后的 kernel inventory
+对账、远端 holder 排空、强制撤销、重新加入和重复故障矩阵仍未完成，M3 与总目标
+继续保持进行中。

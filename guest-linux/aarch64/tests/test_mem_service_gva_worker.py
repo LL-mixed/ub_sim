@@ -60,6 +60,7 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                 self.assertEqual(usage.returncode, 2)
                 self.assertEqual("serve-allocations" in usage.stderr, enabled)
                 self.assertEqual("resume-allocations" in usage.stderr, enabled)
+                self.assertEqual("quarantine-allocation-state" in usage.stderr, enabled)
 
     def test_worker_build_and_startup_guards(self):
         native = platform.system() == "Linux" and platform.machine() == "aarch64"
@@ -125,6 +126,11 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
             self.assertIn(
                 "gva_worker_partial_resume=pass stages=9 "
                 "reserve_intent=isolated torn_frame=isolated",
+                result.stdout,
+            )
+            self.assertIn(
+                "gva_worker_quarantine=pass complete=1 invalid_tail=1 torn_tail=1 "
+                "invalid_start=reject writer_lock=reject idempotent_states=3",
                 result.stdout,
             )
             config = pathlib.Path(directory) / "worker.conf"

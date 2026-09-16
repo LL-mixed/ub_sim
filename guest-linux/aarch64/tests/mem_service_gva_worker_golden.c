@@ -18,6 +18,9 @@ static bool publish_cancelled, empty_cancel;
 static bool drive_worker_loop;
 static bool drive_worker_recovery;
 static bool drive_worker_resume;
+static bool drive_worker_quarantine;
+static enum mem_service_wire_status quarantine_status = MEM_SERVICE_WIRE_STATUS_OK;
+static unsigned provider_deregistrations;
 static bool resume_service_mismatch;
 static const char *resume_service_state = "active";
 static bool resume_service_backed = true;
@@ -258,10 +261,12 @@ int __wrap_mem_service_client_provider_deregister(const struct mem_service_clien
     enum mem_service_wire_status *status)
 {
     (void)client;
-    (void)directory;
-    assert((drive_worker_loop || drive_worker_resume) &&
+    assert((drive_worker_loop || drive_worker_resume || drive_worker_quarantine) &&
            !strcmp(node, "nodeA") && incarnation == 7);
-    *status = MEM_SERVICE_WIRE_STATUS_OK;
+    memset(directory, 0, sizeof(*directory));
+    provider_deregistrations++;
+    *status = drive_worker_quarantine ? quarantine_status :
+                                        MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
 }
 
@@ -956,12 +961,27 @@ int main(void)
             inventory_mode = 0;
             puts("gva_worker_same_kernel_resume=pass reservations=1 "
                  "kernel_mismatch=reject service_mismatch=reject");
+            drive_worker_quarantine = true;
+            quarantine_status = MEM_SERVICE_WIRE_STATUS_OK;
+            unsigned quarantine_before = provider_deregistrations;
+            assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
+            quarantine_status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+            assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
+            quarantine_status = MEM_SERVICE_WIRE_STATUS_STALE_REF;
+            assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
+            assert(provider_deregistrations == quarantine_before + 3);
             saved.incarnation++;
             assert(lseek(fd, 0, SEEK_SET) == 0 && ledger_read_entry(fd, 1, &saved, &entry));
             assert(!fcntl(fd, F_SETLK, &lock));
             child = fork();
             assert(child >= 0);
-            if (!child) _exit(mem_service_provider_obmm_inspect_allocation_state(config_path) == 1 ? 0 : 1);
+            if (!child) {
+                int inspect_failed =
+                    mem_service_provider_obmm_inspect_allocation_state(config_path) == 1;
+                int quarantine_failed =
+                    mem_service_provider_obmm_quarantine_allocation_state(config_path) == 1;
+                _exit(inspect_failed && quarantine_failed ? 0 : 1);
+            }
             assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && !WEXITSTATUS(status));
             lock.l_type = F_UNLCK;
             assert(!fcntl(fd, F_SETLK, &lock));
@@ -969,13 +989,26 @@ int main(void)
             unsigned char changed = byte ^ 1;
             assert(pwrite(fd, &changed, 1, 48) == 1);
             assert(mem_service_provider_obmm_inspect_allocation_state(config_path) == 1);
+            quarantine_before = provider_deregistrations;
+            assert(mem_service_provider_obmm_quarantine_allocation_state(config_path) == 1);
+            assert(provider_deregistrations == quarantine_before);
             assert(pwrite(fd, &byte, 1, 48) == 1);
+            assert(pread(fd, &byte, 1, WORKER_LEDGER_FRAME_BYTES + 48) == 1);
+            changed = byte ^ 1;
+            assert(pwrite(fd, &changed, 1, WORKER_LEDGER_FRAME_BYTES + 48) == 1);
+            quarantine_status = MEM_SERVICE_WIRE_STATUS_OK;
+            assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
+            assert(pwrite(fd, &byte, 1, WORKER_LEDGER_FRAME_BYTES + 48) == 1);
             assert(pread(fd, &last, 1, st.st_size - 1) == 1);
             assert(!ftruncate(fd, st.st_size - 1));
             assert(mem_service_provider_obmm_inspect_allocation_state(config_path) == 1);
+            assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
             assert(pwrite(fd, &last, 1, st.st_size - 1) == 1 && !close(fd));
             assert(!mem_service_provider_obmm_inspect_allocation_state(config_path));
+            drive_worker_quarantine = false;
             puts("gva_worker_durable_ledger=pass identity=1 corruption=1 torn=1 writer_lock=1");
+            puts("gva_worker_quarantine=pass complete=1 invalid_tail=1 torn_tail=1 "
+                 "invalid_start=reject writer_lock=reject idempotent_states=3");
         }
         snprintf(replacement_path, sizeof(replacement_path),
                  "%s/replacement.conf", directory);
