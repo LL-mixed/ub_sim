@@ -1519,6 +1519,30 @@ mem_service_object_share_holder_recovery() {
     /bin/linqu_mem_service object-session \
       --config /tmp/holder-recovery-controller.conf || return 1
 
+    attempt=0
+    while [ "$attempt" -lt 600 ]; do
+      result=0
+      /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+        >/tmp/holder-recovery-replacement.log 2>&1 || result=$?
+      if [ "$result" -eq 0 ] &&
+          /bin/busybox grep -q 'provider_active_count=2' \
+          /tmp/holder-recovery-replacement.log &&
+          /bin/busybox grep -q 'provider_directory_ready=1' \
+          /tmp/holder-recovery-replacement.log &&
+          /bin/busybox grep -Eq 'expired_count=[1-9][0-9]*' \
+          /tmp/holder-recovery-replacement.log &&
+          /bin/busybox grep -q \
+          "provider=guest-node-1 incarnation=$replacement " \
+          /tmp/holder-recovery-replacement.log; then
+        break
+      fi
+      attempt=$((attempt + 1))
+      /bin/busybox sleep 0.1
+    done
+    /bin/busybox cat /tmp/holder-recovery-replacement.log
+    [ "$attempt" -lt 600 ] || return 1
+    echo "mem_service holder-recovery: node=0 phase=replacement-directory status=ready incarnation=$replacement"
+    attempt=0
     while [ "$attempt" -lt 600 ]; do
       result=0
       /bin/linqu_mem_service recover-allocation --connect "$connect" \

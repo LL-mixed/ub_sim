@@ -1537,6 +1537,10 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert holder_recovery.count('echo "provider=obmm"') == 2
     assert holder_recovery.count('echo "provider_node_count=2"') == 2
     assert "provider-directory-status" in holder_recovery
+    assert "provider_active_count=2" in holder_recovery
+    assert "provider_directory_ready=1" in holder_recovery
+    assert '"provider=guest-node-1 incarnation=$replacement "' in holder_recovery
+    assert "phase=replacement-directory status=ready" in holder_recovery
     assert "expired_count=[1-9][0-9]*" in holder_recovery
     assert "replaced=0" in holder_recovery
     assert holder_recovery.count(
