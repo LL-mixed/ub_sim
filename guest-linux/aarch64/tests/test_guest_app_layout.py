@@ -1529,6 +1529,33 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "cpu_fault_probe=probe_guard offset=[0-9]+ signal=(7|11)" in apps_runner
 
 
+def test_managed_object_sessions_bind_directory_holder_identity():
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    blocks = (
+        run_app.split("mem_service_object_share_reference() (", 1)[1].split(
+            "\nmem_service_object_share_retired_ops()", 1
+        )[0],
+        run_app.split("mem_service_object_share_retired() (", 1)[1].split(
+            "\nmem_service_object_share_wait_infrastructure()", 1
+        )[0],
+        run_app.split("mem_service_object_share_managed() (", 1)[1].split(
+            "\nrun_mem_service_object_share()", 1
+        )[0],
+    )
+    holder_node = 'echo "holder_node_id=guest-node-$node"'
+    holder_incarnation = 'echo "holder_provider_incarnation=$incarnation"'
+    for block in blocks:
+        assert block.count(holder_node) == 1
+        assert block.count(holder_incarnation) == 1
+        assert block.index(holder_node) < block.index(holder_incarnation)
+        assert block.index(holder_incarnation) < block.index(
+            'echo "provider_generation='
+        )
+    assert run_app.count(holder_node) == 3
+    assert run_app.count(holder_incarnation) == 3
+    assert 'holder_provider_incarnation=$((incarnation' not in run_app
+
+
 def test_npu_gsva_test_has_independent_app_build():
     build_script = (ROOT / "scripts" / "build_initramfs.sh").read_text()
     app_dir = ROOT / "apps" / "npu_gsva_test"
