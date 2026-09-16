@@ -5793,3 +5793,61 @@ nodeB_qemu  a98aae03ea74c1ace96ec065e4c18ca666d110a863457a5ea3ccca754b130edc
 中的跨节点 RETIRE 物理排空、脏回写、旧 CPU VMA 失效和 home/holder route 清理
 子项。replacement provider 实际调用 `LOCAL_REVOKE`、提交 fencing receipt、拒绝旧
 PTO 访问、完成 rejoin，以及杀死/重启和重复故障注入矩阵仍未验收。
+
+### n4 双 guest holder-recovery r3-r7：replacement 物理撤销闭环
+
+holder-recovery 场景使用 node A 作为旧 allocation 的 home，node B 持有实际严格
+GSVA CPU mapping。旧 node B provider lease 到期后，同节点新 incarnation 注册；
+replacement worker 从服务轮询精确旧 holder identity，在本机通过 `/dev/obmm`
+执行 `LOCAL_REVOKE`，物理成功后提交 fencing receipt。node A 只有在 holder 和
+mapping 义务清零后才接受 recovery，并继续 unexport、segment retire 和 reclaim。
+
+r3-r6 依次修正 endpoint rendezvous、对象 session 超时、replacement directory
+等待和 recovery poll 缺少 holder identity 的问题。独立服务 `b0d5a8a` 在普通和
+recovery poll 响应中序列化完整 holder session、generation、node 与 incarnation；
+该提交已只推送授权的
+`origin/codex/gva-managed-service-completion`，父仓库本地 gitlink/lock 同步。
+
+r7 的实际运行组合为：
+
+```text
+parent guest build 687a694
+qemu              5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel            dd07fe43c50de0432a9d363bcb6205ff29abab7e
+mem_service       b0d5a8ae5f7be591b18bbef98e34057bbc4cecfc
+```
+
+两个 endpoint peer canary 均通过；旧 provider lease 过期后 replacement incarnation 8
+以 `replaced=0` 注册。node B 的 worker 对唯一 allocation 完成物理 fencing 和
+receipt，QEMU 记录 quarantine/drained 两次 TLB flush、成功 home fence ACK、CPU
+window tombstone 及 `local holder revoked`。node A 进入 `RETIRING` 后完成 unexport、
+kernel segment retire 与 service reclaim；同一进程保留的旧 CPU mapping 再访问以
+exit 135 被拒绝。
+
+r7 原 runner exit 1 的唯一原因是验证器要求
+`GSVA_COH: home retire route finalized`。该标记由跨节点 RETIRE 协调路径产生；本场景
+由 provider 在 home kernel 执行 checked unexport，权威事件是同一 identity 的
+`GSVA_HOME_REVOKE=2`。父仓库 `c8155a5` 的独立验证器从 guest 提取唯一 COMMITTED
+segment retire，再逐项关联 worker generation、十进制 segment、export，以及 QEMU
+同一 segment/epoch/export 的 bind/revoke `error=0`；错 segment、epoch、export 或
+错误码均被测试拒绝。5 项本地定向 validator 测试通过。
+
+没有重跑 guest。`c8155a5` 在 n4-910c1 直接复核 r7 四份原日志并生成
+`holder-recovery-r7-validation.json`，结果为
+`managed_holder_recovery=pass physical_revoke=1 home_retire=1`。报告记录：
+
+```text
+home segment  0xc4c2000000000001
+home epoch    1
+home export   1
+CPU rejection exit 135
+nodeA guest   b1cdafba7dd25b4d6c8bafb13c6f7899dee05ffad6aefce4e30da3bf00d3f0ec
+nodeB guest   5cd72d23be41d1673075486e0ff11b16ab358940a985aa79f39d153290ea6058
+nodeA qemu    d8d16d6e71d1fbcefe3f61d2190b89ef81b436f802b48d2fb441748553038361
+nodeB qemu    5f08dd6bd217dce930800d686bf2c40e5922f6f3e15ed5f69dedc1876648fb3d
+```
+
+终态查询确认目标机没有遗留 `qemu-system-aarch64`。该结果关闭 replacement provider
+通过真实 QEMU `LOCAL_REVOKE` 产生 fencing receipt、旧 CPU VMA 失效及 home 物理
+退役子项。旧 PTO 在强制撤销后的实际拒绝、裸 reserve-intent/torn 隔离注入、完整
+杀死/重启/rejoin 和重复故障矩阵仍未完成。
