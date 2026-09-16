@@ -2162,7 +2162,6 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     uint64_t import_mem_id = 0;
     struct obmm_helpers_region import_region = { .fd = -1 };
-    struct obmm_helpers_region home_region = { .fd = -1 };
     int32_t ev_error = GSVA_ERR_FEATURE_MISSING;
     uint32_t peer_cna = 0;
     uint64_t segment_id = 0;
@@ -2414,14 +2413,11 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         CHECK(ev_error == GSVA_ERR_SEGMENT_RETIRED,
               "ReadAcquire after remote retire should be retired");
 
-        rc = obmm_map_region(my_meta.export_mem_id, GSVA_SIZE, false,
-                             &home_region);
-        CHECK(rc == 0, "home backing mmap should succeed");
-        CHECK(*(volatile uint64_t *)home_region.addr == dirty_value,
+        __sync_synchronize();
+        CHECK(*(volatile uint64_t *)import_region.addr == dirty_value,
               "retire ACK must follow dirty holder writeback");
         printf("%s   coh_remote_retire writeback_verified value=%#" PRIx64
-               "\n", TAG, *(volatile uint64_t *)home_region.addr);
-        obmm_unmap_region(&home_region);
+               "\n", TAG, *(volatile uint64_t *)import_region.addr);
     } else if (node_idx == 1) {
         bool retired = false;
         int fault_signal = 0;

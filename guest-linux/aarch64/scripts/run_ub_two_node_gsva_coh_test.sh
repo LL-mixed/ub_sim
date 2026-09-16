@@ -429,6 +429,11 @@ validate_coh_logs() {
       echo "[gsva_coh] FAIL: remote retire test did not mark object retired after RetireAck" >&2
       return 1
     fi
+    if ! grep -q 'GSVA_COH: home retire route finalized' "$NODEA_QEMU_LOG" ||
+       ! grep -Eq 'GSVA_UNMAP: .*tombstone=yes' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: coordinator did not tombstone its retired home route" >&2
+      return 1
+    fi
     if ! grep -q 'coh_remote_retire Retry error=0' "$NODEA_GUEST_LOG"; then
       echo "[gsva_coh] FAIL: guest did not observe remote RETIRE_ACK recovery" >&2
       return 1

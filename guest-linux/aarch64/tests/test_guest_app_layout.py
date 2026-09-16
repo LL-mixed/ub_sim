@@ -3407,12 +3407,14 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "home_p_tag, home_epoch" in retire_case
     assert "coh_remote_retire dirty_write" in source
     assert "retire ACK must follow dirty holder writeback" in source
+    assert "obmm_map_region(my_meta.export_mem_id" not in retire_case
     assert "gsva_probe_revoked_cpu_read(import_region.addr" in source
     assert "coh_remote_retire revoked_cpu signal=" in source
     assert "GSVA_COH: rx RETIRE local drained" in runner
     assert "GSVA_TLB: flush reason=remote_retire_quarantine" in runner
     assert "GSVA_TLB: flush reason=remote_retire_drained" in runner
     assert "GSVA_UNMAP: .*tombstone=yes" in runner
+    assert "GSVA_COH: home retire route finalized" in runner
     assert "coh_remote_retire writeback_verified" in runner
     assert "coh_remote_retire revoked_cpu signal=" in runner
 
