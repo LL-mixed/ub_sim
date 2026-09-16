@@ -1685,6 +1685,8 @@ def test_mem_service_has_component_and_cli_entrypoints():
         '"$LLM_INFER_APP_SRC"',
         '"$MEM_SERVICE_SRC"',
         '"$MEM_SERVICE_PROVIDER_SRC"',
+        '"$MEM_SERVICE_MAPPING_OWNER_SRC"',
+        '"$MEM_SERVICE_PROVIDER_OBMM_SRC"',
         '"$MEM_SERVICE_OBMM_OBJECTS_SRC"',
         '"$LLM_INFER_SRC"',
     ):
