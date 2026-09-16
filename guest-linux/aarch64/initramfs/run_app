@@ -1774,7 +1774,12 @@ mem_service_object_share_holder_recovery() {
   if [ "$attempt" -ge 50 ] || ! /bin/busybox grep -q \
       'MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected' \
       /tmp/holder-recovery-pto.log 2>/dev/null; then
-    echo "mem_service holder-recovery: node=1 phase=cpu-rejected-observed status=timeout op_id=$pto_op"
+    if kill -0 "$pto_pid" 2>/dev/null; then
+      result="timeout"
+    else
+      result="failed"
+    fi
+    echo "mem_service holder-recovery: node=1 phase=cpu-rejected-observed status=$result op_id=$pto_op"
     /bin/busybox cat /tmp/holder-recovery-pto.log
     kill -9 "$pto_pid" 2>/dev/null || true
     wait "$pto_pid" 2>/dev/null || true

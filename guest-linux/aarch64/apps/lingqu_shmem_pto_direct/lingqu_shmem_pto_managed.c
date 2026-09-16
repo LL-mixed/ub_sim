@@ -362,6 +362,24 @@ struct vector_check {
     uint64_t negative_operation;
 };
 
+struct revoked_cpu_check {
+    struct lingqu_shmem_pto_cpu_fault fault;
+};
+
+static int probe_revoked_cpu_callback(void *opaque,
+    const struct mem_service_provider_channel *channel,
+    const struct mem_service_client_object_mapping *mapping,
+    const struct mem_service_client_mapping_lifecycle *lifecycle,
+    const struct mem_service_mapping_access_view *view)
+{
+    struct revoked_cpu_check *check = opaque;
+    (void)channel;
+    (void)mapping;
+    (void)lifecycle;
+    if (!check || !view || !view->base || view->len == 0) return -EINVAL;
+    return lingqu_shmem_pto_probe_revoked_read(view->base, &check->fault);
+}
+
 static int verify_vector_callback(void *opaque,
     const struct mem_service_provider_channel *channel,
     const struct mem_service_client_object_mapping *mapping,
@@ -1306,7 +1324,7 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     }
     state->completion_unknown = false;
     if (forced_revoke) {
-        struct lingqu_shmem_pto_cpu_fault cpu_fault;
+        struct revoked_cpu_check cpu_check = {0};
         if (completion.status != 3 ||
             (strcmp(completion.error_code, LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED) &&
              strcmp(completion.error_code, LINGQU_PTO_UB_GM_CODE_BAD_MEMREF)) ||
@@ -1321,17 +1339,19 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
             " mapping_id=%" PRIu64 " retained_cpu_pins=1 retained_leases=3\n",
             state->config.node, request.op_id, state->allocation.generation,
             state->mapping_id);
-        rc = lingqu_shmem_pto_probe_revoked_read(state->mapping.base, &cpu_fault);
-        if (rc || (cpu_fault.signal != SIGBUS && cpu_fault.signal != SIGSEGV))
+        rc = mem_service_mapping_lease_apply(
+            state->cpu_pin, probe_revoked_cpu_callback, &cpu_check);
+        if (rc || (cpu_check.fault.signal != SIGBUS &&
+                   cpu_check.fault.signal != SIGSEGV))
             return rc ? rc : -EPROTO;
-        state->holder_recovery_cpu_signal = cpu_fault.signal;
+        state->holder_recovery_cpu_signal = cpu_check.fault.signal;
         printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=cpu-rejected"
             " op_id=%" PRIu64 " generation=%" PRIu64
             " mapping_id=%" PRIu64 " signal=%d code=%d address=0x%" PRIxPTR
             " retained_cpu_pins=1 retained_leases=3\n",
             state->config.node, request.op_id, state->allocation.generation,
-            state->mapping_id, cpu_fault.signal, cpu_fault.code,
-            cpu_fault.address);
+            state->mapping_id, cpu_check.fault.signal, cpu_check.fault.code,
+            cpu_check.fault.address);
         lingqu_shmem_pto_dispatch_finish(state->inflight);
         state->inflight = NULL;
         return 0;

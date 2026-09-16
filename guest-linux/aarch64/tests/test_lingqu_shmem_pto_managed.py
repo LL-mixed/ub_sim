@@ -565,6 +565,11 @@ int main(int argc, char **argv) {
         self.assertIn("mem_service_client_acquire_object_at_node", source)
         self.assertIn("wait_holder_recovery_retired", source)
         self.assertIn("lingqu_shmem_pto_probe_revoked_read", source)
+        self.assertIn("mem_service_mapping_lease_apply(\n"
+                      "            state->cpu_pin, probe_revoked_cpu_callback",
+                      source)
+        self.assertNotIn("lingqu_shmem_pto_probe_revoked_read(state->mapping.base",
+                         source)
         self.assertIn("MANAGED_PTO_HOLDER_RECOVERY", source)
         self.assertIn("old_cpu_access=%s", source)
         self.assertIn("old_pto_access=%s", source)
@@ -584,7 +589,7 @@ int main(int argc, char **argv) {
         self.assertLess(holder_dispatch.index("state=rejected"),
                         holder_dispatch.index("state=cpu-probe-start"))
         self.assertLess(holder_dispatch.index("state=cpu-probe-start"),
-                        holder_dispatch.index("lingqu_shmem_pto_probe_revoked_read"))
+                        holder_dispatch.index("probe_revoked_cpu_callback"))
 
     def test_initramfs_and_dual_node_runner_expose_managed_mode(self):
         build = (ROOT / "guest-linux/aarch64/scripts/build_initramfs.sh").read_text()
