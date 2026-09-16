@@ -1538,11 +1538,15 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "holder-recovery-pto-ready" in holder_recovery
     assert "--managed-config /tmp/holder-recovery-pto.conf" in holder_recovery
     assert "MANAGED_PTO_HOLDER_RECOVERY node=1 state=prepared" in holder_recovery
+    assert "phase=pto-prepared-observed op_id=$pto_op" in holder_recovery
+    assert "MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected" in holder_recovery
     assert "MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected" in holder_recovery
-    assert "signal_exit=$session_status" in holder_recovery
+    assert "old_cpu_signal=$cpu_signal" in holder_recovery
     assert "holder_fence_receipt_required" in holder_recovery
-    assert holder_recovery.count('echo "provider=obmm"') == 2
-    assert holder_recovery.count('echo "provider_node_count=2"') == 2
+    assert 'echo "provider=obmm"' not in holder_recovery
+    assert 'echo "provider_node_count=2"' not in holder_recovery
+    assert "op=map key=$key flags=readwrite" not in holder_recovery
+    assert "op=publish_data key=$key" not in holder_recovery
     assert "provider-directory-status" in holder_recovery
     assert "provider_active_count=2" in holder_recovery
     assert "provider_directory_ready=1" in holder_recovery
@@ -1583,9 +1587,6 @@ def test_managed_object_sessions_bind_directory_holder_identity():
         run_app.split("mem_service_object_share_retired() (", 1)[1].split(
             "\nmem_service_object_share_wait_infrastructure()", 1
         )[0],
-        run_app.split('echo "session_id=holder-recovery-client-1"', 1)[1].split(
-            "\nmem_service_object_share_managed() (", 1
-        )[0],
         run_app.split("mem_service_object_share_managed() (", 1)[1].split(
             "\nrun_mem_service_object_share()", 1
         )[0],
@@ -1599,8 +1600,8 @@ def test_managed_object_sessions_bind_directory_holder_identity():
         assert block.index(holder_incarnation) < block.index(
             'echo "provider_generation='
         )
-    assert run_app.count(holder_node) == 4
-    assert run_app.count(holder_incarnation) == 4
+    assert run_app.count(holder_node) == 3
+    assert run_app.count(holder_incarnation) == 3
     assert 'holder_provider_incarnation=$((incarnation' not in run_app
 
 

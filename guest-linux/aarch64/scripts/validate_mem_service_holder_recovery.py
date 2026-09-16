@@ -78,8 +78,10 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     for text, role in ((node_a, "home"), (node_b, "replacement")):
         require("mem_service object-share: status=fail" not in text,
                 f"{role} guest reported failure")
-        require(text.count("peer_canary=ok peers=1") == 1,
-                f"{role} endpoint peer canary missing or duplicated")
+    require(node_a.count("MANAGED_PTO node=0 peer_canary=pass") == 1,
+            "home PTO endpoint peer canary missing or duplicated")
+    require(node_b.count("MANAGED_PTO node=1 peer_canary=pass") == 1,
+            "replacement PTO endpoint peer canary missing or duplicated")
 
     require_pattern(node_a, r"mem_service recover-allocation: status=ok",
                     "home recovery was not accepted")
@@ -111,12 +113,17 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         "home PTO peer did not close successfully",
     )
 
-    require_pattern(node_b, r"action=map key=holder-recovery-object status=ok",
-                    "old holder mapping was not established")
     require_pattern(
         node_b,
-        r"action=publish_data key=holder-recovery-object status=ok",
-        "old holder payload was not published",
+        r"MANAGED_PTO node=1 key=holder-recovery-object generation=[1-9][0-9]* "
+        r"cpu_base=0x[0-9a-f]+ .*mapping_id=[1-9][0-9]* ",
+        "old holder PTO mapping was not established",
+    )
+    require_pattern(
+        node_b,
+        r"MANAGED_OWNER node=1 state=adopted generation=[1-9][0-9]* "
+        r"mapping_id=[1-9][0-9]* cpu_pins=1 holder_transferred=1",
+        "old holder mapping was not adopted by one CPU/PTO owner",
     )
     require(node_b.count("mem_service provider-register: status=ok") >= 2,
             "replacement provider registration is missing")
@@ -150,16 +157,39 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"cleanup=process-exit",
         "old holder PTO dispatch was not rejected after forced revoke",
     )
+    observed = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=pto-prepared-observed "
+        r"op_id=([1-9][0-9]*)",
+        "controller did not observe the prepared PTO dispatch before fencing",
+    )
+    cpu_rejected = require_pattern(
+        node_b,
+        r"MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected "
+        r"op_id=([1-9][0-9]*) generation=([1-9][0-9]*) "
+        r"mapping_id=([1-9][0-9]*) signal=(7|11) code=([1-9][0-9]*) "
+        r"address=0x[0-9a-f]+ retained_cpu_pins=1 retained_leases=3",
+        "old holder CPU access was not rejected inside the PTO owner",
+    )
     require(prepared.group(1) == rejected.group(1) == rejected.group(2),
             "old holder PTO completion identity does not match its prepared dispatch")
-    require(node_b.index(prepared.group(0)) <
+    require(prepared.group(1) == observed.group(1) == cpu_rejected.group(1),
+            "CPU/PTO rejection does not match the observed prepared dispatch")
+    require(prepared.group(3) == cpu_rejected.group(3),
+            "CPU rejection does not match the prepared mapping")
+    require(node_b.index(observed.group(0)) <
             node_b.index("obmm-holder-fence: status=fenced") <
+            node_b.index(cpu_rejected.group(0)) <
             node_b.index(rejected.group(0)),
-            "old holder PTO dispatch was not fenced between prepare and rejection")
+            "old holder accesses were not rejected after the observed fence")
+    require(node_b.index(prepared.group(0)) <
+            node_b.index(cpu_rejected.group(0)),
+            "old holder CPU probe did not use the pre-revoke dispatch mapping")
     require_pattern(
         node_b,
         r"MANAGED_PTO_RESULT node=1 status=pass .*holder_recovery_probe=1 "
-        r"role=stale-holder old_pto_access=rejected cleanup=process-exit",
+        r"role=stale-holder old_cpu_access=rejected old_pto_access=rejected "
+        r"cpu_signal=(7|11) cleanup=process-exit",
         "old holder PTO probe did not report a bounded successful result",
     )
     require_pattern(
@@ -172,9 +202,11 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     signal = require_pattern(
         node_b,
         r"mem_service holder-recovery: node=1 status=fenced "
-        r"old_cpu_access=rejected old_pto_access=rejected signal_exit=(135|139)",
+        r"old_cpu_access=rejected old_pto_access=rejected old_cpu_signal=(7|11)",
         "old CPU mapping was not rejected after forced revoke",
     ).group(1)
+    require(signal == cpu_rejected.group(4),
+            "controller CPU signal does not match the PTO owner probe")
 
     require_pattern(qemu_b, r"GSVA_TLB: flush reason=remote_retire_quarantine",
                     "holder TLB quarantine is missing")
@@ -193,7 +225,7 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     return {
         "status": "pass",
         "scope": "replacement-holder-cpu-pto-revoke-and-home-retire",
-        "old_cpu_signal_exit": int(signal),
+        "old_cpu_signal": int(signal),
         "old_pto_error": rejected.group(3),
         "old_pto_operation_id": int(rejected.group(1)),
         "old_pto_mapping_id": int(prepared.group(3)),

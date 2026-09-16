@@ -103,7 +103,7 @@ struct managed_state {
     pthread_t workers[MAX_ACCESS_THREADS];
     unsigned workers_started, workers_ready, worker_checks, workers_observed_seal;
     bool workers_stop, owner_sealed;
-    int worker_error;
+    int worker_error, holder_recovery_cpu_signal;
 };
 
 struct managed_batch {
@@ -1178,6 +1178,7 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
         if (rc) return rc;
     }
     if (forced_revoke) {
+        struct lingqu_shmem_pto_cpu_fault cpu_fault;
         printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=prepared op_id=%" PRIu64
             " generation=%" PRIu64 " mapping_id=%" PRIu64
             " holder_node=guest-node-%u holder_incarnation=%" PRIu64
@@ -1191,6 +1192,17 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
             " retained_leases=3\n",
             state->config.node, request.op_id, state->allocation.generation,
             state->mapping_id);
+        rc = lingqu_shmem_pto_probe_revoked_read(state->mapping.base, &cpu_fault);
+        if (rc || (cpu_fault.signal != SIGBUS && cpu_fault.signal != SIGSEGV))
+            return rc ? rc : -EPROTO;
+        state->holder_recovery_cpu_signal = cpu_fault.signal;
+        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=cpu-rejected"
+            " op_id=%" PRIu64 " generation=%" PRIu64
+            " mapping_id=%" PRIu64 " signal=%d code=%d address=0x%" PRIxPTR
+            " retained_cpu_pins=1 retained_leases=3\n",
+            state->config.node, request.op_id, state->allocation.generation,
+            state->mapping_id, cpu_fault.signal, cpu_fault.code,
+            cpu_fault.address);
     }
     if (state->batch) {
         pthread_mutex_lock(&state->batch->lock);
@@ -1890,11 +1902,13 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
             if (rc) goto failed;
         }
         printf("MANAGED_PTO_RESULT node=%u status=pass key=%s generation=%" PRIu64
-            " holder_recovery_probe=1 role=%s old_pto_access=%s"
-            " cleanup=%s\n",
+            " holder_recovery_probe=1 role=%s old_cpu_access=%s"
+            " old_pto_access=%s cpu_signal=%d cleanup=%s\n",
             config.node, config.key, state->allocation.generation,
             config.node == config.home_node ? "peer" : "stale-holder",
             config.node == config.home_node ? "not-applicable" : "rejected",
+            config.node == config.home_node ? "not-applicable" : "rejected",
+            state->holder_recovery_cpu_signal,
             config.node == config.home_node ? "provider-close" : "process-exit");
         pthread_cond_destroy(&state->workers_condition);
         pthread_mutex_destroy(&state->workers_lock);

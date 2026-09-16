@@ -564,7 +564,9 @@ int main(int argc, char **argv) {
         self.assertIn("state->config.recovery_expected && !recovered", source)
         self.assertIn("mem_service_client_acquire_object_at_node", source)
         self.assertIn("wait_holder_recovery_retired", source)
+        self.assertIn("lingqu_shmem_pto_probe_revoked_read", source)
         self.assertIn("MANAGED_PTO_HOLDER_RECOVERY", source)
+        self.assertIn("old_cpu_access=%s", source)
         self.assertIn("old_pto_access=%s", source)
 
     def test_initramfs_and_dual_node_runner_expose_managed_mode(self):

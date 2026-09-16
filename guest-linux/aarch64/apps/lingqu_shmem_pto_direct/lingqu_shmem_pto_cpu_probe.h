@@ -72,4 +72,47 @@ static int lingqu_shmem_pto_probe_readonly(uint8_t *address,
     return 0;
 }
 
+/* Probe a VMA after physical holder revocation. The signal is contained in
+ * the mapping-owning process so the same pre-revoke PTO dispatch can still be
+ * submitted and its completion identity checked. */
+static int lingqu_shmem_pto_probe_revoked_read(
+    uint8_t *address, struct lingqu_shmem_pto_cpu_fault *fault)
+{
+    struct sigaction action = {0}, old_segv, old_bus;
+    volatile sig_atomic_t observed = 0;
+    if (!address || !fault) return -EINVAL;
+    if (pto_cpu_probe_armed) return -EBUSY;
+    *fault = (struct lingqu_shmem_pto_cpu_fault) {0};
+    action.sa_sigaction = pto_cpu_probe_handler;
+    action.sa_flags = SA_SIGINFO;
+    sigfillset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, &old_segv)) return -errno;
+    if (sigaction(SIGBUS, &action, &old_bus)) {
+        int saved = errno;
+        (void)sigaction(SIGSEGV, &old_segv, NULL);
+        return -saved;
+    }
+    pto_cpu_probe_address = (uintptr_t)address;
+    pto_cpu_probe_signal = pto_cpu_probe_code = 0;
+    if (!sigsetjmp(pto_cpu_probe_jump, 1)) {
+        pto_cpu_probe_armed = 1;
+        volatile uint8_t value = *(volatile uint8_t *)address;
+        (void)value;
+        pto_cpu_probe_armed = 0;
+    } else {
+        pto_cpu_probe_armed = 0;
+        observed = 1;
+    }
+    int restore_error = 0;
+    if (sigaction(SIGBUS, &old_bus, NULL)) restore_error = -errno;
+    if (sigaction(SIGSEGV, &old_segv, NULL)) restore_error = -errno;
+    if (restore_error) return restore_error;
+    if (!observed) return -EPROTO;
+    *fault = (struct lingqu_shmem_pto_cpu_fault) {
+        .address = pto_cpu_probe_address,
+        .signal = pto_cpu_probe_signal, .code = pto_cpu_probe_code,
+    };
+    return 0;
+}
+
 #endif

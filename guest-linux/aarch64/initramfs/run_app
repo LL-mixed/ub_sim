@@ -1501,6 +1501,8 @@ mem_service_object_share_holder_recovery() {
   local session_status=0
   local pto_pid=""
   local pto_status=0
+  local pto_op=""
+  local cpu_signal=""
 
   {
     echo "connect=$connect"
@@ -1530,11 +1532,6 @@ mem_service_object_share_holder_recovery() {
       echo "session_id=holder-recovery-controller"
       echo "connect=$connect"
       echo "request_timeout_ms=30000"
-      echo "provider=obmm"
-      echo "provider_node_id=$node"
-      echo "provider_node_count=2"
-      echo "provider_generation=$((incarnation + 1))"
-      echo "provider_import_region_bytes=2097152"
       echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
       echo "op=wait_state key=$ready_key state=active timeout_ms=60000 poll_ms=50"
       echo "op=wait_state key=$pto_ready_key state=active timeout_ms=60000 poll_ms=50"
@@ -1609,46 +1606,17 @@ mem_service_object_share_holder_recovery() {
   fi
 
   {
-    echo "session_id=holder-recovery-client-1"
+    echo "session_id=holder-recovery-observer-1"
     echo "connect=$connect"
     echo "request_timeout_ms=30000"
-    echo "holder_node_id=guest-node-$node"
-    echo "holder_provider_incarnation=$incarnation"
-    echo "provider=obmm"
-    echo "provider_node_id=1"
-    echo "provider_node_count=2"
-    echo "provider_generation=$((incarnation + 1))"
-    echo "provider_import_region_bytes=2097152"
     echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
-    echo "op=acquire key=$key idempotency_key=holder-recovery-acquire"
-    echo "op=map key=$key flags=readwrite"
-    echo "op=write key=$key offset=0 len=$size seed=$seed"
-    echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
-    echo "op=allocate key=$ready_key idempotency_key=holder-recovery-ready size_bytes=65536 capabilities=map"
+    echo "op=wait_state key=$pto_ready_key state=active timeout_ms=60000 poll_ms=50"
     echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
-    echo "op=read key=$key offset=0 len=$size seed=$seed"
-  } >/tmp/holder-recovery-client.conf
+  } >/tmp/holder-recovery-observer.conf
   /bin/linqu_mem_service object-session \
-    --config /tmp/holder-recovery-client.conf \
-    >/tmp/holder-recovery-client.log 2>&1 &
+    --config /tmp/holder-recovery-observer.conf \
+    >/tmp/holder-recovery-observer.log 2>&1 &
   session_pid=$!
-  while [ "$attempt" -lt 600 ]; do
-    if /bin/busybox grep -q \
-        'action=publish_data key=holder-recovery-object status=ok' \
-        /tmp/holder-recovery-client.log 2>/dev/null &&
-        /bin/busybox grep -q \
-        'action=allocate key=holder-recovery-ready status=ok' \
-        /tmp/holder-recovery-client.log 2>/dev/null; then
-      break
-    fi
-    kill -0 "$session_pid" 2>/dev/null || {
-      /bin/busybox cat /tmp/holder-recovery-client.log
-      return 1
-    }
-    attempt=$((attempt + 1))
-    /bin/busybox sleep 0.1
-  done
-  [ "$attempt" -lt 600 ] || return 1
 
   attempt=0
   while [ "$attempt" -lt 600 ]; do
@@ -1665,6 +1633,17 @@ mem_service_object_share_holder_recovery() {
     /bin/busybox sleep 0.1
   done
   [ "$attempt" -lt 600 ] || return 1
+  pto_op="$(/bin/busybox sed -n \
+    's/.*state=prepared op_id=\([0-9][0-9]*\).*/\1/p' \
+    /tmp/holder-recovery-pto.log | /bin/busybox head -n 1)"
+  [ -n "$pto_op" ] || return 1
+  echo "mem_service holder-recovery: node=1 phase=pto-prepared-observed op_id=$pto_op"
+  /bin/linqu_mem_service allocate-object --connect "$connect" \
+    --key "$ready_key" --idempotency-key holder-recovery-ready \
+    --session-id holder-recovery-pto-controller --home-node guest-node-0 \
+    --size-bytes 65536 --capabilities 1 \
+    >/tmp/holder-recovery-ready.log 2>&1 || return 1
+  /bin/busybox cat /tmp/holder-recovery-ready.log
   /bin/linqu_mem_service allocate-object --connect "$connect" \
     --key "$pto_ready_key" --idempotency-key holder-recovery-pto-ready \
     --session-id holder-recovery-pto-controller --home-node guest-node-0 \
@@ -1722,30 +1701,29 @@ mem_service_object_share_holder_recovery() {
     /tmp/holder-recovery-fence.log || return 1
 
   wait "$session_pid" || session_status=$?
-  /bin/busybox cat /tmp/holder-recovery-client.log
+  /bin/busybox cat /tmp/holder-recovery-observer.log
   /bin/busybox grep -q \
     'action=wait_state key=holder-recovery-object status=ok state=retired' \
-    /tmp/holder-recovery-client.log || return 1
-  case "$session_status" in
-    135|139) ;;
-    *) return 1 ;;
-  esac
-  if /bin/busybox grep -q \
-      'action=read key=holder-recovery-object status=ok' \
-      /tmp/holder-recovery-client.log; then
-    return 1
-  fi
+    /tmp/holder-recovery-observer.log || return 1
+  [ "$session_status" -eq 0 ] || return 1
   wait "$pto_pid" || pto_status=$?
   pto_pid=""
   /bin/busybox cat /tmp/holder-recovery-pto.log
   [ "$pto_status" -eq 0 ] || return 1
+  /bin/busybox grep -Eq \
+    'MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected .*signal=(7|11)' \
+    /tmp/holder-recovery-pto.log || return 1
   /bin/busybox grep -q \
     'MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected .*error=pto_ub_gm_' \
     /tmp/holder-recovery-pto.log || return 1
   /bin/busybox grep -q \
-    'MANAGED_PTO_RESULT node=1 status=pass .*holder_recovery_probe=1 role=stale-holder old_pto_access=rejected' \
+    'MANAGED_PTO_RESULT node=1 status=pass .*holder_recovery_probe=1 role=stale-holder old_cpu_access=rejected old_pto_access=rejected' \
     /tmp/holder-recovery-pto.log || return 1
-  echo "mem_service holder-recovery: node=1 status=fenced old_cpu_access=rejected old_pto_access=rejected signal_exit=$session_status old_incarnation=$incarnation current_incarnation=$replacement"
+  cpu_signal="$(/bin/busybox sed -n \
+    's/.*state=cpu-rejected .* signal=\([0-9][0-9]*\) .*/\1/p' \
+    /tmp/holder-recovery-pto.log | /bin/busybox head -n 1)"
+  case "$cpu_signal" in 7|11) ;; *) return 1 ;; esac
+  echo "mem_service holder-recovery: node=1 status=fenced old_cpu_access=rejected old_pto_access=rejected old_cpu_signal=$cpu_signal old_incarnation=$incarnation current_incarnation=$replacement"
   return 0
 }
 
