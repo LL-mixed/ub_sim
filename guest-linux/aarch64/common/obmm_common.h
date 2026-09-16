@@ -74,6 +74,10 @@ enum obmm_import_cache_mode {
 #define OBMM_SIM_DEC_PRIV_VER_1        1
 #define OBMM_SIM_DEC_PRIV_VER_2        2
 #define OBMM_SIM_DEC_PRIV_VER_3        3
+#define OBMM_SIM_DEC_PRIV_VER_4        4
+#ifndef OBMM_SIM_DEC_IMPORT_FLAG_V4
+#define OBMM_SIM_DEC_IMPORT_FLAG_V4    0x8UL
+#endif
 #define OBMM_SIM_DEC_MAP_SOURCE_LEGACY_OBMM 1
 #define OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER 2
 #define OBMM_SIM_DEC_ADDRESS_PROFILE_GENERIC_GVA 1
@@ -129,6 +133,12 @@ struct obmm_sim_dec_import_priv_v2 {
     uint64_t gva_id;
     uint64_t segment_id;
     uint64_t epoch;
+};
+
+struct obmm_sim_dec_import_priv_v4 {
+    struct obmm_sim_dec_import_priv_v2 gsva;
+    uint32_t gsva_token_id;
+    uint32_t reserved;
 };
 
 struct obmm_sim_dec_import_priv_v1 {
@@ -657,6 +667,73 @@ static int obmm_do_import_v2_epoch(int obmm_fd,
     memcpy(desc->priv, &priv, sizeof(priv));
 
     id = obmm_import(desc, OBMM_IMPORT_FLAG_ALLOW_MMAP, 0, &numa);
+    free(desc);
+    if (id == OBMM_INVALID_MEMID)
+        return -1;
+    *import_mem_id = (uint64_t)id;
+    return 0;
+}
+
+static int OBMM_MAYBE_UNUSED obmm_do_import_v4_epoch(
+                            int obmm_fd,
+                            const struct obmm_helpers_meta *meta,
+                            uint32_t local_cna, uint64_t local_pa,
+                            uint32_t gsva_token_id,
+                            uint32_t gsva_token_value,
+                            uint32_t map_source,
+                            uint32_t address_profile,
+                            uint32_t cache_policy,
+                            uint32_t vmid, uint32_t asid, uint32_t tid,
+                            uint32_t p_tag, uint32_t access_flags,
+                            uint64_t gva_id, uint64_t epoch,
+                            uint64_t local_va, uint64_t home_va,
+                            uint64_t pte_offset, uint64_t *import_mem_id)
+{
+    struct obmm_sim_dec_import_priv_v4 priv = {0};
+    struct obmm_mem_desc *desc;
+    int numa = 0;
+    mem_id id;
+
+    if (!meta || !meta->token_id || !gsva_token_id ||
+        !gsva_token_value || !import_mem_id) {
+        errno = EINVAL;
+        return -1;
+    }
+    priv.gsva.magic = OBMM_SIM_DEC_PRIV_MAGIC;
+    priv.gsva.version = OBMM_SIM_DEC_PRIV_VER_4;
+    priv.gsva.len = sizeof(priv);
+    priv.gsva.remote_uba = meta->remote_uba;
+    priv.gsva.token_value = gsva_token_value;
+    priv.gsva.map_source = map_source;
+    priv.gsva.address_profile = address_profile;
+    priv.gsva.cache_policy = cache_policy;
+    priv.gsva.vmid = vmid;
+    priv.gsva.asid = asid;
+    priv.gsva.local_va = local_va;
+    priv.gsva.home_va = home_va;
+    priv.gsva.pte_offset = pte_offset;
+    priv.gsva.tid = tid;
+    priv.gsva.p_tag = p_tag;
+    priv.gsva.access_flags = access_flags;
+    priv.gsva.gva_id = gva_id;
+    priv.gsva.segment_id = gva_id;
+    priv.gsva.epoch = epoch;
+    priv.gsva_token_id = gsva_token_id;
+
+    (void)obmm_fd;
+    desc = calloc(1, sizeof(*desc) + sizeof(priv));
+    if (!desc)
+        return -1;
+    desc->addr = local_pa;
+    desc->length = meta->size;
+    desc->tokenid = meta->token_id;
+    desc->scna = local_cna;
+    desc->dcna = meta->export_cna;
+    desc->priv_len = sizeof(priv);
+    memcpy(desc->priv, &priv, sizeof(priv));
+
+    id = obmm_import(desc, OBMM_IMPORT_FLAG_ALLOW_MMAP |
+                     OBMM_SIM_DEC_IMPORT_FLAG_V4, 0, &numa);
     free(desc);
     if (id == OBMM_INVALID_MEMID)
         return -1;

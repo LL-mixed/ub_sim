@@ -3381,6 +3381,7 @@ def test_gsva_coh_all_mode_keeps_test_blocks_disjoint():
 def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     source = (ROOT / "apps" / "gsva_coh_test" / "gsva_coh_test.c").read_text()
     runner = (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text()
+    common = (ROOT / "common" / "obmm_common.h").read_text()
 
     assert "GSVA remote retire drains a physical holder before ACK" in source
     assert "ready_generation = 0x475356410618ULL" in source
@@ -3391,6 +3392,8 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "if (node_idx == 0) {" in retire_case
     assert "obmm_map_gsva_region_at(my_meta.export_mem_id" in retire_case
     assert "else if (node_idx == 1) {" in retire_case
+    assert "obmm_do_import_v4_epoch(" in retire_case
+    assert "managed GSVA identity import should succeed" in retire_case
     assert "import_active = true;" in retire_case
     assert "if (import_active)" in retire_case
     assert "home_p_tag = home_meta.export_cna & 0x00ffffffu;" in retire_case
@@ -3423,6 +3426,11 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "GSVA_COH_UB_LINK_TX=1" in transport_default
     assert "GSVA_COH_UB_LINK_TX=0" in transport_default
     assert 'GSVA_COH_UB_LINK_TX="${GSVA_COH_UB_LINK_TX:-0}"' not in runner
+
+    assert "struct obmm_sim_dec_import_priv_v4" in common
+    assert "priv.gsva_token_id = gsva_token_id;" in common
+    assert "desc->tokenid = meta->token_id;" in common
+    assert "OBMM_SIM_DEC_IMPORT_FLAG_V4" in common
 
 
 def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():

@@ -2221,15 +2221,15 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
             return;
         }
 
-        rc = obmm_do_import_v2(obmm_fd, &home_meta, local_cna,
-                               import_pas[0], token_id,
-                               OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
-                               OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
-                               OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
-                               0, 0, 0, home_p_tag, 0, segment_id,
-                               home_base, home_base, 0,
-                               &import_mem_id);
-        CHECK(rc == 0, "GSVA identity import should succeed");
+        rc = obmm_do_import_v4_epoch(
+            obmm_fd, &home_meta, local_cna, import_pas[0],
+            token_id, token_id,
+            OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+            OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
+            OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
+            0, 0, 0, home_p_tag, 0, segment_id, 1,
+            home_base, home_base, 0, &import_mem_id);
+        CHECK(rc == 0, "managed GSVA identity import should succeed");
         import_active = true;
 
         rc = obmm_map_gsva_region_at(import_mem_id,
