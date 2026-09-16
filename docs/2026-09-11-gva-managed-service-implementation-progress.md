@@ -5221,3 +5221,31 @@ n4-910c1 的隔离 checkout
 严格消费契约，尚未把 `apps/llm_infer` 的真实 W5 loop 从 callable 3 切换到
 callable 4，也未完成 terminal token V2 发布、下一 step token/KV 输入接续、
 多 home 或两模型 2/3/8-node 多步实际运行。M2 和总目标保持进行中。
+
+## 2026-09-16：精确结果 checksum
+
+`llm_infer_decode_range_result()` 现在同时返回精确 `serialized_bytes` 对应的
+Memory Service byte-only checksum。checksum 只覆盖模型实际序列化区间，排除
+output allocation 中尚未写入的预留尾部。result V2 stage 直接消费 decoder
+返回值，删除调用点对 backing 的第二套边界计算。
+
+`MANAGED_MODEL_VIEWS` 同步记录该 checksum；validator 要求 producer、reader
+完全一致，并与固定单层 oracle 的 whole-result checksum 相等。定向本地 71 项
+测试中 56 项执行通过、15 项环境跳过，零失败，`git diff --check` 通过。
+
+n4-910c1 继续使用隔离 checkout
+`/home/ll/gva-manager-integration/managed-result-exact2-20260916.CJ8sl9`。最终
+Python `r591` 执行 601 项、596 通过、5 项既有环境跳过、零失败/错误，耗时
+131.910 秒，容器 exit 0。最终 Rust `r598` 执行 43 个顶层 harness、976 通过、
+16 ignored、零失败，容器 exit 0；其中 Simpler 数值门禁从只读受管路径使用
+PTO ISA `594817f22e7240d769d6febad162679ad4816133`。
+
+两套最终门禁均使用 `ub-sim-gva-asan:r49`、`--network none`、`--pull never`、
+Cargo offline、冻结 registry 和共享 target。失败环境证据保留：`r589` 缺少 Git
+safe-directory，`r590` 缺少 offline Cargo cache，`r592` 缺少 Cargo PATH，
+`r593`/`r594`/`r596` 依次暴露 PTO ISA 挂载位置和嵌套 Git safe-directory
+遗漏；修正环境后的 focused `r595`/`r597` 及最终全集均通过。r588 停在本地
+SSH 连接层且远端无日志、容器或 unittest 进程，审计保留 unknown 终止记录。
+
+该项补齐 callable 4 结果发布的长度/内容绑定；owner 映射、serving loop 切换
+及连续 decode 仍待后续批次完成。

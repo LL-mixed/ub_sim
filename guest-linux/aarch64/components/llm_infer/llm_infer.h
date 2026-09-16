@@ -43,6 +43,8 @@ struct llm_infer_range_result {
     uint64_t input_checksum, output_tensor_checksum, range_checksum, real_layers;
     /* Exact bytes written by the serialized result, excluding spare capacity. */
     uint64_t serialized_bytes;
+    /* Memory Service checksum over exactly serialized_bytes. */
+    uint64_t serialized_checksum;
     uint64_t terminal_present;
     struct llm_infer_terminal_result terminal;
 };

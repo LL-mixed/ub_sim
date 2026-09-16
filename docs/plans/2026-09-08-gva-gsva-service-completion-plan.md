@@ -549,6 +549,16 @@ token-text table。全部 entry 必须匹配请求 step 和 vocab；采样 token
 结果解析缺口；W5 serving loop 尚未切换到 callable 4，也未完成 terminal V2
 发布、跨 step 输入接续和两模型实际矩阵。
 
+精确结果发布续作：公共 decoder 在 `serialized_bytes` 之外直接返回该精确区间的
+Memory Service checksum。result V2 发布路径消费这个已解码边界的 checksum，禁止
+调用点重新按 output allocation 容量计算并把预留尾部纳入身份。固定 managed probe
+日志和 validator 同时核对长度、checksum 及 producer/reader 一致性；该项补全
+callable 4 结果发布的长度/内容绑定。n4-910c1 最终 Python 全集为 601 项、
+596 通过、5 项既有环境跳过、零失败/错误；Rust workspace 的 43 个顶层
+harness 为 976 通过、16 ignored、零失败。两套门禁均使用 network-none、
+Cargo offline、冻结 registry/target 及 PTO ISA `594817f`。serving loop 的
+owner 接入仍继续推进。
+
 W5 serving 对象命名约定：输出 allocation 使用
 `w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>`，均为固定宽度
 小写十六进制；run/request 非零。该完整 key 由 producer 在 allocate 时确定，

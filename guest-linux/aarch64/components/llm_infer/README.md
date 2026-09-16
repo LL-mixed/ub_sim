@@ -19,7 +19,9 @@ Managed model-result ownership:
   allocation-relative hidden/KV subviews, without copying payloads or selecting
   a provider. The caller supplies the completed result's bounded CPU view and
   the expected dispatch coordinates, and retains its SDK CPU lease while
-  decoding. Returned offsets alone grant no mapping or publication authority.
+  decoding. The decoder also returns the exact serialized byte count and its
+  byte-only Memory Service checksum, excluding spare output capacity. Returned
+  offsets and checksums alone grant no mapping or publication authority.
 - Check the authoritative range-table pointer, entry checksum, coordinates,
   payload lengths and serialized KV checksum before returning either subview.
   A terminal range also requires one bounded full-width logits table followed

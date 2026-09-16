@@ -1444,9 +1444,7 @@ static int stage_model_output(struct managed_state *output,
             &output->allocation, mapping, lifecycle, &view, &output->reference, &status);
         if (rc) return rc;
         uint64_t checksum = i ? decoded[i]->service_checksum :
-            mem_service_provider_checksum64(
-                (const unsigned char *)mapping->base + MODEL_OUTPUT_OFFSET,
-                result_bytes);
+            output->decoded_output.serialized_checksum;
         if (output->reference.object.payload_checksum != checksum) return -EIO;
         output->output_view = i;
         rc = reference_transition(output, MEM_SERVICE_REFERENCE_STAGE);
@@ -1525,12 +1523,14 @@ static int model_output_callback(void *opaque,
         " hidden_bytes=%" PRIu64 " hidden_checksum=%016" PRIx64
         " kv_offset=%" PRIu64 " kv_bytes=%" PRIu64 " kv_checksum=%016" PRIx64
         " real_layers=%" PRIu64 " serialized_bytes=%" PRIu64
+        " serialized_checksum=%016" PRIx64
         " terminal_present=%" PRIu64 " terminal_step=%" PRIu64
         " terminal_token=%" PRIu64
         " payload_copies=0 status=pass\n",
         state->config.node, result.hidden.offset, result.hidden.bytes,
         result.hidden.service_checksum, result.kv.offset, result.kv.bytes,
         result.kv.service_checksum, result.real_layers, result.serialized_bytes,
+        result.serialized_checksum,
         result.terminal_present, result.terminal.step, result.terminal.sampled_token);
     /* No write is permitted in the gap or beyond the serialized result. */
     for (uint64_t i = W5_MANAGED_MODEL_CONTROL_BYTES; !reader && i < MODEL_OUTPUT_OFFSET; ++i)

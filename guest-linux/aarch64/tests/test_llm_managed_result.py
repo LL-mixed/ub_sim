@@ -63,6 +63,7 @@ class Result(ctypes.Structure):
                 ("output_tensor_checksum", ctypes.c_uint64),
                 ("range_checksum", ctypes.c_uint64), ("real_layers", ctypes.c_uint64),
                 ("serialized_bytes", ctypes.c_uint64),
+                ("serialized_checksum", ctypes.c_uint64),
                 ("terminal_present", ctypes.c_uint64), ("terminal", Terminal)]
 
 
@@ -227,6 +228,8 @@ class ManagedResultTest(unittest.TestCase):
                     self.assertEqual(result.kv.offset, result.hidden.offset + 32)
                     self.assertEqual(result.kv.bytes, len(b"previous-kv"))
                     self.assertEqual(result.serialized_bytes, len(data))
+                    self.assertEqual(result.serialized_checksum,
+                                     checksum(data, False))
                     self.assertEqual(result.terminal_present, 0)
                     for view in (result.hidden, result.kv):
                         start = view.offset - 16384
@@ -242,6 +245,8 @@ class ManagedResultTest(unittest.TestCase):
         rc, result = self.call(data, identity)
         self.assertEqual(rc, 0)
         self.assertEqual(result.serialized_bytes, serialized_bytes)
+        self.assertEqual(result.serialized_checksum,
+                         checksum(data[:serialized_bytes], False))
         self.assertLess(result.serialized_bytes, len(data))
         self.assertEqual(result.kv.offset + result.kv.bytes,
                          16384 + result.serialized_bytes)

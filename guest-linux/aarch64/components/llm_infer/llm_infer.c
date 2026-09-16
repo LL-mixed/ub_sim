@@ -230,6 +230,8 @@ int llm_infer_decode_range_result(const void *result, size_t length,
     decoded.range_checksum = entry[10];
     decoded.real_layers = entry[11];
     decoded.serialized_bytes = header + header_bytes + table_bytes;
+    decoded.serialized_checksum = result_checksum(
+        bytes, (size_t)decoded.serialized_bytes, false);
     if (expected->layer_end == expected->total_layers) {
         int rc = llm_infer_decode_terminal_result(bytes, (size_t)header,
             expected, &decoded.terminal);
