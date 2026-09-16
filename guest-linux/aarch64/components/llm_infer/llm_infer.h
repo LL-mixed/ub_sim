@@ -36,6 +36,7 @@ int llm_infer_decode_range_result(const void *result, size_t result_bytes,
     struct llm_infer_range_result *out);
 
 uint64_t llm_infer_qwen3_pipeline_nodes(void);
+bool llm_infer_qwen3_range_pipeline_enabled(uint32_t cluster_node_count);
 uint64_t llm_infer_qwen3_total_layers(void);
 uint64_t llm_infer_qwen3_vocab_size(void);
 const char *llm_infer_qwen3_model_id(void);

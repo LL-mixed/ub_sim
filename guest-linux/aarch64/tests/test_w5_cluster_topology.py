@@ -13,6 +13,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.script_dir = self.repo / "guest-linux" / "aarch64" / "scripts"
         self.config_runner = self.script_dir / "run_w5_cluster_config.sh"
         self.guest_runner = self.script_dir / "run_llm_infer_eight_node_guest.sh"
+        self.runtime_runner = self.script_dir / "run_w5_inference_cluster_runtime.sh"
         self.launcher = self.script_dir / "launch_ub_eight_node_headless.sh"
         self.infer_source = (
             self.repo / "guest-linux" / "aarch64" / "apps" / "llm_infer" / "llm_infer.c"
@@ -53,6 +54,34 @@ class W5ClusterTopologyTest(unittest.TestCase):
         result = self.run_config("--print-env", "--nodes", "5")
         self.assertEqual(result.returncode, 2)
         self.assertIn("--nodes must be 2, 3, 4, or 8: 5", result.stderr)
+
+    def test_qwen_guest_gates_pipeline_width_without_tp_equality(self):
+        source = self.infer_source.read_text(encoding="utf-8")
+        self.assertNotIn("w4_qwen3_tp_nodes", source)
+        self.assertGreaterEqual(
+            source.count("llm_infer_qwen3_range_pipeline_enabled(cluster_node_count)"),
+            7,
+        )
+
+    def test_qwen_runner_defaults_tensor_shards_independently_of_pp(self):
+        source = self.runtime_runner.read_text(encoding="utf-8")
+        start = source.index('  if [[ "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" == qwen3_* ]]')
+        end = source.index("  if (( memory_runtime_lookup ))", start)
+        default_block = source[start:end]
+        for pipeline_nodes in (2, 3, 8):
+            with self.subTest(pipeline_nodes=pipeline_nodes):
+                result = subprocess.run(
+                    ["/bin/zsh", "-c",
+                     "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode\n"
+                     f"SIM_W5_CLUSTER_NODE_COUNT={pipeline_nodes}\n"
+                     "unset SIM_QWEN3_DENSE_TP_NODES\n"
+                     + default_block
+                     + "print -r -- $SIM_QWEN3_DENSE_TP_NODES\n"],
+                    check=False, text=True, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "8\n")
 
     def test_cli_model_overrides_deepseek_env_source(self):
         model = self.repo / "out" / "test-deepseek-v4-flash.gguf"

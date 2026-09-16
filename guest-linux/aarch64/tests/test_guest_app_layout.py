@@ -3058,6 +3058,8 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert "components/mem_service/mem_service_client.c" in makefile
     assert "components/mem_service/mem_service_wire_client.c" in makefile
     assert "components/mem_service/mem_service_metadata.c" in makefile
+    assert "components/mem_service/mem_service_allocation.c" in makefile
+    assert "components/mem_service/mem_service_provider_directory.c" in makefile
     assert "components/mem_service/mem_service_provider.c" in makefile
     assert "components/mem_service/mem_service_keys.c" in makefile
     assert "components/mem_service/mem_service_object_refs.c" in makefile

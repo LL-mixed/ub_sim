@@ -356,10 +356,10 @@ print(executables.pop())
   esac
   if [[ "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" == qwen3_* ]] &&
       [[ -z "${SIM_QWEN3_DENSE_TP_NODES:-}" ]]; then
-    # Keep the published per-node layer ranges aligned with the cluster size
-    # so the guest range-pipeline gate matches the host contract.
-    export SIM_QWEN3_DENSE_TP_NODES="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
-    echo "[w5_inference_cluster] qwen3 tp_nodes default: $SIM_QWEN3_DENSE_TP_NODES (cluster=${SIM_W5_CLUSTER_NODE_COUNT:-8})" >&2
+    # Tensor shards belong to the Qwen profile; pipeline width is configured
+    # independently through SIM_W5_CLUSTER_NODE_COUNT.
+    export SIM_QWEN3_DENSE_TP_NODES=8
+    echo "[w5_inference_cluster] qwen3 tp_nodes default: $SIM_QWEN3_DENSE_TP_NODES (pipeline=${SIM_W5_CLUSTER_NODE_COUNT:-8})" >&2
   fi
   if (( memory_runtime_lookup )) && [[ -z "$SIM_W5_TEST_MEMORY_OBSERVATION_STORE" ]]; then
     SIM_W5_TEST_MEMORY_OBSERVATION_STORE="$OUT_DIR/w5_memory_runtime_boundary_lookup.${RUN_ID}.json"

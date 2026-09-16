@@ -142,6 +142,14 @@ uint64_t llm_infer_qwen3_pipeline_nodes(void)
     return llm_infer_env_u64_or("SIM_W5_CLUSTER_NODE_COUNT", tensor_shards);
 }
 
+bool llm_infer_qwen3_range_pipeline_enabled(uint32_t cluster_node_count)
+{
+    return (cluster_node_count == 2 || cluster_node_count == 3 ||
+            cluster_node_count == 4 || cluster_node_count == 8) &&
+           cluster_node_count == llm_infer_qwen3_pipeline_nodes() &&
+           cluster_node_count <= llm_infer_qwen3_total_layers();
+}
+
 uint64_t llm_infer_qwen3_total_layers(void)
 {
     return llm_infer_env_u64_or("SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS",

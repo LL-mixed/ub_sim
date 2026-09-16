@@ -421,6 +421,14 @@ r443 实际双 guest 经两次 daemon 重启，三轮新代际分配、跨节点
 先前测试 lease 到期的失败和诊断记录保留。此路径只准入已排空 checkpoint，不恢复活跃
 payload，不解除故障隔离；完整 M3 与总目标未完成，详细边界见实施记录。
 
+2026-09-16 W5 PP/TP 续作：Qwen guest 的 range pipeline 准入已改用独立的
+`SIM_W5_CLUSTER_NODE_COUNT`，公共运行器在 2/3/8-node PP 下保留模型默认 TP8；
+实际 `linqu_llm_infer` 构建补齐 managed allocation 与 provider directory 源码，
+远端 AArch64 静态链接通过。r566 下游 Python 全集 597 项中 592 通过、5 跳过；
+r567 Rust workspace 零失败；PP3/TP8 门禁与配置测试通过。该项只移除真实 W5
+启动和调用路径的 PP/TP 耦合，不证明 callable 4 serving 闭环或任一模型矩阵；
+两模型 2/3/8-node、4/8-step 实际 guest 验收仍待执行。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1141,7 +1149,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；当前锁定服务 93f5dd8 | 完整 W5 serving、多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 93f5dd8 | callable 4 serving、多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
 | M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a 保存 worker 内核出生身份；r435 实际 worker 崩溃后 segment/export 核对、跨内核日志拒绝及隔离保留通过 | 生产恢复协调、故障 fencing、worker 恢复及失联节点重新加入矩阵未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |

@@ -89,6 +89,9 @@ class ManagedResultTest(unittest.TestCase):
         cls.object_key.restype = ctypes.c_int
         cls.pipeline_nodes = cls.library.llm_infer_qwen3_pipeline_nodes
         cls.pipeline_nodes.restype = ctypes.c_uint64
+        cls.pipeline_enabled = cls.library.llm_infer_qwen3_range_pipeline_enabled
+        cls.pipeline_enabled.argtypes = [ctypes.c_uint32]
+        cls.pipeline_enabled.restype = ctypes.c_bool
 
     def test_pipeline_width_is_independent_of_tensor_shard_count(self):
         for nodes in (2, 3, 8):
@@ -102,6 +105,35 @@ class ManagedResultTest(unittest.TestCase):
             "SIM_QWEN3_DENSE_TP_NODES": "8",
         }):
             self.assertEqual(self.pipeline_nodes(), 8)
+
+    def test_guest_range_gate_uses_pipeline_width_not_tensor_shards(self):
+        for nodes in (2, 3, 4, 8):
+            with self.subTest(nodes=nodes), mock.patch.dict(os.environ, {
+                "SIM_W5_CLUSTER_NODE_COUNT": str(nodes),
+                "SIM_QWEN3_DENSE_TP_NODES": "8",
+                "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS": "28",
+            }):
+                self.assertTrue(self.pipeline_enabled(nodes))
+                self.assertFalse(self.pipeline_enabled(8 if nodes != 8 else 3))
+        with mock.patch.dict(os.environ, {
+            "SIM_W5_CLUSTER_NODE_COUNT": "3",
+            "SIM_QWEN3_DENSE_TP_NODES": "8",
+            "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS": "2",
+        }):
+            self.assertFalse(self.pipeline_enabled(3))
+        with mock.patch.dict(os.environ, {
+            "SIM_W5_CLUSTER_NODE_COUNT": "8",
+            "SIM_QWEN3_DENSE_TP_NODES": "8",
+            "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS": "28",
+        }):
+            for unsupported in (0, 1, 5, 9):
+                self.assertFalse(self.pipeline_enabled(unsupported))
+        with mock.patch.dict(os.environ, {
+            "SIM_W5_CLUSTER_NODE_COUNT": "5",
+            "SIM_QWEN3_DENSE_TP_NODES": "8",
+            "SIM_QWEN3_DENSE_NUM_HIDDEN_LAYERS": "28",
+        }):
+            self.assertFalse(self.pipeline_enabled(5))
 
     def test_canonical_managed_serving_key_and_untouched_failures(self):
         key = ctypes.create_string_buffer(65)
