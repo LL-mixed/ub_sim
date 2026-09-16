@@ -3090,6 +3090,7 @@ def test_llm_infer_has_app_local_build_entrypoint():
     assert "components/mem_service/mem_service_allocation.c" in makefile
     assert "components/mem_service/mem_service_provider_directory.c" in makefile
     assert "components/mem_service/mem_service_provider.c" in makefile
+    assert "components/mem_service/mem_service_allocation.c" in makefile
     assert "components/mem_service/mem_service_keys.c" in makefile
     assert "components/mem_service/mem_service_object_refs.c" in makefile
     assert "components/mem_service/mem_service_obmm_objects.c" in makefile
@@ -3197,6 +3198,12 @@ def test_pretraining_client_runs_against_independent_mem_service_daemon():
     assert "write_signature_line \"pretraining_client_app_src\"" in build_script
     assert '"$PRETRAINING_CLIENT_APP_SRC" "$MEM_SERVICE_CLIENT_SRC"' in build_script
     assert '"$MEM_SERVICE_WIRE_CLIENT_SRC" "$MEM_SERVICE_PROVIDER_SRC"' in build_script
+    pretraining_link = next(
+        line
+        for line in build_script.splitlines()
+        if line.endswith('-o "$PRETRAINING_CLIENT_APP_BIN"')
+    )
+    assert '"$MEM_SERVICE_ALLOCATION_SRC"' in pretraining_link
     assert 'cp "$PRETRAINING_CLIENT_APP_BIN" "$INITRAMFS_DIR/bin/linqu_pretraining_client"' in build_script
     assert "run_pretraining_client_mem_service" in run_app
     assert "linqu_pretraining_client_mem_service=1" in run_app
