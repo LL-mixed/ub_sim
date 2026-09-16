@@ -52,7 +52,7 @@ static int acquire(GsvaHomeTable *t, const GsvaHomeIdentity *i, bool write,
 int main(int argc, char **argv) {
     assert(argc == 2);
     GsvaHomeTable table = {0};
-    GsvaHomeRequest old = original(), next = old, bad;
+    GsvaHomeRequest old = original(), next = old, bad, resolved;
     GsvaHomeBinding *pin = NULL, *second = NULL;
     next.identity.key.segment_id = 4;
     next.identity.token_id = 5;
@@ -149,6 +149,31 @@ int main(int argc, char **argv) {
         assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_ROUTE_MISSING);
         bad = next; bad.reserved = 1;
         assert(gsva_home_update(&table, 7, &bad) == GSVA_ERR_BAD_VERSION);
+    } else if (!strcmp(argv[1], "export")) {
+        memset(&resolved, 0xa5, sizeof(resolved));
+        assert(gsva_home_resolve_export(&table, 7, old.export_mem_id,
+            old.identity.backing_token_id, old.identity.key.home_va,
+            old.identity.key.size, &resolved) == GSVA_OK);
+        assert(!memcmp(&resolved, &old, sizeof(old)));
+        assert(gsva_home_resolve_export(&table, 7, old.export_mem_id,
+            old.identity.backing_token_id + 1, old.identity.key.home_va,
+            old.identity.key.size, &resolved) == GSVA_ERR_TOKEN_DENIED);
+        assert(gsva_home_resolve_export(&table, 7, old.export_mem_id + 1,
+            old.identity.backing_token_id, old.identity.key.home_va,
+            old.identity.key.size, &resolved) == GSVA_ERR_KEY_MISMATCH);
+        assert(gsva_home_resolve_export(&table, 7, old.export_mem_id,
+            old.identity.backing_token_id, old.identity.key.home_va + 1,
+            old.identity.key.size, &resolved) == GSVA_ERR_KEY_MISMATCH);
+        assert(gsva_home_resolve_export(&table, 7, old.export_mem_id + 1,
+            old.identity.backing_token_id,
+            old.identity.key.home_va + old.identity.key.size, 8,
+            &resolved) == GSVA_ERR_ROUTE_MISSING);
+        old.operation = GSVA_HOME_REVOKE;
+        assert(gsva_home_update(&table, 7, &old) == GSVA_OK);
+        assert(gsva_home_resolve_export(&table, 7, old.export_mem_id,
+            old.identity.backing_token_id, old.identity.key.home_va,
+            old.identity.key.size,
+            &resolved) == GSVA_ERR_SEGMENT_RETIRED);
     } else {
         assert(!"unknown test case");
     }
@@ -182,6 +207,18 @@ int main(int argc, char **argv) {
 
     def test_registration_conflicts_and_read_only(self):
         self.run_case("registration")
+
+    def test_exact_managed_export_resolution(self):
+        self.run_case("export")
+        source = (QEMU / "hw/ub/ub_ubc.c").read_text()
+        bootstrap = source.split(
+            "static void sim_dec_register_obmm_gsva_route(", 1
+        )[1].split("/* Helper for sim_dec_gva_tcg_translate", 1)[0]
+        self.assertIn("gsva_home_resolve_export(", bootstrap)
+        self.assertIn("key = managed.identity.key;", bootstrap)
+        self.assertIn("token_id = managed.identity.token_id;", bootstrap)
+        self.assertIn("route->backing_token_id = record->token_id;", bootstrap)
+        self.assertIn("managed bootstrap identity rejected", bootstrap)
 
     def test_device_reset_closes_bindings_preserves_pins_and_denies_reactivation(self):
         self.run_case("reset")

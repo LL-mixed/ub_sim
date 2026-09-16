@@ -3390,6 +3390,9 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
         "static void usage", 1
     )[0]
     assert "if (node_idx == 0) {" in retire_case
+    assert "OBMM_CMD_GSVA_ALLOC_SEGMENT" in retire_case
+    assert "OBMM_CMD_GSVA_EXPORT_SEGMENT" in retire_case
+    assert "OBMM_GSVA_EXPORT_CREATED" in retire_case
     assert "obmm_map_gsva_region_at(my_meta.export_mem_id" in retire_case
     assert "else if (node_idx == 1) {" in retire_case
     assert "obmm_do_import_v4_epoch(" in retire_case
@@ -3398,8 +3401,10 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "if (import_active)" in retire_case
     assert "home_p_tag = home_meta.export_cna & 0x00ffffffu;" in retire_case
     assert "0, 0, 0, home_p_tag, 0, segment_id" in retire_case
-    assert retire_case.count("gsva_send_tagged_event(") == 7
+    assert retire_case.count("gsva_send_tagged_event_epoch(") == 7
     assert "home_base, GSVA_SIZE, home_p_tag" in retire_case
+    assert "token_id, token_value" in retire_case
+    assert "home_p_tag, home_epoch" in retire_case
     assert "coh_remote_retire dirty_write" in source
     assert "retire ACK must follow dirty holder writeback" in source
     assert "gsva_probe_revoked_cpu_read(import_region.addr" in source
@@ -3431,6 +3436,8 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "priv.gsva_token_id = gsva_token_id;" in common
     assert "desc->tokenid = meta->token_id;" in common
     assert "OBMM_SIM_DEC_IMPORT_FLAG_V4" in common
+    assert "cmd.record.flags = meta->flags;" in common
+    assert "metas[record->node_id].flags = record->flags;" in common
 
 
 def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():

@@ -99,6 +99,7 @@ enum obmm_import_cache_mode {
 struct obmm_helpers_meta {
     uint64_t export_mem_id;
     uint64_t generation;
+    uint64_t flags;
     uint64_t remote_uba;
     uint64_t size;
     uint32_t token_id;
@@ -802,6 +803,7 @@ static int OBMM_MAYBE_UNUSED obmm_bootstrap_publish(int obmm_fd, int local_idx, 
     cmd.record.remote_uba = meta->remote_uba;
     cmd.record.size = meta->size;
     cmd.record.generation = generation;
+    cmd.record.flags = meta->flags;
     cmd.record.node_id = (uint32_t)local_idx;
     cmd.record.node_count = (uint32_t)node_count;
     cmd.record.export_cna = meta->export_cna;
@@ -837,6 +839,7 @@ static int OBMM_MAYBE_UNUSED obmm_bootstrap_lookup(int obmm_fd, uint32_t local_c
                 continue;
             metas[record->node_id].export_mem_id = record->export_mem_id;
             metas[record->node_id].generation = record->generation;
+            metas[record->node_id].flags = record->flags;
             metas[record->node_id].remote_uba = record->remote_uba;
             metas[record->node_id].size = record->size;
             metas[record->node_id].token_id = record->token_id;

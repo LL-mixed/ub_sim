@@ -415,17 +415,6 @@ static int gsva_send_event(int obmm_fd, uint32_t sub_op, uint32_t requester_cna,
                                  error_out);
 }
 
-static int gsva_send_tagged_event(int obmm_fd, uint32_t sub_op,
-                           uint32_t requester_cna, uint32_t token_id,
-                           uint32_t token_value, uint64_t segment_id,
-                           uint64_t home_va, uint64_t size, uint32_t p_tag,
-                           int32_t *error_out)
-{
-    return gsva_send_tagged_event_epoch(obmm_fd, sub_op, requester_cna,
-                                        token_id, token_value, segment_id,
-                                        home_va, size, p_tag, 1, error_out);
-}
-
 /* ---- Test: token_denied ---- */
 static void test_token_denied(int obmm_fd, uint32_t local_cna,
                               int node_idx, int node_count)
@@ -2155,6 +2144,8 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                                    int node_idx, int node_count)
 {
     const uint64_t metadata_generation = 0x475356410608ULL;
+    const uint64_t token_generation = 0x475356410609ULL;
+    const uint64_t epoch_generation = 0x47535641060aULL;
     const uint64_t ready_generation = 0x475356410618ULL;
     const uint64_t done_generation = 0x475356410628ULL;
     const uint64_t dirty_value = 0x5a17e4d000000001ULL;
@@ -2165,6 +2156,8 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         home_base : GSVA_BASE + (uint64_t)node_idx * GSVA_SIZE;
     struct obmm_helpers_meta my_meta = {0};
     struct obmm_helpers_meta home_meta = {0};
+    struct obmm_cmd_gsva_alloc_segment_v1 home_alloc = {0};
+    struct obmm_cmd_gsva_export_segment_v1 home_export = {0};
     uint64_t import_pas[OBMM_POOL_HELPERS_MAX_NODES] = {0};
     bool import_osync[OBMM_POOL_HELPERS_MAX_NODES] = {false};
     uint64_t import_mem_id = 0;
@@ -2174,9 +2167,12 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     uint32_t peer_cna = 0;
     uint64_t segment_id = 0;
     uint32_t token_id = 0;
+    uint32_t token_value = 0;
     uint32_t home_p_tag = 0;
+    uint64_t home_epoch = 0;
     uint64_t pending_seq = 0;
     bool import_active = false;
+    bool managed_home = false;
     bool retire_already_complete = false;
     int rc;
 
@@ -2187,9 +2183,44 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     }
 
     my_meta.export_cna = local_cna;
-    rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE,
-                                  export_base);
-    CHECK(rc == 0, "fixed UBA export should succeed");
+    if (node_idx == 0) {
+        home_alloc.version = OBMM_GSVA_ABI_VERSION;
+        home_alloc.size = GSVA_SIZE;
+        home_alloc.alignment = GSVA_SIZE;
+        home_alloc.requested_home_va = home_base;
+        home_alloc.home_node_id = 0;
+        home_alloc.cache_policy = GSVA_CACHE_POLICY_DIRECTORY_MESI;
+        home_alloc.requested_p_tag = OBMM_GSVA_P_TAG_AUTO;
+        home_alloc.access_flags = OBMM_GSVA_ACCESS_READ |
+                                  OBMM_GSVA_ACCESS_WRITE;
+        rc = ioctl(obmm_fd, OBMM_CMD_GSVA_ALLOC_SEGMENT, &home_alloc);
+        CHECK(rc == 0, "managed home segment allocation should succeed");
+        CHECK(home_alloc.desc.home_va == home_base &&
+              home_alloc.desc.size == GSVA_SIZE,
+              "managed home allocation should preserve requested identity");
+
+        home_export.version = OBMM_GSVA_ABI_VERSION;
+        home_export.segment = home_alloc.desc;
+        rc = ioctl(obmm_fd, OBMM_CMD_GSVA_EXPORT_SEGMENT, &home_export);
+        CHECK(rc == 0, "managed home export should reach kernel");
+        CHECK(home_export.error == 0 &&
+              home_export.outcome == OBMM_GSVA_EXPORT_CREATED,
+              "managed home export should create physical backing");
+        CHECK(home_export.export_uba == home_base &&
+              home_export.export_size == GSVA_SIZE,
+              "managed home export should preserve the GSVA range");
+
+        my_meta.export_mem_id = home_export.export_mem_id;
+        my_meta.remote_uba = home_export.export_uba;
+        my_meta.size = home_export.export_size;
+        my_meta.token_id = home_export.export_token_id;
+        my_meta.flags = home_alloc.desc.segment_id;
+        managed_home = true;
+    } else {
+        rc = obmm_do_export_fixed_uba(obmm_fd, &my_meta, GSVA_SIZE,
+                                      export_base);
+        CHECK(rc == 0, "peer fixed UBA export should succeed");
+    }
 
     rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
                                 metadata_generation, &my_meta);
@@ -2205,9 +2236,44 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     CHECK(peer_cna != 0 && peer_cna != home_meta.export_cna,
           "peer CNA should differ from home CNA");
 
-    segment_id = home_meta.export_mem_id;
-    token_id = home_meta.token_id;
+    segment_id = home_meta.flags;
+    CHECK(segment_id != 0,
+          "home bootstrap metadata should carry managed segment identity");
     home_p_tag = home_meta.export_cna & 0x00ffffffu;
+    if (managed_home) {
+        CHECK(home_alloc.desc.p_tag == home_p_tag,
+              "managed home p_tag should match the published CNA");
+        my_meta.flags = ((uint64_t)home_alloc.desc.token_id << 32) |
+                        home_alloc.desc.token_value;
+    } else {
+        my_meta.flags = 0;
+    }
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                token_generation, &my_meta);
+    CHECK(rc == 0, "managed token metadata publish should succeed");
+    memset(metas, 0, sizeof(metas));
+    memset(got, 0, sizeof(got));
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               token_generation, metas, got);
+    CHECK(rc == 0, "managed token metadata lookup should succeed");
+    token_id = (uint32_t)(metas[0].flags >> 32);
+    token_value = (uint32_t)metas[0].flags;
+    CHECK(token_id != 0 && token_value != 0,
+          "managed token metadata should preserve both credentials");
+
+    my_meta.flags = managed_home ? home_alloc.desc.epoch : 0;
+    rc = obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                                epoch_generation, &my_meta);
+    CHECK(rc == 0, "managed epoch metadata publish should succeed");
+    memset(metas, 0, sizeof(metas));
+    memset(got, 0, sizeof(got));
+    rc = obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                               epoch_generation, metas, got);
+    CHECK(rc == 0, "managed epoch metadata lookup should succeed");
+    home_epoch = metas[0].flags;
+    CHECK(home_epoch != 0,
+          "managed epoch metadata should preserve the allocated epoch");
+
     if (node_idx == 0) {
         rc = obmm_map_gsva_region_at(my_meta.export_mem_id,
                                      (void *)(uintptr_t)home_base,
@@ -2223,11 +2289,11 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
 
         rc = obmm_do_import_v4_epoch(
             obmm_fd, &home_meta, local_cna, import_pas[0],
-            token_id, token_id,
+            token_id, token_value,
             OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
             OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY,
             OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI,
-            0, 0, 0, home_p_tag, 0, segment_id, 1,
+            0, 0, 0, home_p_tag, 0, segment_id, home_epoch,
             home_base, home_base, 0, &import_mem_id);
         CHECK(rc == 0, "managed GSVA identity import should succeed");
         import_active = true;
@@ -2246,19 +2312,19 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         __sync_synchronize();
         printf("%s   coh_remote_retire ARM MMU touch va=%#" PRIx64
                " value=%#" PRIx64 "\n", TAG, home_base, value);
-        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
-                                    local_cna, token_id, token_id, segment_id,
-                                    home_base, GSVA_SIZE, home_p_tag,
-                                    &ev_error);
+        rc = gsva_send_tagged_event_epoch(
+            obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+            token_id, token_value, segment_id, home_base, GSVA_SIZE,
+            home_p_tag, home_epoch, &ev_error);
         CHECK(rc == 0, "local ReadAcquire should reach QEMU");
         CHECK(ev_error == GSVA_OK, "local ReadAcquire should pass");
     } else if (node_idx == 1) {
         volatile uint64_t *probe = import_region.addr;
 
-        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE,
-                                    local_cna, token_id, token_id, segment_id,
-                                    home_base, GSVA_SIZE, home_p_tag,
-                                    &ev_error);
+        rc = gsva_send_tagged_event_epoch(
+            obmm_fd, OBMM_GSVA_EVENT_WRITE_ACQUIRE, local_cna,
+            token_id, token_value, segment_id, home_base, GSVA_SIZE,
+            home_p_tag, home_epoch, &ev_error);
         CHECK(rc == 0, "holder WriteAcquire should reach QEMU");
         CHECK(ev_error == GSVA_OK, "holder WriteAcquire should pass");
         *probe = dirty_value;
@@ -2277,17 +2343,17 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     CHECK(rc == 0, "retire ready barrier should complete");
 
     if (node_idx == 0) {
-        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
-                                    peer_cna, token_id, token_id, segment_id,
-                                    home_base, GSVA_SIZE, home_p_tag,
-                                    &ev_error);
+        rc = gsva_send_tagged_event_epoch(
+            obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, peer_cna,
+            token_id, token_value, segment_id, home_base, GSVA_SIZE,
+            home_p_tag, home_epoch, &ev_error);
         CHECK(rc == 0, "remote holder ReadAcquire should reach QEMU");
         CHECK(ev_error == GSVA_OK, "remote holder should enter sharer set");
 
-        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_RETIRE,
-                                    local_cna, token_id, token_id, segment_id,
-                                    home_base, GSVA_SIZE, home_p_tag,
-                                    &ev_error);
+        rc = gsva_send_tagged_event_epoch(
+            obmm_fd, OBMM_GSVA_EVENT_RETIRE, local_cna,
+            token_id, token_value, segment_id, home_base, GSVA_SIZE,
+            home_p_tag, home_epoch, &ev_error);
         CHECK(rc == 0, "Retire should reach QEMU");
         CHECK(ev_error == GSVA_ERR_COH_PENDING || ev_error == GSVA_OK,
               "retire should wait for or consume remote RetireAck");
@@ -2324,11 +2390,11 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
             ev_error = GSVA_OK;
         } else {
             for (int attempt = 0; attempt < 50; attempt++) {
-                rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_RETRY,
-                                            local_cna,
-                                            (uint32_t)pending_seq, 0,
-                                            segment_id, home_base, GSVA_SIZE,
-                                            home_p_tag, &ev_error);
+                rc = gsva_send_tagged_event_epoch(
+                    obmm_fd, OBMM_GSVA_EVENT_RETRY, local_cna,
+                    (uint32_t)pending_seq, 0, segment_id,
+                    home_base, GSVA_SIZE, home_p_tag, home_epoch,
+                    &ev_error);
                 CHECK(rc == 0, "Retry should reach QEMU");
                 if (ev_error == GSVA_OK)
                     break;
@@ -2339,10 +2405,10 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         CHECK(ev_error == GSVA_OK,
               "remote RETIRE_ACK should complete pending op");
 
-        rc = gsva_send_tagged_event(obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE,
-                                    local_cna, token_id, token_id, segment_id,
-                                    home_base, GSVA_SIZE, home_p_tag,
-                                    &ev_error);
+        rc = gsva_send_tagged_event_epoch(
+            obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+            token_id, token_value, segment_id, home_base, GSVA_SIZE,
+            home_p_tag, home_epoch, &ev_error);
         CHECK(rc == 0,
               "ReadAcquire after remote retire should reach QEMU");
         CHECK(ev_error == GSVA_ERR_SEGMENT_RETIRED,
@@ -2362,11 +2428,10 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
         int fault_code = 0;
 
         for (int attempt = 0; attempt < 70; attempt++) {
-            rc = gsva_send_tagged_event(obmm_fd,
-                                        OBMM_GSVA_EVENT_READ_ACQUIRE,
-                                        local_cna, token_id, token_id,
-                                        segment_id, home_base, GSVA_SIZE,
-                                        home_p_tag, &ev_error);
+            rc = gsva_send_tagged_event_epoch(
+                obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                token_id, token_value, segment_id, home_base, GSVA_SIZE,
+                home_p_tag, home_epoch, &ev_error);
             CHECK(rc == 0, "holder retire poll should reach QEMU");
             if (ev_error == GSVA_ERR_SEGMENT_RETIRED) {
                 retired = true;
@@ -2402,7 +2467,19 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     }
     if (import_active)
         obmm_do_unimport(obmm_fd, import_mem_id);
-    obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    rc = obmm_do_unexport(obmm_fd, my_meta.export_mem_id);
+    CHECK(rc == 0, "local export cleanup should succeed");
+    if (managed_home) {
+        struct obmm_cmd_gsva_retire_segment_v1 retire = {0};
+
+        retire.version = OBMM_GSVA_ABI_VERSION;
+        retire.segment_id = home_alloc.desc.segment_id;
+        retire.epoch = home_alloc.desc.epoch;
+        retire.timeout_ms = 1000;
+        rc = ioctl(obmm_fd, OBMM_CMD_GSVA_RETIRE_SEGMENT, &retire);
+        CHECK(rc == 0 && retire.status == OBMM_GSVA_RETIRE_COMMITTED,
+              "managed home segment cleanup should retire allocation");
+    }
     PASS();
 }
 
