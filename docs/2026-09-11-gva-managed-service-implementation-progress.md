@@ -5271,3 +5271,34 @@ callable 4 两输入四输出状态机、terminal view 边界及现有 result �
 serving-loop 的真实 SDK building block；`apps/llm_infer` 分支选择、managed key
 接续及 2/3/8-node 连续 decode 尚未接通，M2 保持进行中。远端全集留到主循环代码
 成为单一最终候选后执行。
+
+## 2026-09-16：W5 managed 主循环与请求级回收候选
+
+`apps/llm_infer` 已将 managed runtime 接入真实 decode round：每个 PP node 使用
+callable 4，从前序 node 的 hidden V2 和本 node 上一步 KV V2 读取输入；step 续接
+读取 terminal node 上一步发布的 token V2。每轮输出按 node/step 选择 home，完成
+原始 CQ 后从同一 allocation 解码并发布 result、hidden、KV，以及 terminal node
+的 terminal/token V2。reader、writer 和 compute owner 均保持到原 completion，
+managed 分支跳过旧 range publish、旧 decode barrier 和旧 service probe。
+
+连续 decode 的成功路径新增 provider-neutral request cleanup。最终 step 的 token
+allocation 作为请求结束栅栏：所有 node 先以确定 session 持有同一 token；terminal
+node 核对完整 holder 集合后发起 generation-checked RETIRE；各 node 再释放 final
+token、退役自己在全部 step 产生的 allocation，并等待整个请求的全部 node/step
+allocation 进入 `retired`。所有 node 在退出前共同核对 live object、backing、地址、
+mapping、reference、in-flight 与 quarantine 回到零，避免 nodeA 控制面或任一 home
+provider 在其他节点仍清理时提前退出。该流程复用现有 SDK 的 resolve/acquire、
+inspect、retire、release 和 stats，没有新增 wire operation，也没有通过控制面传输
+payload。
+
+reader/writer 的 session 与幂等 operation prefix 同时绑定完整 reference/allocation
+key hash，避免同一 daemon 上不同 request 使用相同 node/step 时发生历史结果冲突。
+runner 的 managed validator 要求每个 node 恰好一条 request-cleanup 成功记录，且
+allocation 数等于 `node_count * decode_steps`、资源计数为零。
+
+本批仅执行轻量本地定向门禁：新增 request-cleanup 状态机 1 项通过；受影响的
+managed object/runtime/serving、topology 与构建契约 24 项通过；initramfs/runner
+shell 语法通过；`llm_infer` AArch64 静态链接成功。没有在本地启动 QEMU、模型或
+多节点 workload。上述结果证明代码候选可构建及其控制状态机契约，尚未证明真实
+guest holder 集合、OBMM reclaim 时序、两模型连续 decode 或 2/3/8-node 矩阵；
+M2 和总目标保持进行中。

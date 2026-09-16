@@ -34,6 +34,7 @@
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
 #include "qwen3_pto_guest.h"
+#include "w5_managed_request_guest.h"
 #include "w5_managed_runtime_guest.h"
 #include "w5_managed_serving_guest.h"
 
@@ -2530,18 +2531,22 @@ static int w5_managed_open_reader(
     enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
     char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
     char operation[48];
+    uint64_t reference_hash;
     int length;
 
     if (!runtime || !reference_key || !object_out || *object_out)
         return -EINVAL;
+    reference_hash = w5_managed_identity_hash(reference_key);
     length = snprintf(session, sizeof(session),
-                      "managed-%08" PRIx32 "-%016" PRIx64 "-%c",
-                      local_node, step, role);
+                      "managed-%08" PRIx32 "-%016" PRIx64
+                      "-%016" PRIx64 "-%c",
+                      local_node, reference_hash, step, role);
     if (length < 0 || (size_t)length >= sizeof(session))
         return -ENAMETOOLONG;
     length = snprintf(operation, sizeof(operation),
-                      "m-%08" PRIx32 "-%016" PRIx64 "-%c",
-                      local_node, step, role);
+                      "m-%08" PRIx32 "-%016" PRIx64
+                      "-%016" PRIx64 "-%c",
+                      local_node, reference_hash, step, role);
     if (length < 0 || (size_t)length >= sizeof(operation))
         return -ENAMETOOLONG;
     config = (struct w5_managed_reader_config) {
@@ -2627,6 +2632,7 @@ static int w5_managed_run_model_range(
     char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
     char operation[48];
     uint64_t metadata_iova = 0;
+    uint64_t allocation_hash;
     uint64_t allocation_bytes;
     uint64_t started_ms;
     int length;
@@ -2678,14 +2684,17 @@ static int w5_managed_run_model_range(
                       local_node);
     if (rc || length < 0 || (size_t)length >= sizeof(home_node))
         return rc ? rc : -ENAMETOOLONG;
+    allocation_hash = w5_managed_identity_hash(allocation_key);
     length = snprintf(session, sizeof(session),
-                      "managed-w-%08" PRIx32 "-%016" PRIx64,
-                      local_node, decode_step);
+                      "managed-w-%08" PRIx32 "-%016" PRIx64
+                      "-%016" PRIx64,
+                      local_node, allocation_hash, decode_step);
     if (length < 0 || (size_t)length >= sizeof(session))
         return -ENAMETOOLONG;
     length = snprintf(operation, sizeof(operation),
-                      "mw-%08" PRIx32 "-%016" PRIx64,
-                      local_node, decode_step);
+                      "mw-%08" PRIx32 "-%016" PRIx64
+                      "-%016" PRIx64,
+                      local_node, allocation_hash, decode_step);
     if (length < 0 || (size_t)length >= sizeof(operation))
         return -ENAMETOOLONG;
     writer_config = (struct w5_managed_writer_config) {
@@ -10731,6 +10740,7 @@ int main(int argc, char **argv)
     bool w5_qwen3_pto = false;
     bool w5_managed_serving = false;
     struct w5_managed_runtime_guest *w5_managed_runtime = NULL;
+    struct w5_managed_request_cleanup *w5_managed_cleanup = NULL;
     struct w5_managed_round_state w5_managed_round;
     struct llm_terminal_token_record w5_managed_terminal_token;
     bool w5_managed_terminal_ready = false;
@@ -15262,6 +15272,68 @@ qwen3_after_service_coverage:
                    engram_range_work_item ? "range_or_shortpath" : "none");
         }
     }
+    if (w5_managed_serving &&
+        guest_decode_step + 1U >= guest_decode_step_limit) {
+        struct w5_managed_request_cleanup_config cleanup_config = {
+            .client = w5_managed_runtime_client(w5_managed_runtime),
+            .channel = w5_managed_runtime_channel(w5_managed_runtime),
+            .domain = w5_managed_runtime_domain(w5_managed_runtime),
+            .object_key = llm_infer_managed_object_key,
+            .run = w5_managed_run,
+            .request = w5_managed_request,
+            .first_step = guest_decode_step_limit - guest_decode_steps,
+            .step_count = guest_decode_steps,
+            .timeout_ms = w5_pto_ub_gm_timeout_ms,
+            .local_node = round_dispatch_node,
+            .node_count = cluster_node_count,
+            .pin_limit = 8,
+        };
+        struct w5_managed_request_cleanup_result cleanup_result;
+        int cleanup_rc;
+
+        memset(&cleanup_result, 0, sizeof(cleanup_result));
+        cleanup_rc = w5_managed_request_cleanup_create(
+            &cleanup_config, &w5_managed_cleanup);
+        if (!cleanup_rc)
+            cleanup_rc = w5_managed_request_cleanup_execute(
+                w5_managed_cleanup, &cleanup_result);
+        if (!cleanup_rc)
+            cleanup_rc = w5_managed_request_cleanup_destroy(
+                &w5_managed_cleanup);
+        if (cleanup_rc) {
+            fprintf(stderr,
+                    "[w4_guest] fail managed request cleanup"
+                    " node=%u steps=%" PRIu64 " rc=%d\n",
+                    round_dispatch_node + 1U, guest_decode_steps, cleanup_rc);
+            goto out;
+        }
+        printf("[w4_guest] stage w5_managed_request_cleanup"
+               " node=%u steps=%" PRIu64
+               " allocations=%" PRIu64
+               " final_generation=%" PRIu64
+               " live_objects=%" PRIu64
+               " backing_bytes=%" PRIu64
+               " address_bytes=%" PRIu64
+               " export_mappings=%" PRIu64
+               " import_mappings=%" PRIu64
+               " live_refs=%" PRIu64
+               " in_flight=%" PRIu64
+               " quarantined_objects=%" PRIu64
+               " quarantined_bytes=%" PRIu64
+               " status=ok\n",
+               round_dispatch_node + 1U, guest_decode_steps,
+               cleanup_result.allocation_count,
+               cleanup_result.final_generation,
+               cleanup_result.stats.live_objects,
+               cleanup_result.stats.backing_allocated_bytes,
+               cleanup_result.stats.address_reserved_bytes,
+               cleanup_result.stats.export_mappings,
+               cleanup_result.stats.import_mappings,
+               cleanup_result.stats.live_refs,
+               cleanup_result.stats.in_flight,
+               cleanup_result.stats.quarantined_objects,
+               cleanup_result.stats.quarantined_bytes);
+    }
     printf("[w4_guest] pass\n");
     rc = 0;
     if (guest_decode_step + 1 < guest_decode_step_limit) {
@@ -15319,6 +15391,17 @@ qwen3_after_service_coverage:
     }
 
 out:
+    if (w5_managed_cleanup) {
+        int cleanup_rc =
+            w5_managed_request_cleanup_destroy(&w5_managed_cleanup);
+
+        if (cleanup_rc != 0) {
+            fprintf(stderr,
+                    "[w4_guest] managed request cleanup retained rc=%d\n",
+                    cleanup_rc);
+            rc = 1;
+        }
+    }
     if (w5_managed_round.writer || w5_managed_round.token ||
         w5_managed_round.hidden || w5_managed_round.kv ||
         w5_managed_round.operation || w5_managed_round.metadata) {

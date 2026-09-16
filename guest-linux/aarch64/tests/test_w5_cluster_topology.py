@@ -302,6 +302,18 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000", source)
         self.assertIn("managed-model-provider-fingerprint", source)
         self.assertIn("managed-model-provider: .*completion=success", source)
+        self.assertIn("w5_managed_request_cleanup", source)
+        self.assertIn(
+            "live_objects=0 backing_bytes=0 address_bytes=0 "
+            "export_mappings=0 import_mappings=0",
+            source,
+        )
+
+        infer_source = self.infer_source.read_text(encoding="utf-8")
+        self.assertIn("reference_hash = w5_managed_identity_hash(reference_key)",
+                      infer_source)
+        self.assertIn("allocation_hash = w5_managed_identity_hash(allocation_key)",
+                      infer_source)
 
     def test_managed_llm_link_check_matches_production_sources(self):
         source = self.initramfs_builder.read_text(encoding="utf-8")
@@ -311,6 +323,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
 
         for variable in (
             "W5_MANAGED_OBJECT_GUEST_SRC",
+            "W5_MANAGED_REQUEST_GUEST_SRC",
             "W5_MANAGED_RUNTIME_GUEST_SRC",
             "W5_MANAGED_SERVING_GUEST_SRC",
             "MEM_SERVICE_MAPPING_OWNER_SRC",

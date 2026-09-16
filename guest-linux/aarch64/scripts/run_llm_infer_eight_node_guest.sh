@@ -2009,6 +2009,7 @@ validate_node_log() {
     assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=4 control=mem_service data=obmm status=ok" "$node_id managed runtime" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=4 .*status=ok" "$expected_managed_steps" "$node_id managed model ranges" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable4" "$expected_managed_steps" "$node_id managed completion gate" || return 1
+    assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_request_cleanup node=${idx} steps=${expected_managed_steps} allocations=$((SIM_W5_CLUSTER_NODE_COUNT * expected_managed_steps)) .*live_objects=0 backing_bytes=0 address_bytes=0 export_mappings=0 import_mappings=0 live_refs=0 in_flight=0 quarantined_objects=0 quarantined_bytes=0 status=ok" 1 "$node_id managed request cleanup" || return 1
     assert_log_count "$qemu_log" "managed-model-provider: .*completion=success" "$expected_managed_steps" "$node_id callable-4 provider completions" || return 1
     if (( idx == SIM_W5_CLUSTER_NODE_COUNT )); then
       assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*terminal=1 status=ok" "$expected_managed_steps" "$node_id managed terminal ranges" || return 1
