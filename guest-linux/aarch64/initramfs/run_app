@@ -1451,6 +1451,38 @@ mem_service_object_share_failure_snapshot() (
   echo "mem_service failure-query: node=$node phase=$phase operation=kernel-regions exit_code=$query_result"
 )
 
+mem_service_object_share_holder_barrier() {
+  local node="$1"
+  local size="$2"
+  local connect="$3"
+  local key="holder-recovery-endpoint-$node"
+
+  if [ "$node" = "0" ]; then
+    /bin/linqu_mem_service allocate-object --connect "$connect" \
+      --key holder-recovery-object \
+      --idempotency-key holder-recovery-allocate \
+      --session-id holder-recovery-controller --home-node guest-node-0 \
+      --size-bytes "$size" --capabilities 1 \
+      >/tmp/holder-recovery-allocate.log 2>&1 || return 1
+    /bin/busybox cat /tmp/holder-recovery-allocate.log
+  fi
+  /bin/linqu_mem_service allocate-object --connect "$connect" \
+    --key "$key" --idempotency-key "holder-recovery-endpoint-$node" \
+    --session-id holder-recovery-barrier --home-node guest-node-0 \
+    --size-bytes 65536 --capabilities 1 || return 1
+  {
+    echo "session_id=holder-recovery-barrier-$node"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=holder-recovery-object state=active timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=holder-recovery-endpoint-0 state=active timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=holder-recovery-endpoint-1 state=active timeout_ms=60000 poll_ms=50"
+  } >/tmp/holder-recovery-barrier.conf
+  /bin/linqu_mem_service object-session \
+    --config /tmp/holder-recovery-barrier.conf || return 1
+  echo "mem_service holder-recovery: node=$node phase=endpoint-barrier status=ready"
+}
+
 mem_service_object_share_holder_recovery() {
   local node="$1"
   local size="$2"
@@ -1468,12 +1500,6 @@ mem_service_object_share_holder_recovery() {
   local session_status=0
 
   if [ "$node" = "0" ]; then
-    /bin/linqu_mem_service allocate-object --connect "$connect" \
-      --key "$key" --idempotency-key holder-recovery-allocate \
-      --session-id holder-recovery-controller --home-node guest-node-0 \
-      --size-bytes "$size" --capabilities 1 \
-      >/tmp/holder-recovery-allocate.log 2>&1 || return 1
-    /bin/busybox cat /tmp/holder-recovery-allocate.log
     generation="$(/bin/busybox sed -n \
       's/.*generation=\([0-9][0-9]*\).*/\1/p' \
       /tmp/holder-recovery-allocate.log | /bin/busybox head -n 1)"
@@ -1732,6 +1758,7 @@ mem_service_object_share_managed() (
     --config /tmp/managed-share.worker.conf &
   worker_pid=$!
   if [ "$access" = "cpu-holder-recovery" ]; then
+    mem_service_object_share_holder_barrier "$node" "$size" "$connect" || exit 1
     mem_service_object_share_holder_recovery "$node" "$size" "$seed" \
       "$incarnation" "$connect" "$worker_pid" || exit 1
     if [ "$node" = "1" ]; then

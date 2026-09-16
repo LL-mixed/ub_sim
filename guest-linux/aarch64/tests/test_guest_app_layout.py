@@ -1519,6 +1519,13 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert 'MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery"' in apps_runner
     assert 'GSVA_COH_UB_LINK_TX="$GSVA_COH_UB_LINK_TX"' in apps_runner
     assert "validate_mem_service_holder_recovery_log" in apps_runner
+    holder_barrier = run_app.split(
+        "mem_service_object_share_holder_barrier() {", 1
+    )[1].split("\nmem_service_object_share_holder_recovery() {", 1)[0]
+    assert "holder-recovery-endpoint-0" in holder_barrier
+    assert "holder-recovery-endpoint-1" in holder_barrier
+    assert "holder-recovery-object" in holder_barrier
+    assert "provider=obmm" not in holder_barrier
     holder_recovery = run_app.split(
         "mem_service_object_share_holder_recovery() {", 1
     )[1].split("\nmem_service_object_share_managed() (", 1)[0]
@@ -1535,6 +1542,9 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "/bin/busybox cat /tmp/holder-recovery-fence.log" in holder_recovery
     managed = run_app.split("mem_service_object_share_managed() (", 1)[1].split(
         "\nrun_mem_service_object_share()", 1)[0]
+    assert managed.index("mem_service_object_share_holder_barrier") < managed.index(
+        "mem_service_object_share_holder_recovery"
+    )
     reference = run_app.split("mem_service_object_share_reference_ops() (", 1)[1].split(
         "\nmem_service_object_share_reference()", 1)[0]
     assert managed.count('echo "op=probe_readonly key=$key"') == 2
