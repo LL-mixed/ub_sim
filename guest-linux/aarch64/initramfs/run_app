@@ -1568,7 +1568,7 @@ mem_service_object_share_holder_recovery() {
     echo "op=write key=$key offset=0 len=$size seed=$seed"
     echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
     echo "op=allocate key=$ready_key idempotency_key=holder-recovery-ready size_bytes=65536 capabilities=map"
-    echo "op=wait_state key=$key state=retired timeout_ms=90000 poll_ms=50"
+    echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
     echo "op=read key=$key offset=0 len=$size seed=$seed"
   } >/tmp/holder-recovery-client.conf
   /bin/linqu_mem_service object-session \

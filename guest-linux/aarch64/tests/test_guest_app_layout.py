@@ -1539,6 +1539,10 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "provider-directory-status" in holder_recovery
     assert "expired_count=[1-9][0-9]*" in holder_recovery
     assert "replaced=0" in holder_recovery
+    assert holder_recovery.count(
+        'echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"'
+    ) == 2
+    assert "timeout_ms=90000" not in holder_recovery
     assert "/bin/busybox cat /tmp/holder-recovery-fence.log" in holder_recovery
     managed = run_app.split("mem_service_object_share_managed() (", 1)[1].split(
         "\nrun_mem_service_object_share()", 1)[0]
