@@ -5542,3 +5542,30 @@ SHA。父仓库只在本地同步 gitlink 与 `guest-linux/aarch64/mem_service.l
 推送。真实 guest 的裸 reserve-intent/torn 故障注入、隔离后的 kernel inventory
 对账、远端 holder 排空、强制撤销、重新加入和重复故障矩阵仍未完成，M3 与总目标
 继续保持进行中。
+
+## 2026-09-17：远端 RETIRE 接收端物理排空
+
+QEMU 提交 `044b759e4b` 补齐远端 holder 收到 `RETIRE` 后的接收端执行路径。
+接收端先校验 envelope、完整 key/epoch、范围和本地 coherence 对象，再把精确 route
+置为 `STALE` 并同步刷新 TLB，立即拒绝新的 CPU/PTO 访问。存在 coherence pending、
+timeout 或完整严格 I/O 调用时，route 保持隔离并返回失败回执；成功路径等待本地
+脏行写回和 home fence，失效本地缓存，解除 CPU window，并保留同 epoch tombstone。
+只有上述 drain 全部成功后，接收端才把 coherence 对象置为 `RETIRED` 并发送成功
+`RETIRE_ACK`。重复请求通过精确 tombstone 幂等完成，旧 epoch、错 home、错范围、
+缺失 route 和不完整 strict route 均失败关闭。
+
+本批唯一一次轻量本地定向门禁为：
+
+```text
+python3 -m unittest guest-linux/aarch64/tests/test_gsva_view_release.py
+Ran 5 tests in 2.347s
+OK
+```
+
+测试从生产 `gsva_coherence.c` 和 `ub_ubc.c` 抽取目标函数并以 `-Werror` 编译，覆盖
+quarantine-before-drain-before-ACK 顺序、pending/fence timeout、旧 epoch、畸形
+envelope、tombstone 幂等和严格 I/O 阻塞。该运行没有构建或启动 QEMU，也没有加载
+模型。QEMU 原生单测同步增加接收端成功和失败关闭用例，留到最终 n4 目标验收时随
+实际构建执行。真实双 guest 的 dirty writeback、TLB 撤销、旧 CPU/PTO 访问拒绝和
+协调端成功收齐精确回执仍缺实际运行证据；强制撤销、重新加入和重复故障矩阵继续
+保持未完成，M3 与总目标仍为进行中。QEMU 子仓库与父仓库均未推送。
