@@ -19,6 +19,61 @@ def require_pattern(text: str, pattern: str, message: str) -> re.Match[str]:
     return match
 
 
+def require_home_retire(node_a: str, qemu_a: str) -> dict:
+    retired = re.findall(
+        r"OBMM: GSVA segment retired: segment_id=(0x[0-9a-fA-F]+) "
+        r"epoch=([1-9][0-9]*) status=COMMITTED",
+        node_a,
+    )
+    require(len(retired) == 1,
+            "home guest retirement marker is missing or ambiguous")
+    segment_text, epoch_text = retired[0]
+    segment = int(segment_text, 16)
+    epoch = int(epoch_text)
+
+    release = require_pattern(
+        node_a,
+        rf"^obmm-worker generation=([1-9][0-9]*) phase=release-intent "
+        rf"segment={segment} export=([1-9][0-9]*)$",
+        "home worker release intent does not match the retired segment",
+    )
+    generation = int(release.group(1))
+    export_mem_id = int(release.group(2))
+    for phase, export_id in (("unexported", export_mem_id),
+                             ("retired", 0),
+                             ("reclaimed", 0)):
+        require_pattern(
+            node_a,
+            rf"^obmm-worker generation={generation} phase={phase} "
+            rf"segment={segment} export={export_id}$",
+            f"home worker {phase} phase does not match the retired segment",
+        )
+
+    updates = {
+        (int(operation), int(record_segment, 16), int(record_epoch),
+         int(record_export), int(error))
+        for operation, record_segment, record_epoch, record_export, error
+        in re.findall(
+            r"^GSVA_HOME: operation=([0-9]+) "
+            r"segment=(0x[0-9a-fA-F]+) epoch=([0-9]+) "
+            r"export=([0-9]+) error=(-?[0-9]+)$",
+            qemu_a,
+            re.MULTILINE,
+        )
+    }
+    identity = (segment, epoch, export_mem_id)
+    require((1, *identity, 0) in updates,
+            "home authoritative binding does not match the retired segment")
+    require((2, *identity, 0) in updates,
+            "home authoritative revoke does not match the retired segment")
+    return {
+        "segment_id": segment_text.lower(),
+        "epoch": epoch,
+        "export_mem_id": export_mem_id,
+        "worker_generation": generation,
+    }
+
+
 def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     for text, role in ((node_a, "home"), (node_b, "replacement")):
         require("mem_service object-share: status=fail" not in text,
@@ -90,13 +145,13 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
                     "home QEMU did not receive the holder writeback fence request")
     require_pattern(qemu_b, r"OBMM_COH_FENCE_ACK.*status=0",
                     "holder QEMU did not receive a successful fence acknowledgement")
-    require_pattern(qemu_a, r"GSVA_COH: home retire route finalized",
-                    "home route finalization is missing")
+    home_retire = require_home_retire(node_a, qemu_a)
 
     return {
         "status": "pass",
         "scope": "replacement-holder-physical-revoke-and-home-retire",
         "old_cpu_signal_exit": int(signal),
+        "home_retire": home_retire,
         "node_a_sha256": hashlib.sha256(node_a.encode()).hexdigest(),
         "node_b_sha256": hashlib.sha256(node_b.encode()).hexdigest(),
         "qemu_a_sha256": hashlib.sha256(qemu_a.encode()).hexdigest(),

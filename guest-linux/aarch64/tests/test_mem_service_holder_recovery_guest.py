@@ -22,6 +22,11 @@ def fixture():
         "mem_service object-session: session=holder-recovery-controller peer_canary=ok peers=1",
         "mem_service recover-allocation: status=ok",
         "state=retiring",
+        "obmm-worker generation=1 phase=release-intent segment=14177894576915742721 export=1",
+        "obmm-worker generation=1 phase=unexported segment=14177894576915742721 export=1",
+        "OBMM: GSVA segment retired: segment_id=0xc4c2000000000001 epoch=1 status=COMMITTED",
+        "obmm-worker generation=1 phase=retired segment=14177894576915742721 export=0",
+        "obmm-worker generation=1 phase=reclaimed segment=14177894576915742721 export=0",
         "mem_service object-session: action=wait_state key=holder-recovery-object status=ok state=retired",
         "mem_service holder-recovery: node=0 status=recovered key=holder-recovery-object state=retired",
     ))
@@ -40,7 +45,8 @@ def fixture():
     ))
     qemu_a = "\n".join((
         "OBMM_COH_FENCE req_id=1 from=0xc4d2 range=0x700000000000+2097152",
-        "GSVA_COH: home retire route finalized segment_id=1",
+        "GSVA_HOME: operation=1 segment=0xc4c2000000000001 epoch=1 export=1 error=0",
+        "GSVA_HOME: operation=2 segment=0xc4c2000000000001 epoch=1 export=1 error=0",
     ))
     qemu_b = "\n".join((
         "GSVA_TLB: flush reason=remote_retire_quarantine segment_id=1",
@@ -57,6 +63,12 @@ class HolderRecoveryGuestTests(unittest.TestCase):
         result = validator.validate(*fixture())
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["old_cpu_signal_exit"], 135)
+        self.assertEqual(result["home_retire"], {
+            "segment_id": "0xc4c2000000000001",
+            "epoch": 1,
+            "export_mem_id": 1,
+            "worker_generation": 1,
+        })
 
     def test_fence_request_and_ack_must_be_on_correct_qemu_nodes(self):
         logs = fixture()
@@ -77,7 +89,8 @@ class HolderRecoveryGuestTests(unittest.TestCase):
             (1, "expired_count=1"),
             (1, "obmm-holder-fence: status=fenced"),
             (1, "old_cpu_access=rejected"),
-            (2, "home retire route finalized"),
+            (0, "status=COMMITTED"),
+            (2, "operation=2"),
             (3, "remote_retire_drained"),
             (3, "tombstone=yes"),
             (3, "local holder revoked"),
@@ -92,6 +105,27 @@ class HolderRecoveryGuestTests(unittest.TestCase):
         logs[1] += "\naction=read key=holder-recovery-object status=ok"
         with self.assertRaisesRegex(ValueError, "remained readable"):
             validator.validate(*logs)
+
+    def test_home_revoke_must_match_retired_identity_and_success(self):
+        for old, new in (
+            ("segment=0xc4c2000000000001 epoch=1 export=1 error=0",
+             "segment=0xc4c2000000000002 epoch=1 export=1 error=0"),
+            ("segment=0xc4c2000000000001 epoch=1 export=1 error=0",
+             "segment=0xc4c2000000000001 epoch=2 export=1 error=0"),
+            ("segment=0xc4c2000000000001 epoch=1 export=1 error=0",
+             "segment=0xc4c2000000000001 epoch=1 export=2 error=0"),
+            ("segment=0xc4c2000000000001 epoch=1 export=1 error=0",
+             "segment=0xc4c2000000000001 epoch=1 export=1 error=-12"),
+        ):
+            with self.subTest(replacement=new):
+                logs = fixture()
+                revoke = "GSVA_HOME: operation=2 " + old
+                logs[2] = logs[2].replace(
+                    revoke, "GSVA_HOME: operation=2 " + new,
+                )
+                with self.assertRaisesRegex(ValueError,
+                                             "authoritative revoke"):
+                    validator.validate(*logs)
 
     def test_cli_writes_machine_readable_report(self):
         with tempfile.TemporaryDirectory() as folder:
