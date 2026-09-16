@@ -5,7 +5,10 @@ use sim_core::CompletionStatus;
 use sim_qemu::{GuestDescriptor, QemuBackendAdapter};
 use sim_services::managed_object_ref::ManagedObjectRef;
 use sim_topology::SimTopology;
-use sim_uapi::{managed_model_input::ManagedModelInput, ModelRangeDispatchReq};
+use sim_uapi::{
+    managed_model_input::{ManagedModelInput, ManagedServingObjectKey},
+    ModelRangeDispatchReq,
+};
 use std::{ffi::OsStr, fs, io::Write, path::PathBuf};
 
 const USAGE: &str = "managed-model-range-run --scenario <yaml> --descriptor <64-byte file> \
@@ -15,6 +18,29 @@ const USAGE: &str = "managed-model-range-run --scenario <yaml> --descriptor <64-
 pub fn run_if_requested() -> anyhow::Result<Option<()>> {
     let mut args = std::env::args_os().skip(1);
     let command = args.next();
+    if command.as_deref() == Some(OsStr::new("managed-model-object-key")) {
+        let parse = |value: Option<std::ffi::OsString>| -> anyhow::Result<u64> {
+            Ok(value
+                .ok_or_else(|| {
+                    anyhow::anyhow!("managed-model-object-key <run> <request> <producer> <step>")
+                })?
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("integer must be UTF-8"))?
+                .parse()?)
+        };
+        let key = ManagedServingObjectKey {
+            run: parse(args.next())?,
+            request: parse(args.next())?,
+            producer: u32::try_from(parse(args.next())?)?,
+            step: parse(args.next())?,
+        };
+        anyhow::ensure!(
+            args.next().is_none(),
+            "unexpected managed object key argument"
+        );
+        println!("{}", key.encode().map_err(anyhow::Error::msg)?);
+        return Ok(Some(()));
+    }
     if command.as_deref() == Some(OsStr::new("managed-model-provider-fingerprint")) {
         anyhow::ensure!(args.next().is_none(), "fingerprint accepts no arguments");
         println!(

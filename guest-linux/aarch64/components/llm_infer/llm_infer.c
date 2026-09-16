@@ -1,8 +1,22 @@
 #include "llm_infer.h"
 
 #include <errno.h>
+#include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+int llm_infer_managed_object_key(char *out, size_t size, uint64_t run,
+    uint64_t request, uint32_t producer, uint64_t step)
+{
+    char key[65];
+    if (!out || size < sizeof(key) || !run || !request) return -EINVAL;
+    int length = snprintf(key, sizeof(key), "w5v1/%016" PRIx64 "/%016" PRIx64
+        "/%08" PRIx32 "/%016" PRIx64, run, request, producer, step);
+    if (length != 64) return -EOVERFLOW;
+    memcpy(out, key, sizeof(key));
+    return 0;
+}
 
 static uint64_t result_word(const unsigned char *bytes)
 {

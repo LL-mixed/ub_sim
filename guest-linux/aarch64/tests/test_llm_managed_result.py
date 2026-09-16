@@ -80,6 +80,27 @@ class ManagedResultTest(unittest.TestCase):
         cls.decode.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint64,
                                ctypes.POINTER(Identity), ctypes.POINTER(Result)]
         cls.decode.restype = ctypes.c_int
+        cls.object_key = cls.library.llm_infer_managed_object_key
+        cls.object_key.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
+                                   ctypes.c_uint64, ctypes.c_uint64,
+                                   ctypes.c_uint32, ctypes.c_uint64]
+        cls.object_key.restype = ctypes.c_int
+
+    def test_canonical_managed_serving_key_and_untouched_failures(self):
+        key = ctypes.create_string_buffer(65)
+        self.assertEqual(self.object_key(key, 65, 1, 2, 3, 4), 0)
+        self.assertEqual(key.value,
+                         b"w5v1/0000000000000001/0000000000000002/00000003/"
+                         b"0000000000000004")
+        for run, request, size in ((0, 2, 65), (1, 0, 65), (1, 2, 64)):
+            with self.subTest(run=run, request=request, size=size):
+                output = ctypes.create_string_buffer(b"x" * 65, 65)
+                self.assertNotEqual(self.object_key(output, size, run, request, 3, 4), 0)
+                self.assertEqual(output.raw, b"x" * 65)
+        self.assertEqual(self.object_key(key, 65, (1 << 64) - 1,
+                                         (1 << 64) - 1, (1 << 32) - 1,
+                                         (1 << 64) - 1), 0)
+        self.assertEqual(len(key.value), 64)
 
     def call(self, data, identity, offset=16384, length=None):
         buffer = ctypes.create_string_buffer(bytes(data))

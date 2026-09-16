@@ -5,6 +5,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Canonical producer-assigned allocation identity for managed serving.
+ * Requires 65 bytes including NUL; failures leave the output untouched.
+ * run/request must be nonzero. This names an object, without granting access. */
+int llm_infer_managed_object_key(char *out, size_t size, uint64_t run,
+    uint64_t request, uint32_t producer, uint64_t step);
+
 struct llm_infer_range_identity {
     uint64_t node, layer_start, layer_end, next_node;
     uint64_t pipeline_nodes, total_layers, hidden_bytes;

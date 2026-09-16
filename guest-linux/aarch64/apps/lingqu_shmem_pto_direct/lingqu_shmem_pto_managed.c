@@ -775,6 +775,19 @@ static int adopt_mapping(struct managed_state *state)
     return rc;
 }
 
+static int model_output_key(const struct managed_config *config,
+    char *out, size_t size)
+{
+    if (config->model_publish) {
+        /* This diagnostic is a fixed two-node, step-zero producer/reader pair.
+         * Both guests must choose the producer's node, never their own node. */
+        return llm_infer_managed_object_key(out, size, config->generation,
+            config->generation + 1U, 1U - config->home_node, 0);
+    }
+    int length = snprintf(out, size, "%s-output", config->key);
+    return length < 0 || (size_t)length >= size ? -ENAMETOOLONG : 0;
+}
+
 static int open_output_object(struct managed_state *state)
 {
     struct managed_state *output = calloc(1, sizeof(*output));
@@ -785,13 +798,13 @@ static int open_output_object(struct managed_state *state)
     output->client = state->client;
     output->channel = state->channel;
     output->domain = state->domain;
-    int length = snprintf(output->config.key, sizeof(output->config.key),
-                          "%s-output", state->config.key);
-    if (length < 0 || (size_t)length >= sizeof(output->config.key)) return -ENAMETOOLONG;
-    length = snprintf(output->session, sizeof(output->session),
+    int rc = model_output_key(&state->config, output->config.key,
+        sizeof(output->config.key));
+    if (rc) return rc;
+    int length = snprintf(output->session, sizeof(output->session),
                       "managed-pto-out-%u-%" PRIu64, state->config.node, state->config.generation);
     if (length < 0 || (size_t)length >= sizeof(output->session)) return -ENAMETOOLONG;
-    int rc = map_object(output);
+    rc = map_object(output);
     if (!rc) rc = adopt_mapping(output);
     if (!rc && (output->domain != state->domain || output->owns_domain ||
         output->mapping_id == state->mapping_id ||
@@ -1735,6 +1748,13 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
         return 2;
     }
     if (validate_only) {
+        if (config.model_publish) {
+            char key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
+            rc = model_output_key(&config, key, sizeof(key));
+            if (rc) return 2;
+            printf("MANAGED_MODEL_KEY status=ok node=%u producer=%u step=0 key=%s"
+                " network_operations=0\n", config.node, 1U - config.home_node, key);
+        }
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=%s "
             "elements=%u callable=%u network_operations=0 submit_timeout_ms=%" PRIu64
             " recovery_expected=%u access_threads=%u negative_checks=%u readonly_inputs=%u home_node=%u"

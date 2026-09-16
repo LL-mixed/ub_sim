@@ -33,6 +33,22 @@ entry with explicitly labelled offline callbacks. That CLI cannot validate SDK
 grants or physical leases. Native operation fixtures and offline model execution
 do not establish W5 serving-loop integration or real multi-guest acceptance.
 
+Managed serving output allocation keys use the model-side canonical form
+`w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>` (lowercase,
+nonzero run/request). The common llm_infer component produces these keys;
+the Rust managed input boundary decodes them without changing the neutral
+service's key semantics. A sealed KV reference must identify the previous
+step and current range producer. Content version is independent of decode
+step. Consumers still resolve the exact expected logical key and retain its
+SDK holder; parsing this name cannot grant access or replace payload checks.
+`sim-cli managed-model-object-key <run> <request> <producer> <step>` prints the
+canonical allocation key for configuration and diagnosis.
+The fixed two-guest managed model publication probe derives its output key
+from the shared generation and configured producer node; both guests print
+that exact key with `--managed-config ... --validate-only` before any network
+or device access. Its step-zero probe remains separate from the W5 serving
+loop and the multi-step PP acceptance matrix.
+
 This directory contains the guest-side, simulator-facing adaptor for PTO
 dispatches whose tensor payload remains in `lingqu_shmem`.
 

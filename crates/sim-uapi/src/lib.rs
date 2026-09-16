@@ -7055,28 +7055,47 @@ fn deepseek_v4_flash_decode_slice_inputs(
             format!("deepseek_v4_flash_decode_previous_kv_operand_missing:step={decode_step}")
         })?;
     let previous_kv_ref = previous_kv_operand.metadata();
-    let previous_kv_header = guest_input
-        .get(
-            QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
-                ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
-                    + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
-        )
-        .ok_or_else(|| {
-            format!("deepseek_v4_flash_decode_previous_kv_header_missing:step={decode_step}")
-        })?;
-    let marker = read_u64_le_at(previous_kv_header, 0);
-    let previous_kv_len = usize::try_from(read_u64_le_at(previous_kv_header, 8))
-        .map_err(|_| "deepseek_v4_flash_decode_previous_kv_size_overflow".to_string())?;
-    let previous_kv_checksum = read_u64_le_at(previous_kv_header, 16);
-    let previous_kv_step = read_u64_le_at(previous_kv_header, 24);
-    if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
-        || previous_kv_step + 1 != decode_step
-        || previous_kv_len == 0
+    let (previous_kv_len, previous_kv_checksum) = if let ModelInputReference::Managed(reference) =
+        &previous_kv_operand.object_ref
     {
-        return Err(format!(
-            "deepseek_v4_flash_decode_previous_kv_header_invalid:step={decode_step}:marker={marker:#x}:producer={previous_kv_step}:bytes={previous_kv_len}"
-        ));
-    }
+        let key = managed_model_input::ManagedServingObjectKey::from_reference(reference)
+            .map_err(str::to_string)?;
+        if key.step.checked_add(1) != Some(decode_step) {
+            return Err(format!(
+                    "deepseek_v4_flash_decode_previous_kv_step_mismatch:producer={}:consumer={decode_step}",
+                    key.step
+                ));
+        }
+        (
+            usize::try_from(previous_kv_ref.payload_bytes)
+                .map_err(|_| "deepseek_v4_flash_decode_previous_kv_size_overflow")?,
+            previous_kv_ref.payload_checksum,
+        )
+    } else {
+        let header = guest_input
+            .get(
+                QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                    ..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET
+                        + QWEN3_DENSE_PROFILE_PREVIOUS_KV_HEADER_BYTES,
+            )
+            .ok_or_else(|| {
+                format!("deepseek_v4_flash_decode_previous_kv_header_missing:step={decode_step}")
+            })?;
+        let marker = read_u64_le_at(header, 0);
+        let len = usize::try_from(read_u64_le_at(header, 8))
+            .map_err(|_| "deepseek_v4_flash_decode_previous_kv_size_overflow")?;
+        let checksum = read_u64_le_at(header, 16);
+        let previous_step = read_u64_le_at(header, 24);
+        if marker != QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER
+            || previous_step.checked_add(1) != Some(decode_step)
+            || len == 0
+        {
+            return Err(format!(
+                    "deepseek_v4_flash_decode_previous_kv_header_invalid:step={decode_step}:marker={marker:#x}:producer={previous_step}:bytes={len}"
+                ));
+        }
+        (len, checksum)
+    };
     let previous_kv = previous_kv_operand.bytes();
     let object_checksum = qwen3_dense_reference_range_object_payload_checksum(previous_kv);
     if previous_kv_ref.payload_bytes != previous_kv_len as u64

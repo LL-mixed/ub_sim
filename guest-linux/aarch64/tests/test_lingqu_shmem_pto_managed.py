@@ -187,10 +187,15 @@ class ManagedPtoCliTest(unittest.TestCase):
                   "reference_inputs": "1", "layout": "nd", "model_probe": "1",
                   "model_output_bytes": "54680", "model_output_checksum": "0x1234",
                   "model_publish": "1"}
+        key = ("w5v1/0000000000000087/0000000000000088/00000000/"
+               "0000000000000000")
         for node in ("0", "1"):
             result = self.run_config({**values, "node_id": node})
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("model_publish=1", result.stdout)
+            self.assertIn(f"MANAGED_MODEL_KEY status=ok node={node} "
+                          f"producer=0 step=0 key={key} network_operations=0",
+                          result.stdout)
             self.assertIn("network_operations=0", result.stdout)
         for invalid in ("2", "-1", "1x", "18446744073709551616"):
             self.assertEqual(self.run_config({**values, "model_publish": invalid}).returncode, 2)

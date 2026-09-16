@@ -505,6 +505,19 @@ r540 已完成上述实际发布闭环：三个视图在 writer unmap 后封存�
 home cache refresh 错误请求写权限的问题，两笔均已验证并按授权发布。
 父仓库锁定 `93f5dd8`。本轮仍为固定 Qwen 单层验证，完整 W5 serving、两模型
 2/3/8-node 多步 PP、多 home 和后续阶段继续未完成，详见实施记录。
+
+W5 serving 对象命名约定：输出 allocation 使用
+`w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>`，均为固定宽度
+小写十六进制；run/request 非零。该完整 key 由 producer 在 allocate 时确定，
+随服务封存的 V2 保持不变，逻辑 result/hidden/KV 名称另加视图后缀。消费方
+按预期 run/request/producer/step 查询完整逻辑 key，禁止仅按最近版本查找。
+managed KV 的前驱校验使用该 key 中的 producer step 和 V2 producer/owner，
+同时核对当前 range 的 node；内容 version 继续表示修改代际，不能充当 step。
+DeepSeek managed decode 不读取旧 inline KV 头；legacy 路径保持既有头部校验。
+该命名与来源校验须先通过 C/Rust 互操作及多步输入用例，再接入 serving 调用点。
+固定双 guest 发布诊断的 output allocation 也使用该格式；两端依据共享 generation
+和 home 配置得到相同 producer/step-zero key，`--validate-only` 打印该 key，
+便于与实际 V2 引用核对。此诊断仍不覆盖 W5 serving loop 的请求身份与连续 decode。
 实际接入修正了两个夹具未覆盖的问题：SDK adopt 清空原 mapping 后，检查必须
 经 owner 的活动 lease 执行；provider 回调地址使用 `ub_gm_base + view_offset`，
 与 runtime tensor aperture 分开校验，不能假设两种地址相等。

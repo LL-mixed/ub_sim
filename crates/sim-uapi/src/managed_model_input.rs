@@ -7,6 +7,72 @@
 use super::*;
 use sim_services::managed_object_ref::ManagedObjectRef;
 
+/// The producer-assigned, sealed allocation identity used by W5 serving.
+/// A name supplies provenance; SDK acquire/map still grants the actual access.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedServingObjectKey {
+    pub run: u64,
+    pub request: u64,
+    pub producer: u32,
+    pub step: u64,
+}
+
+impl ManagedServingObjectKey {
+    pub fn encode(self) -> Result<String, &'static str> {
+        if self.run == 0 || self.request == 0 {
+            return Err("managed_model_key_invalid_scope");
+        }
+        Ok(format!(
+            "w5v1/{:016x}/{:016x}/{:08x}/{:016x}",
+            self.run, self.request, self.producer, self.step
+        ))
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+        if bytes.len() != 64
+            || !bytes.starts_with(b"w5v1/")
+            || bytes[21] != b'/'
+            || bytes[38] != b'/'
+            || bytes[47] != b'/'
+            || !bytes.iter().enumerate().all(|(i, byte)| {
+                [21, 38, 47].contains(&i)
+                    || (i < 5)
+                    || byte.is_ascii_digit()
+                    || (b'a'..=b'f').contains(byte)
+            })
+        {
+            return Err("managed_model_key_noncanonical");
+        }
+        let parse = |range: std::ops::Range<usize>| {
+            std::str::from_utf8(&bytes[range])
+                .ok()
+                .and_then(|value| u64::from_str_radix(value, 16).ok())
+                .ok_or("managed_model_key_noncanonical")
+        };
+        let key = Self {
+            run: parse(5..21)?,
+            request: parse(22..38)?,
+            producer: u32::try_from(parse(39..47)?)
+                .map_err(|_| "managed_model_key_noncanonical")?,
+            step: parse(48..64)?,
+        };
+        if key.run == 0 || key.request == 0 {
+            return Err("managed_model_key_invalid_scope");
+        }
+        Ok(key)
+    }
+
+    pub fn from_reference(reference: &ManagedObjectRef) -> Result<Self, &'static str> {
+        let key = Self::decode(reference.allocation_key())?;
+        if reference.producer_entity() != u64::from(key.producer)
+            || reference.owner_entity() != u64::from(key.producer)
+        {
+            return Err("managed_model_key_producer_mismatch");
+        }
+        Ok(key)
+    }
+}
+
 /// The Qwen range KV codec prepends five u64 words to each layer's K/V data.
 /// The runtime's configured payload capacity counts only those K/V data bytes.
 pub(super) fn kv_capacity_with_headers(data_bytes: usize, layers: u64) -> Result<usize, String> {
@@ -93,6 +159,7 @@ pub(super) fn resolve_managed_operands(
     }
     let contract = model_range_compute_contract(&req.task)?
         .ok_or_else(|| "managed_model_range_contract_missing".to_string())?;
+    let step = qwen3_dense_runtime_decode_step_from_guest_input(segment);
     let start = req.object_ref_table_offset as usize;
     let end = start
         .checked_add(inputs.len() * ManagedObjectRef::BYTE_LEN)
@@ -126,7 +193,15 @@ pub(super) fn resolve_managed_operands(
                 }
                 &mut result.input_token
             }
-            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => &mut result.previous_kv,
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE => {
+                let key = ManagedServingObjectKey::from_reference(&reference)?;
+                if u64::from(key.producer) != u64::from(contract.node)
+                    || key.step.checked_add(1) != Some(step)
+                {
+                    return Err("managed_model_kv_wrong_predecessor".into());
+                }
+                &mut result.previous_kv
+            }
             _ => return Err("managed_model_input_kind_unsupported".into()),
         };
         if destination.is_some() {
@@ -134,7 +209,6 @@ pub(super) fn resolve_managed_operands(
         }
         *destination = Some(input.into_operand());
     }
-    let step = qwen3_dense_runtime_decode_step_from_guest_input(segment);
     let kv_header_present = segment
         .get(QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET..QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 8)
         .is_some_and(|header| read_u64_le_at(header, 0) != 0);
@@ -204,6 +278,146 @@ mod tests {
         wire[96] = b'k';
         wire[192] = b'n';
         ManagedObjectRef::from_le_bytes(&wire).unwrap()
+    }
+
+    fn serving_reference(
+        kind: u16,
+        payload: &[u8],
+        key: ManagedServingObjectKey,
+    ) -> ManagedObjectRef {
+        let mut wire = *reference(kind, payload).as_le_bytes();
+        let name = key.encode().unwrap();
+        wire[96..192].fill(0);
+        wire[96..96 + name.len()].copy_from_slice(name.as_bytes());
+        let hash = name
+            .bytes()
+            .fold(1_469_598_103_934_665_603u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(1_099_511_628_211)
+            });
+        wire[32..40].copy_from_slice(&hash.to_le_bytes());
+        wire[16..20].copy_from_slice(&key.producer.to_le_bytes());
+        wire[20..24].copy_from_slice(&key.producer.to_le_bytes());
+        ManagedObjectRef::from_le_bytes(&wire).unwrap()
+    }
+
+    #[test]
+    fn serving_key_is_canonical_and_retains_producer_step() {
+        let key = ManagedServingObjectKey {
+            run: 1,
+            request: 2,
+            producer: 3,
+            step: 4,
+        };
+        let encoded = key.encode().unwrap();
+        assert_eq!(
+            encoded,
+            "w5v1/0000000000000001/0000000000000002/00000003/0000000000000004"
+        );
+        assert_eq!(ManagedServingObjectKey::decode(encoded.as_bytes()), Ok(key));
+        let reference = serving_reference(7, b"state", key);
+        assert_eq!(ManagedServingObjectKey::from_reference(&reference), Ok(key));
+        for changed in [
+            encoded.to_uppercase(),
+            encoded.replace("/00000003/", "/0000003/"),
+            encoded.replace("w5v1/", "w5v0/"),
+        ] {
+            assert!(ManagedServingObjectKey::decode(changed.as_bytes()).is_err());
+        }
+        assert!(ManagedServingObjectKey { run: 0, ..key }.encode().is_err());
+        assert!(ManagedServingObjectKey { request: 0, ..key }
+            .encode()
+            .is_err());
+        let mut wrong = *reference.as_le_bytes();
+        wrong[20..24].copy_from_slice(&4u32.to_le_bytes());
+        assert!(ManagedServingObjectKey::from_reference(
+            &ManagedObjectRef::from_le_bytes(&wrong).unwrap()
+        )
+        .is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn serving_key_matches_the_c_model_producer() {
+        use std::io::Write;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../guest-linux/aarch64");
+        let directory = std::env::temp_dir().join(format!(
+            "w5-serving-key-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let source = directory.join("key.c");
+        let binary = directory.join("key");
+        std::fs::File::create(&source)
+            .unwrap()
+            .write_all(
+                br#"
+#include <inttypes.h>
+#include <stdio.h>
+#include "components/llm_infer/llm_infer.h"
+int main(void) {
+    char key[65];
+    if (llm_infer_managed_object_key(key, sizeof(key), 1, 2, 3, 4)) return 1;
+    puts(key);
+    if (llm_infer_managed_object_key(key, sizeof(key), UINT64_MAX, UINT64_MAX,
+                                     UINT32_MAX, UINT64_MAX)) return 2;
+    puts(key);
+    return 0;
+}
+"#,
+            )
+            .unwrap();
+        let output = std::process::Command::new("cc")
+            .args(["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-I"])
+            .arg(&root)
+            .arg(&source)
+            .arg(root.join("components/llm_infer/llm_infer.c"))
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = std::process::Command::new(&binary).output().unwrap();
+        assert!(output.status.success());
+        let keys: Vec<_> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ManagedServingObjectKey {
+                    run: 1,
+                    request: 2,
+                    producer: 3,
+                    step: 4
+                }
+                .encode()
+                .unwrap(),
+                ManagedServingObjectKey {
+                    run: u64::MAX,
+                    request: u64::MAX,
+                    producer: u32::MAX,
+                    step: u64::MAX
+                }
+                .encode()
+                .unwrap(),
+            ]
+        );
+        for key in keys {
+            assert!(ManagedServingObjectKey::decode(key.as_bytes()).is_ok());
+        }
+        std::fs::remove_file(&binary).unwrap();
+        std::fs::remove_file(&source).unwrap();
+        std::fs::remove_dir(&directory).unwrap();
     }
 
     #[test]
@@ -315,6 +529,63 @@ mod tests {
         drop(operands);
         assert!(weak.upgrade().is_none());
         assert!(resolve_managed_operands(&req, &segment, vec![]).is_err());
+        let mut kv_req = req.clone();
+        kv_req.object_ref_count = 2;
+        let mut kv_segment = vec![0; 128 + 2 * ManagedObjectRef::BYTE_LEN];
+        kv_segment[..8].copy_from_slice(b"Q3PROMPT");
+        kv_segment[128..128 + ManagedObjectRef::BYTE_LEN].copy_from_slice(reference.as_le_bytes());
+        for consumer_step in 1..=8 {
+            write_u64_le_at(
+                &mut kv_segment,
+                24,
+                qwen3_guest_prompt_base_token_count() + consumer_step,
+            );
+            let kv_bytes = vec![consumer_step as u8; 64];
+            let key = ManagedServingObjectKey {
+                run: 1,
+                request: 2,
+                producer: contract.node,
+                step: consumer_step - 1,
+            };
+            let resolve = |kv_ref: ManagedObjectRef| {
+                let mut table = kv_segment.clone();
+                table[128 + ManagedObjectRef::BYTE_LEN..].copy_from_slice(kv_ref.as_le_bytes());
+                let inputs = vec![
+                    ManagedModelInput::from_provider_bytes(reference.clone(), bytes.clone())
+                        .unwrap(),
+                    ManagedModelInput::from_provider_bytes(kv_ref, kv_bytes.clone()).unwrap(),
+                ];
+                resolve_managed_operands(&kv_req, &table, inputs)
+            };
+            let kv_ref =
+                serving_reference(QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, &kv_bytes, key);
+            let result = resolve(kv_ref).unwrap();
+            assert_eq!(result.previous_kv.unwrap().bytes(), kv_bytes);
+            let future_ref = serving_reference(
+                QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                &kv_bytes,
+                ManagedServingObjectKey {
+                    step: consumer_step,
+                    ..key
+                },
+            );
+            assert_eq!(
+                resolve(future_ref).unwrap_err(),
+                "managed_model_kv_wrong_predecessor"
+            );
+            let other_producer = serving_reference(
+                QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+                &kv_bytes,
+                ManagedServingObjectKey {
+                    producer: contract.node + 1,
+                    ..key
+                },
+            );
+            assert_eq!(
+                resolve(other_producer).unwrap_err(),
+                "managed_model_kv_wrong_predecessor"
+            );
+        }
         for offset in [16, 20, 24, 40, 72, 80, 192] {
             let mut altered = *reference.as_le_bytes();
             altered[offset] = altered[offset].wrapping_add(1);
@@ -390,7 +661,16 @@ mod tests {
         write_u64_le_at(&mut token, 8, 7);
         let kv = vec![0x5a; 64];
         let token_ref = reference(QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_TOKEN_RESULT, &token);
-        let kv_ref = reference(QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE, &kv);
+        let kv_ref = serving_reference(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            &kv,
+            ManagedServingObjectKey {
+                run: 1,
+                request: 2,
+                producer: 0,
+                step: 0,
+            },
+        );
         let mut operands = ModelRangeDispatchOperands {
             managed: true,
             input_token: Some(
@@ -405,19 +685,36 @@ mod tests {
             ),
             ..Default::default()
         };
-        let mut guest = vec![0; QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET + 32];
-        let header = &mut guest[QWEN3_DENSE_PROFILE_PREVIOUS_KV_OFFSET..];
-        write_u64_le_at(header, 0, QWEN3_DENSE_PROFILE_PREVIOUS_KV_MARKER);
-        write_u64_le_at(header, 8, kv.len() as u64);
-        write_u64_le_at(
-            header,
-            16,
-            qwen3_dense_reference_range_object_payload_checksum(&kv),
-        );
+        let guest = vec![0; QWEN3_DENSE_PROFILE_OBJECT_REF_TABLE_OFFSET + 512];
         let result =
             deepseek_v4_flash_decode_slice_inputs(100, 0, 1, &[42, 7], &guest, Some(&operands))
                 .unwrap();
         assert_eq!(result, (vec![7], vec![42], Some(kv), 1));
+        let wrong_kv = serving_reference(
+            QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE,
+            &vec![0x5a; 64],
+            ManagedServingObjectKey {
+                run: 1,
+                request: 2,
+                producer: 0,
+                step: 1,
+            },
+        );
+        let bad = ModelRangeDispatchOperands {
+            managed: true,
+            input_token: operands.input_token.clone(),
+            previous_kv: Some(
+                ManagedModelInput::from_provider_bytes(wrong_kv, vec![0x5a; 64])
+                    .unwrap()
+                    .into_operand(),
+            ),
+            ..Default::default()
+        };
+        assert!(
+            deepseek_v4_flash_decode_slice_inputs(100, 0, 1, &[42, 7], &guest, Some(&bad))
+                .unwrap_err()
+                .contains("previous_kv_step_mismatch")
+        );
         // Removing an input cannot revive the all-zero inline buffer.
         operands.input_token = None;
         assert!(deepseek_v4_flash_decode_slice_inputs(

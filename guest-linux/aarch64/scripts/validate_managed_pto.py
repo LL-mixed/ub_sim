@@ -1035,12 +1035,14 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum, publicatio
             0 <= output_checksum < 1 << 64, "invalid model probe oracle")
     guests = [text.replace("\r\n", "\n") for text in guests]
     maps, references = [], []
+    serving_scope = None
     hidden = b"".join(struct.pack("<e", ((i % 31) - 15) / 32) for i in range(1024))
     for node, text in enumerate(guests):
         require("status=fail" not in text and "resources_retained=1" not in text,
                 "model guest reported failure")
         for prefix in ("MANAGED_PTO", "MANAGED_PTO_RESULT", "MANAGED_PTO_CONFIG",
-                       "MANAGED_MODEL", "MANAGED_OWNER", "MANAGED_PTO_REFERENCE"):
+                       "MANAGED_MODEL", "MANAGED_MODEL_KEY", "MANAGED_OWNER",
+                       "MANAGED_PTO_REFERENCE"):
             require(all(number(row, "node") == node for row in records(text, prefix)),
                     "model evidence has wrong guest identity")
         config = records(text, "MANAGED_PTO_CONFIG")
@@ -1049,6 +1051,26 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum, publicatio
                 "model probe configuration missing")
         require(config[0].get("model_publish", "0") == str(int(publication)),
                 "model publication mode differs")
+        keys = records(text, "MANAGED_MODEL_KEY")
+        if publication:
+            require(len(keys) == 1 and keys[0].get("status") == "ok" and
+                    keys[0].get("node") == str(node) and
+                    keys[0].get("producer") == "0" and keys[0].get("step") == "0" and
+                    keys[0].get("network_operations") == "0",
+                    "model serving key was not produced by the offline CLI")
+            match = re.fullmatch(
+                r"w5v1/([0-9a-f]{16})/([0-9a-f]{16})/([0-9a-f]{8})/([0-9a-f]{16})",
+                keys[0].get("key", ""))
+            require(match is not None and int(match[1], 16) > 0 and
+                    int(match[2], 16) == int(match[1], 16) + 1 and
+                    int(match[3], 16) == 0 and int(match[4], 16) == 0,
+                    "model serving key has wrong run/request/producer/step")
+            scope = tuple(int(group, 16) for group in match.groups())
+            require(serving_scope is None or scope == serving_scope,
+                    "model guests used different serving identities")
+            serving_scope = scope
+        else:
+            require(not keys, "legacy model probe emitted a managed serving key")
         mappings = [r for r in records(text, "MANAGED_PTO") if "cpu_base" in r]
         require(len(mappings) == 2 and [r["object"] for r in mappings] == ["input", "output"],
                 "model objects missing")
@@ -1061,7 +1083,8 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum, publicatio
                     number(row, "generation") > 0 and number(row, "mapping_id") > 0 and
                     row["home_node"] == "1" and row["home_provider"] == "guest-node-1",
                     "model mapping identity, range or rights mismatch")
-        require(mappings[1]["key"] == mappings[0]["key"] + "-output" and
+        expected_output_key = keys[0]["key"] if publication else mappings[0]["key"] + "-output"
+        require(mappings[1]["key"] == expected_output_key and
                 mappings[0]["address"] != mappings[1]["address"], "model output aliases input")
         maps.append(mappings)
         refs = [r for r in records(text, "MANAGED_PTO_REFERENCE")
@@ -1124,6 +1147,9 @@ def validate_model_probe(guests, qemu, output_bytes, output_checksum, publicatio
                 "model guests mapped different allocations")
     submitted, completed, _ = records(guests[0], "MANAGED_MODEL")
     request = submitted["op_id"]
+    if publication:
+        require(serving_scope is not None and number(submitted, "op_id") == serving_scope[1],
+                "model serving request identity differs from the submitted operation")
     require(submitted["callable"] == "4" and submitted["inputs"] == "1" and
             submitted["compute_leases"] == "3" and completed["op_id"] == request and
             completed["status"] == "success" and completed["original_completion"] == "1",

@@ -476,15 +476,21 @@ def model_probe_fixture():
 
 def model_publication_fixture():
     guests, qemu = model_probe_fixture()
+    key = ("w5v1/0000000000000064/0000000000000065/00000000/"
+           "0000000000000000")
     guests = [text.replace("model_probe=1", "model_probe=1 model_publish=1")
-              .replace("bytes=64", "bytes=54680") for text in guests]
+              .replace("bytes=64", "bytes=54680")
+              .replace("key=k-output", f"key={key}") for text in guests]
+    guests = [f"MANAGED_MODEL_KEY status=ok node={node} producer=0 step=0 "
+              f"key={key} network_operations=0\n" + text
+              for node, text in enumerate(guests)]
     qemu = qemu.replace("length=64", "length=54680").replace("bytes=64", "bytes=54680")
     refs = []
     sizes = [(4, 16384, 54680, 0x1234), (5, 60784, 2048, 0x8888), (7, 62832, 8232, 0x9999)]
     for kind, offset, length, checksum in sizes:
         refs.append(struct.pack("<QHHHHIIQQQQQIIQQQ96s64s", 0x514f424d4d524546,
-            2, kind, 2, 0, 0, 0, 2, int(validator.checksum64(b"k-output"), 16), offset,
-            length, checksum, 256, 1, 8, 9, 262144, b"k-output", b"guest-node-1").hex())
+            2, kind, 2, 0, 0, 0, 2, int(validator.checksum64(key.encode()), 16), offset,
+            length, checksum, 256, 1, 8, 9, 262144, key.encode(), b"guest-node-1").hex())
     def transition(node, action, view):
         return (f"MANAGED_PTO_REFERENCE node={node} action={action} generation=8 version=2 "
                 f"status=ok object=output view={view}\n")
@@ -531,6 +537,11 @@ class ManagedPtoValidatorTest(unittest.TestCase):
         self.assertTrue(result["output_publication_verified"])
         self.assertFalse(result["pp_decode_verified"])
         for node, old, new in (
+                (0, "MANAGED_MODEL_KEY status=ok", "MANAGED_MODEL_KEY status=missing"),
+                (0, "producer=0 step=0 key=", "producer=1 step=0 key="),
+                (1, "step=0 key=", "step=1 key="),
+                (0, "key=w5v1/0000000000000064", "key=W5v1/0000000000000064"),
+                (1, "network_operations=0", "network_operations=1"),
                 (0, "holder_retained=1", "holder_retained=0"),
                 (0, "state=writer-unmapped", "state=skipped"),
                 (0, "views=3", "views=2"),
