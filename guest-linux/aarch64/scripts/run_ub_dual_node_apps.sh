@@ -62,6 +62,13 @@ MEM_SERVICE_OBJECT_SHARE_PORT="${MEM_SERVICE_OBJECT_SHARE_PORT:-12347}"
 MEM_SERVICE_OBJECT_SHARE_INCARNATION="${MEM_SERVICE_OBJECT_SHARE_INCARNATION:-7}"
 MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE="${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE:-auto}"
 MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX="${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX:-}"
+if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
+    GSVA_COH_UB_LINK_TX=1
+  else
+    GSVA_COH_UB_LINK_TX=0
+  fi
+fi
 GVA_DIRECT_MODE="${GVA_DIRECT_MODE:-write-read}"
 GVA_DIRECT_LOCAL_VA="${GVA_DIRECT_LOCAL_VA:-0x710000000000}"
 GVA_DIRECT_HOME_VA="${GVA_DIRECT_HOME_VA:-0x720000000000}"
@@ -1153,9 +1160,20 @@ fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-reference" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-retired" &&
+      "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-holder-recovery" &&
       "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu-pto" ]]; then
   echo "unsupported Memory Service access mode: $MEM_SERVICE_OBJECT_SHARE_ACCESS" >&2
   exit 2
+fi
+if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
+        "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
+        "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ||
+        "$GSVA_COH_UB_LINK_TX" != "1" ]]; then
+    echo "cpu-holder-recovery requires OBMM, 65536 bytes, one round, no fault and UB link coherence" >&2
+    exit 2
+  fi
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-retired" ]]; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
@@ -2361,6 +2379,76 @@ validate_mem_service_object_share_log() {
   fi
 }
 
+validate_mem_service_holder_recovery_log() {
+  local nodea_guest="$1"
+  local nodeb_guest="$2"
+  local nodea_qemu="$3"
+  local nodeb_qemu="$4"
+
+  assert_log_absent "$nodea_guest" "mem_service object-share: status=fail" \
+    "holder recovery home guest failure" || return 1
+  assert_log_absent "$nodeb_guest" "mem_service object-share: status=fail" \
+    "holder recovery replacement guest failure" || return 1
+  assert_log_has "$nodea_guest" \
+    "mem_service recover-allocation: status=ok" \
+    "home recovery accepted after holder receipt" || return 1
+  assert_log_has "$nodea_guest" \
+    "state=retiring" \
+    "home recovery entered retiring" || return 1
+  assert_log_has "$nodea_guest" \
+    "action=wait_state key=holder-recovery-object status=ok state=retired" \
+    "home worker completed physical retirement" || return 1
+  assert_log_has "$nodea_guest" \
+    "mem_service holder-recovery: node=0 status=recovered .*state=retired" \
+    "home recovery result" || return 1
+
+  assert_log_has "$nodeb_guest" \
+    "action=map key=holder-recovery-object status=ok" \
+    "old holder mapping established" || return 1
+  assert_log_has "$nodeb_guest" \
+    "action=publish_data key=holder-recovery-object status=ok" \
+    "old holder payload published" || return 1
+  assert_log_has "$nodeb_guest" \
+    "mem_service provider-register: status=ok" \
+    "replacement provider registered" || return 1
+  assert_log_has "$nodeb_guest" "replaced=1" \
+    "replacement incarnation replaced old provider" || return 1
+  assert_log_has "$nodeb_guest" \
+    "obmm-holder-fence: status=fenced key=holder-recovery-object" \
+    "holder fencing receipt" || return 1
+  assert_log_has "$nodeb_guest" \
+    "obmm-holder-fence: status=complete node=guest-node-1 .*allocations=1" \
+    "holder fencing completion" || return 1
+  assert_log_has "$nodeb_guest" \
+    "action=wait_state key=holder-recovery-object status=ok state=retired" \
+    "old mapping process observed retirement" || return 1
+  assert_log_absent "$nodeb_guest" \
+    "action=read key=holder-recovery-object status=ok" \
+    "old CPU mapping unexpectedly remained readable" || return 1
+  assert_log_has "$nodeb_guest" \
+    "mem_service holder-recovery: node=1 status=fenced old_cpu_access=rejected signal_exit=(135|139)" \
+    "old CPU mapping rejected after forced revoke" || return 1
+
+  assert_log_has "$nodeb_qemu" \
+    "GSVA_TLB: flush reason=remote_retire_quarantine" \
+    "holder TLB quarantine" || return 1
+  assert_log_has "$nodeb_qemu" \
+    "GSVA_TLB: flush reason=remote_retire_drained" \
+    "holder TLB drain" || return 1
+  assert_log_has "$nodeb_qemu" "GSVA_UNMAP: .*tombstone=yes" \
+    "holder route tombstone" || return 1
+  assert_log_has "$nodeb_qemu" \
+    "GSVA_RECOVERY: local holder revoked" \
+    "local holder physical revoke" || return 1
+  assert_log_has "$nodeb_qemu" "OBMM_COH_FENCE req_id=" \
+    "holder writeback fence request" || return 1
+  assert_log_has "$nodeb_qemu" "OBMM_COH_FENCE_ACK.*status=0" \
+    "holder writeback fence acknowledgement" || return 1
+  assert_log_has "$nodea_qemu" \
+    "GSVA_COH: home retire route finalized" \
+    "home route finalization" || return 1
+}
+
 validate_gva_direct_log() {
   local node_name="$1"
   local log_file="$2"
@@ -2595,6 +2683,7 @@ start_node() {
     SIMPLER_HOST_MATMUL_MANIFEST="$SIMPLER_HOST_MATMUL_MANIFEST" \
     SIM_UAPI_W4_CHIPBACKEND_PROFILE="$SIM_UAPI_W4_CHIPBACKEND_PROFILE" \
     SIM_UAPI_SCENARIO_CONFIG="$SIM_UAPI_SCENARIO_CONFIG" \
+    GSVA_COH_UB_LINK_TX="$GSVA_COH_UB_LINK_TX" \
     "$QEMU_BIN" \
       "${qemu_control_args[@]}" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
@@ -3981,6 +4070,10 @@ run_iteration() {
         --seed "$MEM_SERVICE_OBJECT_SHARE_SEED" \
         --incarnation "$MEM_SERVICE_OBJECT_SHARE_INCARNATION" \
         --output "${nodea_guest_log:h}/managed-reference-validation.json" || return 1
+    elif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
+      validate_mem_service_holder_recovery_log \
+        "$nodea_guest_log" "$nodeb_guest_log" \
+        "$nodea_qemu_log" "$nodeb_qemu_log" || return 1
     else
     validate_mem_service_object_share_log \
       "nodeA" "$nodea_guest_log" || return 1

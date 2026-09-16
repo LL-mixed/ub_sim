@@ -1451,6 +1451,164 @@ mem_service_object_share_failure_snapshot() (
   echo "mem_service failure-query: node=$node phase=$phase operation=kernel-regions exit_code=$query_result"
 )
 
+mem_service_object_share_holder_recovery() {
+  local node="$1"
+  local size="$2"
+  local seed="$3"
+  local incarnation="$4"
+  local connect="$5"
+  local worker="$6"
+  local key="holder-recovery-object"
+  local ready_key="holder-recovery-ready"
+  local generation=""
+  local replacement=$((incarnation + 1))
+  local attempt=0
+  local result=0
+  local session_pid=""
+  local session_status=0
+
+  if [ "$node" = "0" ]; then
+    /bin/linqu_mem_service allocate-object --connect "$connect" \
+      --key "$key" --idempotency-key holder-recovery-allocate \
+      --session-id holder-recovery-controller --home-node guest-node-0 \
+      --size-bytes "$size" --capabilities 1 \
+      >/tmp/holder-recovery-allocate.log 2>&1 || return 1
+    /bin/busybox cat /tmp/holder-recovery-allocate.log
+    generation="$(/bin/busybox sed -n \
+      's/.*generation=\([0-9][0-9]*\).*/\1/p' \
+      /tmp/holder-recovery-allocate.log | /bin/busybox head -n 1)"
+    [ -n "$generation" ] || return 1
+    {
+      echo "session_id=holder-recovery-controller"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
+      echo "op=wait_state key=$ready_key state=active timeout_ms=60000 poll_ms=50"
+    } >/tmp/holder-recovery-controller.conf
+    /bin/linqu_mem_service object-session \
+      --config /tmp/holder-recovery-controller.conf || return 1
+
+    while [ "$attempt" -lt 600 ]; do
+      result=0
+      /bin/linqu_mem_service recover-allocation --connect "$connect" \
+        --timeout-ms 1000 --max-attempts 1 \
+        --key "$key" --node-id guest-node-0 --incarnation "$incarnation" \
+        --generation "$generation" --fenced-incarnation "$incarnation" \
+        --backing-gone 0 >/tmp/holder-recovery-recover.log 2>&1 || result=$?
+      /bin/busybox cat /tmp/holder-recovery-recover.log
+      if [ "$result" -eq 0 ]; then
+        /bin/busybox grep -q 'status=ok' /tmp/holder-recovery-recover.log || return 1
+        /bin/busybox grep -q 'state=retiring' /tmp/holder-recovery-recover.log || return 1
+        break
+      fi
+      /bin/busybox grep -Eq \
+        'reason=(state_conflict|holder_fence_receipt_required|recovery_providers_not_ready|managed_reconciliation_required)' \
+        /tmp/holder-recovery-recover.log || return 1
+      attempt=$((attempt + 1))
+      /bin/busybox sleep 0.1
+    done
+    [ "$attempt" -lt 600 ] || return 1
+    {
+      echo "session_id=holder-recovery-retire-wait"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
+    } >/tmp/holder-recovery-retire-wait.conf
+    /bin/linqu_mem_service object-session \
+      --config /tmp/holder-recovery-retire-wait.conf || return 1
+    echo "mem_service holder-recovery: node=0 status=recovered key=$key generation=$generation state=retired"
+    return 0
+  fi
+
+  {
+    echo "session_id=holder-recovery-client-1"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "holder_node_id=guest-node-$node"
+    echo "holder_provider_incarnation=$incarnation"
+    echo "provider=obmm"
+    echo "provider_node_id=1"
+    echo "provider_node_count=2"
+    echo "provider_generation=$((incarnation + 1))"
+    echo "provider_import_region_bytes=2097152"
+    echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
+    echo "op=acquire key=$key idempotency_key=holder-recovery-acquire"
+    echo "op=map key=$key flags=readwrite"
+    echo "op=write key=$key offset=0 len=$size seed=$seed"
+    echo "op=publish_data key=$key offset=0 len=$size seed=$seed"
+    echo "op=allocate key=$ready_key idempotency_key=holder-recovery-ready size_bytes=65536 capabilities=map"
+    echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
+    echo "op=read key=$key offset=0 len=$size seed=$seed"
+  } >/tmp/holder-recovery-client.conf
+  /bin/linqu_mem_service object-session \
+    --config /tmp/holder-recovery-client.conf \
+    >/tmp/holder-recovery-client.log 2>&1 &
+  session_pid=$!
+  while [ "$attempt" -lt 600 ]; do
+    if /bin/busybox grep -q \
+        'action=publish_data key=holder-recovery-object status=ok' \
+        /tmp/holder-recovery-client.log 2>/dev/null &&
+        /bin/busybox grep -q \
+        'action=allocate key=holder-recovery-ready status=ok' \
+        /tmp/holder-recovery-client.log 2>/dev/null; then
+      break
+    fi
+    kill -0 "$session_pid" 2>/dev/null || {
+      /bin/busybox cat /tmp/holder-recovery-client.log
+      return 1
+    }
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.1
+  done
+  [ "$attempt" -lt 600 ] || return 1
+
+  kill -9 "$worker" 2>/dev/null || return 1
+  wait "$worker" 2>/dev/null || true
+  worker_pid=""
+  {
+    echo "connect=$connect"
+    echo "node_id=guest-node-1"
+    echo "incarnation=$replacement"
+    echo "readiness_generation=$replacement"
+    echo "state_file=/tmp/managed-share.worker.state"
+    echo "allocation_granularity_bytes=2097152"
+  } >/tmp/managed-share.worker.replacement.conf
+  /bin/linqu_mem_service provider-register --connect "$connect" \
+    --node-id guest-node-1 --incarnation "$replacement" \
+    --readiness-generation "$replacement" --capabilities 1 \
+    >/tmp/holder-recovery-register.log 2>&1 || return 1
+  /bin/busybox cat /tmp/holder-recovery-register.log
+  /bin/busybox grep -q 'replaced=1' /tmp/holder-recovery-register.log || return 1
+  /bin/linqu_mem_service_provider_obmm fence-holder-state \
+    --config /tmp/managed-share.worker.conf \
+    --replacement-config /tmp/managed-share.worker.replacement.conf \
+    >/tmp/holder-recovery-fence.log 2>&1 || return 1
+  /bin/busybox cat /tmp/holder-recovery-fence.log
+  /bin/busybox grep -q \
+    'obmm-holder-fence: status=fenced key=holder-recovery-object' \
+    /tmp/holder-recovery-fence.log || return 1
+  /bin/busybox grep -q \
+    "obmm-holder-fence: status=complete node=guest-node-1 old_incarnation=$incarnation current_incarnation=$replacement allocations=1" \
+    /tmp/holder-recovery-fence.log || return 1
+
+  wait "$session_pid" || session_status=$?
+  /bin/busybox cat /tmp/holder-recovery-client.log
+  /bin/busybox grep -q \
+    'action=wait_state key=holder-recovery-object status=ok state=retired' \
+    /tmp/holder-recovery-client.log || return 1
+  case "$session_status" in
+    135|139) ;;
+    *) return 1 ;;
+  esac
+  if /bin/busybox grep -q \
+      'action=read key=holder-recovery-object status=ok' \
+      /tmp/holder-recovery-client.log; then
+    return 1
+  fi
+  echo "mem_service holder-recovery: node=1 status=fenced old_cpu_access=rejected signal_exit=$session_status old_incarnation=$incarnation current_incarnation=$replacement"
+  return 0
+}
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -1548,6 +1706,13 @@ mem_service_object_share_managed() (
   /bin/linqu_mem_service_provider_obmm serve-allocations \
     --config /tmp/managed-share.worker.conf &
   worker_pid=$!
+  if [ "$access" = "cpu-holder-recovery" ]; then
+    mem_service_object_share_holder_recovery "$node" "$size" "$seed" \
+      "$incarnation" "$connect" "$worker_pid" || exit 1
+    if [ "$node" = "1" ]; then
+      worker_pid=""
+    fi
+  fi
   if [ "$access" = "cpu-retired" ]; then
     mem_service_object_share_retired "$node" "$size" "$seed" "$incarnation" "$connect" || exit 1
   fi
@@ -1721,6 +1886,9 @@ mem_service_object_share_managed() (
     [ "$node" != "$home_node" ] || role=provider
   fi
   log "mem_service object-share: status=ok node=$node role=$role backend=obmm"
+  if [ "$access" = "cpu-holder-recovery" ] && [ "$node" = "1" ]; then
+    return 0
+  fi
   # The headless runner owns infrastructure shutdown after both clients pass.
   # Keep home exports and the daemon alive independently of client sessions.
   mem_service_object_share_wait_infrastructure "$node" "$worker_pid"
@@ -1756,7 +1924,8 @@ run_mem_service_object_share() {
   connect="tcp:10.0.0.1:$port"
 
   if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ] &&
-       [ "$access" != "cpu-reference" ] && [ "$access" != "cpu-retired" ]; } ||
+       [ "$access" != "cpu-reference" ] && [ "$access" != "cpu-retired" ] &&
+       [ "$access" != "cpu-holder-recovery" ]; } ||
       { [ "$access" = "cpu-pto" ] &&
         { [ "$backend" != "obmm" ] ||
           [ "$iterations" != "1" ] || [ "$fault" != "none" ]; }; }; then
@@ -1773,6 +1942,12 @@ run_mem_service_object_share() {
       { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] || [ "$fault" != "none" ] ||
         ! mem_service_reference_iterations_valid "$iterations"; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=reference_config"
+    return 2
+  fi
+  if [ "$access" = "cpu-holder-recovery" ] &&
+      { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] ||
+        [ "$iterations" != "1" ] || [ "$fault" != "none" ]; }; then
+    log "mem_service object-share: status=fail node=$node_idx reason=holder_recovery_config"
     return 2
   fi
   if [ "$access" = "cpu-pto" ]; then
