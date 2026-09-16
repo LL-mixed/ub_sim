@@ -438,7 +438,10 @@ r567 Rust workspace 零失败；PP3/TP8 门禁与配置测试通过。该项只�
 授权服务分支，远端精确指向
 `ed80575160221c60a5f586f99bd660976670e10e`；父仓库 gitlink/lock 本地同步。
 本地 host/schema/package/release/API ABI 门禁、26 项 provider-backed allocation
-契约及 AArch64 worker `-Werror` 交叉编译通过；实际 golden 和故障恢复尚待 n4。
+契约及 AArch64 worker `-Werror` 交叉编译通过。n4-910c1 的精确隔离 checkout
+随后原生执行 worker golden，修正 mock scan cursor 后 1/1 通过、6.351 秒；该
+golden 覆盖同 kernel 拒绝、replacement kernel、service reclaim、ledger 归档及
+归档后重试。实际 QEMU/guest 故障恢复仍待 n4 运行。
 当前实现只关闭 home guest/kernel 已替换的 backing 消失恢复子集；同 kernel
 reservation 续作、跨节点映射/计算排空证明、强制撤销及重新加入运行矩阵继续
 保持未完成，M3 与总目标仍为进行中。
@@ -1229,7 +1232,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
 | M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 ed80575；callable 4 主循环、请求级退役及精确 holder 身份已完成本地构建/契约门禁 | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档 | lost-home 实际 n4 故障矩阵、同 kernel reservation 续作、跨节点物理排空/强制撤销及完整重新加入仍未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；n4-910c1 原生 golden 1/1 通过 | lost-home 实际 QEMU/guest 故障矩阵、同 kernel reservation 续作、跨节点物理排空/强制撤销及完整重新加入仍未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

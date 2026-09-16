@@ -5374,3 +5374,18 @@ replacement kernel 恢复、service reclaim、ledger 归档及归档后重试；
 相同 kernel instance 的 reservation 续作、跨节点 CPU/PTO 映射与计算排空证明、
 强制撤销、实际失联节点重新加入及重复故障矩阵仍须在 n4 完成。M3 和总目标继续
 保持进行中。
+
+n4-910c1 的隔离目录
+`/home/ll/gva-manager-integration/lost-home-recovery-20260916.BgyplP` 使用父仓库
+`cbc1890a2bc93c2d6a3554f0ea025bd6c3a227d6`、独立服务
+`ed80575160221c60a5f586f99bd660976670e10e` 和 OBMM pin `53011ee` 原生执行
+`test_worker_build_and_startup_guards`。r1 进入 lost-home 流程后因 mock 根据
+`recovery_reclaims` 误判第二次 poll 的 scan cursor 而触发断言；产品恢复逻辑未在
+该点返回失败。测试修正提交 `cbc1890` 改为按当前扫描轮次判断，未修改产品代码。
+r2 原生 AArch64/Linux 执行 1/1 通过、6.351 秒；内部 golden 同时断言同 kernel
+拒绝、replacement kernel 接纳、service recovery reclaim、旧 ledger 归档及归档
+后的幂等重试。r1/r2 日志分别为 2190/98 bytes，SHA-256 分别为
+`c9a94aefef110c8a0091b6ca77f70a72f607ce67cf2a9560777ae10dafbfaeb7` 和
+`ed5db57d183a881fc27b44e7a76eadabb01160b8b6d19268137abef3d62bfdce`；两个精确
+checkout 均清洁。该测试使用受控 kernel/service mock，没有启动 QEMU，不能替代
+真实 guest 重启、holder 排空或跨节点重新加入验收。
