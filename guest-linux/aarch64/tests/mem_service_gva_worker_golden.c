@@ -17,6 +17,8 @@ static unsigned unexports, retires, reclaims;
 static bool publish_cancelled, empty_cancel;
 static bool drive_worker_loop;
 static bool drive_worker_recovery;
+static bool drive_worker_resume;
+static bool resume_service_mismatch;
 static bool rollback_empty;
 static unsigned cancellations, loop_polls;
 static uint64_t kernel_address = 0x700000000000ULL;
@@ -39,7 +41,7 @@ int __real_close(int fd);
 int __wrap_open(const char *path, int flags, ...)
 {
     mode_t create_mode = 0;
-    if ((drive_worker_loop || drive_worker_recovery) &&
+    if ((drive_worker_loop || drive_worker_recovery || drive_worker_resume) &&
         !strcmp(path, "/dev/obmm")) return 42;
     if (flags & O_CREAT) {
         va_list args;
@@ -52,7 +54,7 @@ int __wrap_open(const char *path, int flags, ...)
 
 int __wrap_close(int fd)
 {
-    return (drive_worker_loop || drive_worker_recovery) && fd == 42
+    return (drive_worker_loop || drive_worker_recovery || drive_worker_resume) && fd == 42
                ? 0
                : __real_close(fd);
 }
@@ -61,7 +63,7 @@ int __wrap_ioctl(int fd, unsigned long op, ...)
 {
     va_list args;
     void *argument;
-    assert((drive_worker_loop || drive_worker_recovery) && fd == 42);
+    assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume) && fd == 42);
     va_start(args, op);
     argument = va_arg(args, void *);
     va_end(args);
@@ -100,7 +102,8 @@ int __wrap_mem_service_client_provider_refresh(const struct mem_service_client *
     struct mem_service_client_provider_directory *directory, enum mem_service_wire_status *status)
 {
     (void)client;
-    assert((drive_worker_loop || drive_worker_recovery) && !strcmp(node, "nodeA"));
+    assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume) &&
+           !strcmp(node, "nodeA"));
     assert(incarnation == (drive_worker_recovery ? 8 : 7));
     assert(readiness_generation == (drive_worker_recovery ? 2 : 1));
     memset(directory, 0, sizeof(*directory));
@@ -115,7 +118,13 @@ int __wrap_mem_service_client_poll_allocation(const struct mem_service_client *c
     struct mem_service_client_allocation *work, enum mem_service_wire_status *status)
 {
     (void)client;
-    assert(drive_worker_loop && !strcmp(node, "nodeA") && incarnation == 7 && !after_generation);
+    assert((drive_worker_loop || drive_worker_resume) && !strcmp(node, "nodeA") &&
+           incarnation == 7 && !after_generation);
+    if (drive_worker_resume) {
+        worker_stop = 1;
+        *status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+        return 0;
+    }
     *work = (struct mem_service_client_allocation){.key = "object", .state = "allocating",
         .home_node = "nodeA", .provider_incarnation = 7, .generation = 99,
         .size_bytes = 17, .capabilities = 1};
@@ -185,7 +194,37 @@ int __wrap_mem_service_client_inspect_allocation(
     enum mem_service_wire_status *status)
 {
     (void)client;
-    assert(drive_worker_recovery && !strcmp(key, "object"));
+    assert((drive_worker_recovery || drive_worker_resume) && !strcmp(key, "object"));
+    if (drive_worker_resume) {
+        struct obmm_cmd_export exported = {
+            .length = 1,
+            .flags = OBMM_EXPORT_FLAG_GSVA_FIXED_UBA |
+                     OBMM_EXPORT_FLAG_ALLOW_MMAP,
+            .uba = kernel_record.desc.home_va,
+            .mem_id = kernel_record.export_mem_id,
+            .tokenid = kernel_record.export_token_id,
+        };
+        struct mem_service_provider_descriptor descriptor;
+
+        exported.size[0] = kernel_record.desc.size;
+        assert(!mem_service_provider_obmm_encode_gsva(
+            &kernel_record.desc, &exported, &descriptor));
+        memset(out, 0, sizeof(*out));
+        strcpy(out->key, key);
+        strcpy(out->state, "active");
+        strcpy(out->home_node, "nodeA");
+        out->provider_incarnation = 7;
+        out->generation = 99;
+        out->size_bytes = 17;
+        out->capabilities = 1;
+        out->provider_backed = true;
+        out->address = kernel_record.desc.home_va + resume_service_mismatch;
+        out->address_len = kernel_record.desc.size;
+        out->descriptor_len = descriptor.len;
+        memcpy(out->descriptor, descriptor.bytes, descriptor.len);
+        *status = MEM_SERVICE_WIRE_STATUS_OK;
+        return 0;
+    }
     recovery_inspects++;
     memset(out, 0, sizeof(*out));
     strcpy(out->key, key);
@@ -205,7 +244,8 @@ int __wrap_mem_service_client_provider_deregister(const struct mem_service_clien
 {
     (void)client;
     (void)directory;
-    assert(drive_worker_loop && !strcmp(node, "nodeA") && incarnation == 7);
+    assert((drive_worker_loop || drive_worker_resume) &&
+           !strcmp(node, "nodeA") && incarnation == 7);
     *status = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
 }
@@ -688,6 +728,19 @@ int main(void)
             inventory_mode = 0;
             drive_worker_loop = false;
             puts("gva_worker_kernel_reconcile=pass cases=8 descriptor_bytes=72 startup_guard=1");
+            drive_worker_resume = true;
+            inventory_mode = 2;
+            assert(mem_service_provider_obmm_resume_allocations(config_path) == 1);
+            inventory_mode = 1;
+            resume_service_mismatch = true;
+            assert(mem_service_provider_obmm_resume_allocations(config_path) == 1);
+            resume_service_mismatch = false;
+            assert(!mem_service_provider_obmm_resume_allocations(config_path));
+            assert(!access(state_path, F_OK));
+            drive_worker_resume = false;
+            inventory_mode = 0;
+            puts("gva_worker_same_kernel_resume=pass reservations=1 "
+                 "kernel_mismatch=reject service_mismatch=reject");
             saved.incarnation++;
             assert(lseek(fd, 0, SEEK_SET) == 0 && ledger_read_entry(fd, 1, &saved, &entry));
             assert(!fcntl(fd, F_SETLK, &lock));

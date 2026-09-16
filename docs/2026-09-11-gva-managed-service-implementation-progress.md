@@ -5434,3 +5434,29 @@ SIGTERM 收尾为 143，结束时没有残留 QEMU。结构化结果满足：
 `production_fencing_verified=false`。因此本轮只关闭 home guest/kernel 已替换、
 旧 backing 随旧 kernel 消失的实际恢复子集；同 kernel reservation 续作、跨节点
 映射/计算排空、强制撤销、完整重新加入及重复故障矩阵继续未完成。
+
+## 2026-09-16：同 kernel published reservation 续作
+
+独立服务提交 `5ad3ad0cf65e62a2b73b31000e53a93680fb6a55` 增加 provider 运维
+命令 `resume-allocations --config <path>`。该入口独占并完整校验已有 V2 ledger，
+读取同一 kernel instance 的稳定 segment inventory；只为最终阶段为 `published`、
+segment/export/descriptor 精确匹配、且服务仍返回同 key/generation/home/
+incarnation ACTIVE 或 RETIRING 对象的记录重建内存 reservation slot。已完成的
+`reclaimed`、`cancel-confirmed` 和 `unbacked-retired` 只核对；所有 intent、部分
+export/release 和不确定阶段继续拒绝。成功后复用原 ledger 锁与正常 poll/reclaim
+循环，不重新 allocate、export 或 publish。
+
+本地定向门禁执行 `test_mem_service_gva_worker.py`，4 项中 3 项通过、1 项按平台
+跳过；AArch64 worker 和 golden 以 `-Werror` 交叉编译成功。n4-910c1 r609 首次
+原生运行发现 loader 未从 ledger 的持久 `work` 字段重建内存 slot 的重复
+key/generation，正确对象被误报 service mismatch；该失败保留。修正后 r610 使用
+精确提交原生执行同一测试模块，4/4 通过、19.834 秒。golden 实际恢复 1 个
+published reservation，并明确拒绝 kernel instance mismatch 和服务 allocation
+identity mismatch；没有启动 QEMU 或模型 workload。r610 输入包 SHA-256 为
+`211a9ab7a0f7d61920c0668d037d8ec02850a38b7eb029057734b38778eb0cb6`。
+
+服务分支已从 `3cffb43` 快进推送到 `5ad3ad0`，远端 ref 已用 `ls-remote` 精确
+核验。父仓库 gitlink 与 `guest-linux/aarch64/mem_service.lock` 在本地同步，父仓库
+没有推送。该批关闭稳态 worker 崩溃后的同-kernel published reservation 续作；
+意图及部分完成事务的可证明处置、跨节点 mapping/PTO 排空、强制撤销、完整重新
+加入和重复故障矩阵继续未完成。

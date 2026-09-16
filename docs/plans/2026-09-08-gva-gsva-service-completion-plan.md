@@ -456,6 +456,15 @@ ledger 绑定新 kernel instance。该运行关闭 home guest/kernel 已替换�
 排空证明、强制撤销及完整重新加入运行矩阵继续保持未完成，M3 与总目标仍为
 进行中。
 
+2026-09-16 M3 同 kernel 续作：独立服务 `5ad3ad0` 新增显式
+`resume-allocations`。命令独占原 ledger，只恢复最终阶段为 `published`、同一
+kernel instance 的 segment/export/descriptor 与服务 ACTIVE/RETIRING 身份逐项
+一致的 reservation slot；完整终态只核对，意图及部分完成阶段继续 fail-closed。
+n4-910c1 r610 原生 AArch64 worker 测试 4/4 通过、19.834 秒，覆盖正常恢复及
+kernel/service identity mismatch 拒绝。提交已只推送授权服务分支并核验远端 SHA；
+父仓库仅本地同步 gitlink/lock。同 kernel 稳态 worker 崩溃续作已关闭，部分完成
+事务处置、跨节点排空/强制撤销和完整重新加入仍未完成。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1242,7 +1251,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
 | M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 3cffb43；callable 4 主循环、请求级退役及精确 holder 身份已完成构建/契约门禁，r608 实际 guest 证明 object-session holder 身份可驱动 lost-home recovery | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过 | 同 kernel reservation 续作、跨节点物理排空/强制撤销、完整重新加入及重复故障矩阵仍未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作 | 同 kernel 部分完成事务处置、跨节点物理排空/强制撤销、完整重新加入及重复故障矩阵仍未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 

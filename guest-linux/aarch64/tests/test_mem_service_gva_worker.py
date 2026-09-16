@@ -59,6 +59,7 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                                        capture_output=True, text=True, timeout=10)
                 self.assertEqual(usage.returncode, 2)
                 self.assertEqual("serve-allocations" in usage.stderr, enabled)
+                self.assertEqual("resume-allocations" in usage.stderr, enabled)
 
     def test_worker_build_and_startup_guards(self):
         native = platform.system() == "Linux" and platform.machine() == "aarch64"
@@ -114,6 +115,11 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                           result.stdout)
             self.assertIn(
                 "gva_worker_recovery=pass kernel_replaced=1 service_reclaim=1 archive_retry=1",
+                result.stdout,
+            )
+            self.assertIn(
+                "gva_worker_same_kernel_resume=pass reservations=1 "
+                "kernel_mismatch=reject service_mismatch=reject",
                 result.stdout,
             )
             config = pathlib.Path(directory) / "worker.conf"
