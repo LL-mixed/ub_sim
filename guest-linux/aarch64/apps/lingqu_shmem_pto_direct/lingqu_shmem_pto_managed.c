@@ -1513,6 +1513,7 @@ static int model_output_callback(void *opaque,
     const struct llm_infer_range_identity expected = {
         .node = 0, .layer_start = 1, .layer_end = 2, .next_node = 1,
         .pipeline_nodes = 2, .total_layers = 28, .hidden_bytes = MODEL_HIDDEN_BYTES,
+        .step = 0, .vocab_size = 151936,
     };
     struct llm_infer_range_result result;
     rc = llm_infer_decode_range_result(bytes + data_offset, length,
@@ -1524,10 +1525,13 @@ static int model_output_callback(void *opaque,
         " hidden_bytes=%" PRIu64 " hidden_checksum=%016" PRIx64
         " kv_offset=%" PRIu64 " kv_bytes=%" PRIu64 " kv_checksum=%016" PRIx64
         " real_layers=%" PRIu64 " serialized_bytes=%" PRIu64
+        " terminal_present=%" PRIu64 " terminal_step=%" PRIu64
+        " terminal_token=%" PRIu64
         " payload_copies=0 status=pass\n",
         state->config.node, result.hidden.offset, result.hidden.bytes,
         result.hidden.service_checksum, result.kv.offset, result.kv.bytes,
-        result.kv.service_checksum, result.real_layers, result.serialized_bytes);
+        result.kv.service_checksum, result.real_layers, result.serialized_bytes,
+        result.terminal_present, result.terminal.step, result.terminal.sampled_token);
     /* No write is permitted in the gap or beyond the serialized result. */
     for (uint64_t i = W5_MANAGED_MODEL_CONTROL_BYTES; !reader && i < MODEL_OUTPUT_OFFSET; ++i)
         if (bytes[i] != 0xa5) return -EIO;

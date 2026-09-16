@@ -954,7 +954,10 @@ def validate_model_output_publication(guests, mappings, output_bytes, output_che
     require(all(len(rows) == 1 and rows[0].get("node") == str(node) and
                 rows[0].get("status") == "pass" and rows[0].get("payload_copies") == "0"
                 and rows[0].get("real_layers") == "1" and
-                number(rows[0], "serialized_bytes") == output_bytes
+                number(rows[0], "serialized_bytes") == output_bytes and
+                rows[0].get("terminal_present") == "0" and
+                rows[0].get("terminal_step") == "0" and
+                rows[0].get("terminal_token") == "0"
                 for node, rows in enumerate(views)),
             "model result views missing")
     require({k: v for k, v in views[0][0].items() if k != "node"} ==

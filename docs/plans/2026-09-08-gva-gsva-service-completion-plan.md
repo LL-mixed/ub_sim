@@ -537,6 +537,18 @@ table 返回精确 `serialized_bytes`，把模型实际写入长度与 output al
 registry 和锁定 Simpler PTO pin。该项为 serving loop 提供精确发布边界，仍未
 接通连续 decode、terminal token、跨 range/step 生命周期或两模型运行矩阵。
 
+terminal 结果续作：range identity 增加请求 `step` 与 `vocab_size`，公共结果
+解码器在 terminal range 内要求唯一、完整宽度的 logits table 及紧随其后的
+token-text table。全部 entry 必须匹配请求 step 和 vocab；采样 token、候选表、
+文本 checksum、piece 长度及两个 piece word 必须互相一致，缺表、重复表、错 step、
+错 vocab 或内部元数据不一致均清空结果并拒绝。非 terminal range 明确返回
+`terminal_present=0`；managed CLI 同步输出 present/step/token，validator 固定
+单层诊断继续要求三项为零。n4-910c1 的代码候选完整 Python 回归执行 601 项，
+596 通过、5 项既有环境跳过、零失败/错误；Rust workspace 43 个顶层 harness
+为 976 通过、16 ignored、零失败。该项消除了 callable 4 连续 decode 的 terminal
+结果解析缺口；W5 serving loop 尚未切换到 callable 4，也未完成 terminal V2
+发布、跨 step 输入接续和两模型实际矩阵。
+
 W5 serving 对象命名约定：输出 allocation 使用
 `w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>`，均为固定宽度
 小写十六进制；run/request 非零。该完整 key 由 producer 在 allocate 时确定，

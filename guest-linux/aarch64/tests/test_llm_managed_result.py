@@ -12,6 +12,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 META = 39424
 HEADER = META + 64
 PAYLOAD = HEADER + 64 + 144
+LOGITS = 1024
+LOGITS_ENTRY = LOGITS + 64
+TOKEN_TEXT = LOGITS_ENTRY + 360
+TOKEN_TEXT_ENTRY = TOKEN_TEXT + 64
 MASK = (1 << 64) - 1
 
 
@@ -33,7 +37,8 @@ def tensor_checksum(data):
 
 class Identity(ctypes.Structure):
     _fields_ = [(name, ctypes.c_uint64) for name in
-                ("node", "first", "end", "next", "nodes", "layers", "hidden")]
+                ("node", "first", "end", "next", "nodes", "layers", "hidden",
+                 "step", "vocab")]
 
 
 class View(ctypes.Structure):
@@ -41,16 +46,59 @@ class View(ctypes.Structure):
                 ("offset", "bytes", "model_checksum", "service_checksum")]
 
 
+class Terminal(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint64) for name in
+                ("step", "sampled_token", "runner_up_token", "margin_milli",
+                 "logits_checksum", "text_checksum", "top_logit_bits",
+                 "runner_up_logit_bits", "full_vocab_checked_token_count",
+                 "full_vocab_logits_checksum", "piece_bytes", "piece_word0",
+                 "piece_word1", "candidate_count")] + [
+        (name, ctypes.c_uint64 * 4) for name in
+        ("candidate_tokens", "candidate_logit_bits", "candidate_text_checksums",
+         "candidate_piece_bytes", "candidate_piece_word0", "candidate_piece_word1")]
+
+
 class Result(ctypes.Structure):
     _fields_ = [("hidden", View), ("kv", View), ("input_checksum", ctypes.c_uint64),
                 ("output_tensor_checksum", ctypes.c_uint64),
                 ("range_checksum", ctypes.c_uint64), ("real_layers", ctypes.c_uint64),
-                ("serialized_bytes", ctypes.c_uint64)]
+                ("serialized_bytes", ctypes.c_uint64),
+                ("terminal_present", ctypes.c_uint64), ("terminal", Terminal)]
 
 
-def fixture(nodes=2, node=0, layers=28, kv=b"previous-kv"):
+def add_terminal_metadata(data, step, vocab):
+    sampled = 11
+    runner_up = 12
+    text_checksum = 0x4567
+    piece = int.from_bytes(b"tok", "little")
+    runner_piece = int.from_bytes(b"run", "little")
+    struct.pack_into("<4Q", data, LOGITS, 0x713377346c6f6730, 1, 45, 360)
+    values = {
+        16: 7, 24: vocab, 32: sampled, 40: runner_up, 48: 25,
+        56: 0x1234, 64: text_checksum, 72: step, 104: vocab,
+        112: 0x2345, 120: 0x3f800000, 128: 0x3f000000,
+        136: 1, 144: 0x3456, 152: 0x4567, 160: 2,
+    }
+    for offset, value in values.items():
+        struct.pack_into("<Q", data, LOGITS_ENTRY + offset, value)
+    candidates = [
+        (sampled, 0x3f800000, text_checksum, 3, piece, 0),
+        (runner_up, 0x3f000000, 0x5678, 3, runner_piece, 0),
+    ]
+    for index, candidate in enumerate(candidates):
+        struct.pack_into("<6Q", data, LOGITS_ENTRY + 168 + index * 48, *candidate)
+    struct.pack_into("<7Q", data, TOKEN_TEXT, 0x7133773474787430, 1, 8, 64,
+                     3, 0x6789, 2)
+    struct.pack_into("<8Q", data, TOKEN_TEXT_ENTRY, step, sampled, 0, 3,
+                     piece, 0, text_checksum, 3)
+
+
+def fixture(nodes=2, node=0, layers=28, kv=b"previous-kv", terminal=False,
+            step=0, vocab=151936):
     hidden = bytes(range(32))
-    record = [node, 1, 2, 1, (node + 1) % nodes, nodes, layers, len(hidden),
+    first = layers - 1 if terminal else 1
+    end = layers if terminal else 2
+    record = [node, first, end, end - first, (node + 1) % nodes, nodes, layers, len(hidden),
               19, tensor_checksum(hidden), 23, 1, 29, 31,
               len(hidden), len(hidden), len(kv), checksum(kv) if kv else 0]
     data = bytearray(PAYLOAD + len(hidden) + len(kv))
@@ -59,8 +107,11 @@ def fixture(nodes=2, node=0, layers=28, kv=b"previous-kv"):
                      144 + len(hidden) + len(kv), 0, 23, 19, tensor_checksum(hidden))
     struct.pack_into("<18Q", data, HEADER + 64, *record)
     data[PAYLOAD:] = hidden + kv
+    if terminal:
+        add_terminal_metadata(data, step, vocab)
     repair_record_checksum(data)
-    return data, Identity(node, 1, 2, (node + 1) % nodes, nodes, layers, len(hidden))
+    return data, Identity(node, first, end, (node + 1) % nodes, nodes, layers,
+                          len(hidden), step, vocab)
 
 
 def repair_record_checksum(data):
@@ -176,6 +227,7 @@ class ManagedResultTest(unittest.TestCase):
                     self.assertEqual(result.kv.offset, result.hidden.offset + 32)
                     self.assertEqual(result.kv.bytes, len(b"previous-kv"))
                     self.assertEqual(result.serialized_bytes, len(data))
+                    self.assertEqual(result.terminal_present, 0)
                     for view in (result.hidden, result.kv):
                         start = view.offset - 16384
                         payload = data[start:start + view.bytes]
@@ -199,6 +251,65 @@ class ManagedResultTest(unittest.TestCase):
         rc, result = self.call(data, identity)
         self.assertEqual(rc, 0)
         self.assertEqual(bytes(result.kv), bytes(ctypes.sizeof(View)))
+
+    def test_terminal_range_returns_step_vocab_and_candidate_metadata(self):
+        data, identity = fixture(nodes=3, node=2, layers=43, terminal=True, step=7,
+                                 vocab=129280)
+        rc, result = self.call(data, identity)
+        self.assertEqual(rc, 0)
+        self.assertEqual(result.terminal_present, 1)
+        terminal = result.terminal
+        self.assertEqual(terminal.step, 7)
+        self.assertEqual(terminal.sampled_token, 11)
+        self.assertEqual(terminal.runner_up_token, 12)
+        self.assertEqual(terminal.margin_milli, 25)
+        self.assertEqual(terminal.logits_checksum, 0x1234)
+        self.assertEqual(terminal.text_checksum, 0x4567)
+        self.assertEqual(terminal.full_vocab_checked_token_count, 129280)
+        self.assertEqual(terminal.full_vocab_logits_checksum, 0x2345)
+        self.assertEqual(terminal.piece_bytes, 3)
+        self.assertEqual(terminal.piece_word0, int.from_bytes(b"tok", "little"))
+        self.assertEqual(terminal.candidate_count, 2)
+        self.assertEqual(list(terminal.candidate_tokens)[:2], [11, 12])
+        self.assertEqual(list(terminal.candidate_text_checksums)[:2],
+                         [0x4567, 0x5678])
+
+    def test_terminal_range_requires_unique_table_for_expected_step_and_vocab(self):
+        data, identity = fixture(terminal=True, step=4)
+        for field in ("step", "vocab"):
+            changed = Identity.from_buffer_copy(identity)
+            setattr(changed, field, getattr(changed, field) + 1)
+            with self.subTest(field=field):
+                self.assertNotEqual(self.call(data, changed)[0], 0)
+        missing = bytearray(data)
+        struct.pack_into("<Q", missing, LOGITS, 0)
+        self.assertNotEqual(self.call(missing, identity)[0], 0)
+        duplicate = bytearray(data)
+        block = duplicate[LOGITS:TOKEN_TEXT_ENTRY + 64]
+        duplicate[2048:2048 + len(block)] = block
+        self.assertNotEqual(self.call(duplicate, identity)[0], 0)
+
+    def test_terminal_range_rejects_inconsistent_logits_and_token_text(self):
+        data, identity = fixture(terminal=True, step=4)
+        mutations = (
+            (LOGITS + 16, 44),
+            (LOGITS_ENTRY + 24, identity.vocab + 1),
+            (LOGITS_ENTRY + 32, identity.vocab),
+            (LOGITS_ENTRY + 72, identity.step + 1),
+            (LOGITS_ENTRY + 104, identity.vocab - 1),
+            (LOGITS_ENTRY + 160, 0),
+            (LOGITS_ENTRY + 168 + 16, 0x9999),
+            (TOKEN_TEXT + 32, 4),
+            (TOKEN_TEXT_ENTRY, identity.step + 1),
+            (TOKEN_TEXT_ENTRY + 8, 13),
+            (TOKEN_TEXT_ENTRY + 24, 17),
+            (TOKEN_TEXT_ENTRY + 48, 0x9999),
+        )
+        for offset, value in mutations:
+            changed = bytearray(data)
+            struct.pack_into("<Q", changed, offset, value)
+            with self.subTest(offset=offset):
+                self.assertNotEqual(self.call(changed, identity)[0], 0)
 
     def test_rejects_truncation_overflow_and_bad_pointer_without_scanning(self):
         data, identity = fixture()
@@ -252,7 +363,7 @@ class ManagedResultTest(unittest.TestCase):
 
     def test_rejects_wrong_expected_dispatch_and_null_arguments(self):
         data, identity = fixture()
-        for field, _ in Identity._fields_:
+        for field, _ in Identity._fields_[:7]:
             changed = Identity.from_buffer_copy(identity)
             setattr(changed, field, getattr(changed, field) + 1)
             with self.subTest(field=field):

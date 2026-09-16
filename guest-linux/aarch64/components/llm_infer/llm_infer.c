@@ -37,6 +37,133 @@ static uint64_t result_checksum(const unsigned char *bytes, size_t length,
     return value;
 }
 
+#define LLM_INFER_LOGITS_MARKER UINT64_C(0x713377346c6f6730)
+#define LLM_INFER_TOKEN_TEXT_MARKER UINT64_C(0x7133773474787430)
+#define LLM_INFER_LOGITS_HEADER_BYTES 64u
+#define LLM_INFER_LOGITS_ENTRY_WORDS 45u
+#define LLM_INFER_LOGITS_ENTRY_BYTES (LLM_INFER_LOGITS_ENTRY_WORDS * 8u)
+#define LLM_INFER_TOKEN_TEXT_HEADER_BYTES 64u
+#define LLM_INFER_TOKEN_TEXT_ENTRY_WORDS 8u
+#define LLM_INFER_TOKEN_TEXT_ENTRY_BYTES (LLM_INFER_TOKEN_TEXT_ENTRY_WORDS * 8u)
+#define LLM_INFER_MAX_LOGITS_ENTRIES 16u
+
+static int llm_infer_decode_terminal_result(const unsigned char *bytes,
+    size_t metadata_end, const struct llm_infer_range_identity *expected,
+    struct llm_infer_terminal_result *out)
+{
+    struct llm_infer_terminal_result decoded = {0};
+    unsigned matches = 0;
+    if (!bytes || !expected || !out || !expected->vocab_size) return -EINVAL;
+    for (size_t header = 0; header + LLM_INFER_LOGITS_HEADER_BYTES <= metadata_end;
+         header += 8) {
+        if (result_word(bytes + header) != LLM_INFER_LOGITS_MARKER) continue;
+        uint64_t count = result_word(bytes + header + 8);
+        uint64_t entry_words = result_word(bytes + header + 16);
+        uint64_t table_bytes = result_word(bytes + header + 24);
+        if (!count || count > LLM_INFER_MAX_LOGITS_ENTRIES ||
+            entry_words != LLM_INFER_LOGITS_ENTRY_WORDS ||
+            table_bytes != count * LLM_INFER_LOGITS_ENTRY_BYTES ||
+            table_bytes > SIZE_MAX) continue;
+        size_t token_header = header + LLM_INFER_LOGITS_HEADER_BYTES;
+        if (token_header > metadata_end || table_bytes > metadata_end - token_header)
+            continue;
+        token_header += (size_t)table_bytes;
+        if (token_header > metadata_end - LLM_INFER_TOKEN_TEXT_HEADER_BYTES ||
+            result_word(bytes + token_header) != LLM_INFER_TOKEN_TEXT_MARKER ||
+            result_word(bytes + token_header + 8) != count ||
+            result_word(bytes + token_header + 16) !=
+                LLM_INFER_TOKEN_TEXT_ENTRY_WORDS ||
+            result_word(bytes + token_header + 24) !=
+                count * LLM_INFER_TOKEN_TEXT_ENTRY_BYTES)
+            continue;
+        size_t token_base = token_header + LLM_INFER_TOKEN_TEXT_HEADER_BYTES;
+        size_t token_bytes = (size_t)count * LLM_INFER_TOKEN_TEXT_ENTRY_BYTES;
+        if (token_bytes > metadata_end - token_base) continue;
+        uint64_t total_piece_bytes = 0;
+        bool valid = true;
+        for (uint64_t index = 0; index < count && valid; ++index) {
+            const unsigned char *entry = bytes + header +
+                LLM_INFER_LOGITS_HEADER_BYTES + (size_t)index * LLM_INFER_LOGITS_ENTRY_BYTES;
+            const unsigned char *text = bytes + token_base +
+                (size_t)index * LLM_INFER_TOKEN_TEXT_ENTRY_BYTES;
+            uint64_t sampled = result_word(entry + 32);
+            uint64_t runner_up = result_word(entry + 40);
+            uint64_t text_checksum = result_word(entry + 64);
+            uint64_t candidate_count = result_word(entry + 160);
+            uint64_t piece_bytes = result_word(text + 24);
+            bool sampled_candidate = false;
+            if (result_word(entry + 24) != expected->vocab_size ||
+                sampled >= expected->vocab_size || runner_up >= expected->vocab_size ||
+                !result_word(entry + 56) || !text_checksum ||
+                result_word(entry + 72) != expected->step ||
+                result_word(entry + 104) != expected->vocab_size ||
+                !result_word(entry + 112) || !candidate_count ||
+                candidate_count > LLM_INFER_TERMINAL_CANDIDATES ||
+                result_word(text) != expected->step || result_word(text + 8) != sampled ||
+                !piece_bytes || piece_bytes > 16 ||
+                result_word(text + 48) != text_checksum ||
+                total_piece_bytes > UINT64_MAX - piece_bytes) {
+                valid = false;
+                break;
+            }
+            total_piece_bytes += piece_bytes;
+            for (uint64_t candidate = 0; candidate < candidate_count; ++candidate) {
+                const unsigned char *item = entry + 168 +
+                    (size_t)candidate * 48;
+                uint64_t token = result_word(item);
+                uint64_t item_piece_bytes = result_word(item + 24);
+                if (token >= expected->vocab_size || !result_word(item + 16) ||
+                    !item_piece_bytes || item_piece_bytes > 16) {
+                    valid = false;
+                    break;
+                }
+                if (token == sampled) {
+                    if (sampled_candidate || result_word(item + 16) != text_checksum ||
+                        item_piece_bytes != piece_bytes ||
+                        result_word(item + 32) != result_word(text + 32) ||
+                        result_word(item + 40) != result_word(text + 40)) {
+                        valid = false;
+                        break;
+                    }
+                    sampled_candidate = true;
+                }
+            }
+            if (!sampled_candidate) valid = false;
+        }
+        if (!valid || result_word(bytes + token_header + 32) != total_piece_bytes)
+            continue;
+        if (++matches != 1) return -EPROTO;
+        const unsigned char *entry = bytes + header + LLM_INFER_LOGITS_HEADER_BYTES;
+        const unsigned char *text = bytes + token_base;
+        decoded.step = result_word(entry + 72);
+        decoded.sampled_token = result_word(entry + 32);
+        decoded.runner_up_token = result_word(entry + 40);
+        decoded.margin_milli = result_word(entry + 48);
+        decoded.logits_checksum = result_word(entry + 56);
+        decoded.text_checksum = result_word(entry + 64);
+        decoded.top_logit_bits = result_word(entry + 120);
+        decoded.runner_up_logit_bits = result_word(entry + 128);
+        decoded.full_vocab_checked_token_count = result_word(entry + 104);
+        decoded.full_vocab_logits_checksum = result_word(entry + 112);
+        decoded.piece_bytes = result_word(text + 24);
+        decoded.piece_word0 = result_word(text + 32);
+        decoded.piece_word1 = result_word(text + 40);
+        decoded.candidate_count = result_word(entry + 160);
+        for (uint64_t candidate = 0; candidate < decoded.candidate_count; ++candidate) {
+            const unsigned char *item = entry + 168 + (size_t)candidate * 48;
+            decoded.candidate_tokens[candidate] = result_word(item);
+            decoded.candidate_logit_bits[candidate] = result_word(item + 8);
+            decoded.candidate_text_checksums[candidate] = result_word(item + 16);
+            decoded.candidate_piece_bytes[candidate] = result_word(item + 24);
+            decoded.candidate_piece_word0[candidate] = result_word(item + 32);
+            decoded.candidate_piece_word1[candidate] = result_word(item + 40);
+        }
+    }
+    if (matches != 1) return -EPROTO;
+    *out = decoded;
+    return 0;
+}
+
 int llm_infer_decode_range_result(const void *result, size_t length,
     uint64_t allocation_offset, const struct llm_infer_range_identity *expected,
     struct llm_infer_range_result *out)
@@ -54,7 +181,8 @@ int llm_infer_decode_range_result(const void *result, size_t length,
         !expected->pipeline_nodes || expected->node >= expected->pipeline_nodes ||
         expected->next_node >= expected->pipeline_nodes ||
         expected->layer_start >= expected->layer_end ||
-        expected->layer_end > expected->total_layers || !expected->hidden_bytes)
+        expected->layer_end > expected->total_layers || !expected->hidden_bytes ||
+        !expected->vocab_size)
         return -EINVAL;
     uint64_t header = result_word(bytes + metadata + 40);
     if (header < metadata + header_bytes || header % 8 ||
@@ -102,6 +230,12 @@ int llm_infer_decode_range_result(const void *result, size_t length,
     decoded.range_checksum = entry[10];
     decoded.real_layers = entry[11];
     decoded.serialized_bytes = header + header_bytes + table_bytes;
+    if (expected->layer_end == expected->total_layers) {
+        int rc = llm_infer_decode_terminal_result(bytes, (size_t)header,
+            expected, &decoded.terminal);
+        if (rc) return rc;
+        decoded.terminal_present = 1;
+    }
     *out = decoded;
     return 0;
 }

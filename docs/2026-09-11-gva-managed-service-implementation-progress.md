@@ -5183,3 +5183,41 @@ Cargo registry/target、GCC15 和 Simpler 要求的 PTO pin `594817f`：
 本批只补齐 callable 4 result 的精确发布边界。持续 W5 serving loop、terminal
 token 受管理发布、跨 range/step lease 和两模型 2/3/8-node 多步实际矩阵仍待
 实现与验证；M2 和总目标保持进行中。
+
+## 2026-09-16：callable 4 terminal 结果解码
+
+公共 `llm_infer_range_identity` 增加预期 decode step 和 vocabulary size；
+`llm_infer_range_result` 增加 `terminal_present` 及结构化 terminal 结果。终止
+range 的解码在权威 range-table 指针之前、按 8-byte 对齐有界查找完整宽度
+logits table，并要求恰好一个结构有效的候选。该表必须紧邻合法 token-text
+table；两张表的 entry 数、宽度和总长度均须落在已完成结果的 metadata 区间。
+
+每个 logits/token-text entry 核对同一请求 step、完整 vocab 计数、采样及
+runner-up token 范围、非零 logits/text/full-vocab checksum、1 至 4 个候选、
+1 至 16 byte piece。采样 token 必须在候选中唯一出现，其 text checksum、
+piece 长度和两个 piece word 必须与 token-text entry 完全一致。重复的有效表、
+缺失表、错 step/vocab、越界长度及任一内部矛盾均返回错误，调用方只看到清零
+结果。非终止 range 保持 hidden/KV 解析路径并返回 `terminal_present=0`。
+
+CLI `MANAGED_MODEL_VIEWS` 增加 `terminal_present`、`terminal_step` 和
+`terminal_token`。现有固定 `[1,2)` Qwen 单层 probe 属于非终止 range，validator
+明确要求三项为零，避免把 metadata 中无关字节误报为 terminal 结果。新增原生
+夹具覆盖 3-node/43-layer terminal、step 7、完整候选返回，以及错表宽度、错
+step/vocab、重复表、采样候选矛盾、piece 越界和 token-text 不一致。定向本地
+测试共 71 项，56 项执行通过、15 项环境跳过，`git diff --check` 通过。
+
+n4-910c1 的隔离 checkout
+`/home/ll/gva-manager-integration/managed-result-exact2-20260916.CJ8sl9` 使用
+同一离线镜像、冻结 Cargo registry/target、GCC15 和 Simpler PTO pin
+`594817f22e7240d769d6febad162679ad4816133` 完成代码候选门禁：
+
+- `managed-terminal-python-r583.log`：601 项，596 通过、5 项既有环境跳过、
+  零失败/错误，103.776 秒，容器 exit 0。
+- `managed-terminal-rust-r584.log`：43 个顶层 harness，976 通过、16 ignored、
+  零失败，容器 exit 0。
+
+两套容器均设置 `--network none`、`--pull never` 和 Cargo offline；外层 SSH、
+源码同步及日志读取均进入任务网络审计。该批提供 callable 4 terminal 结果的
+严格消费契约，尚未把 `apps/llm_infer` 的真实 W5 loop 从 callable 3 切换到
+callable 4，也未完成 terminal token V2 发布、下一 step token/KV 输入接续、
+多 home 或两模型 2/3/8-node 多步实际运行。M2 和总目标保持进行中。

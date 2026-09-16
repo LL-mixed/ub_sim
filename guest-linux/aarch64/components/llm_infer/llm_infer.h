@@ -14,10 +14,28 @@ int llm_infer_managed_object_key(char *out, size_t size, uint64_t run,
 struct llm_infer_range_identity {
     uint64_t node, layer_start, layer_end, next_node;
     uint64_t pipeline_nodes, total_layers, hidden_bytes;
+    uint64_t step, vocab_size;
 };
 
 struct llm_infer_result_view {
     uint64_t offset, bytes, model_checksum, service_checksum;
+};
+
+#define LLM_INFER_TERMINAL_CANDIDATES 4u
+
+struct llm_infer_terminal_result {
+    uint64_t step, sampled_token, runner_up_token, margin_milli;
+    uint64_t logits_checksum, text_checksum;
+    uint64_t top_logit_bits, runner_up_logit_bits;
+    uint64_t full_vocab_checked_token_count, full_vocab_logits_checksum;
+    uint64_t piece_bytes, piece_word0, piece_word1;
+    uint64_t candidate_count;
+    uint64_t candidate_tokens[LLM_INFER_TERMINAL_CANDIDATES];
+    uint64_t candidate_logit_bits[LLM_INFER_TERMINAL_CANDIDATES];
+    uint64_t candidate_text_checksums[LLM_INFER_TERMINAL_CANDIDATES];
+    uint64_t candidate_piece_bytes[LLM_INFER_TERMINAL_CANDIDATES];
+    uint64_t candidate_piece_word0[LLM_INFER_TERMINAL_CANDIDATES];
+    uint64_t candidate_piece_word1[LLM_INFER_TERMINAL_CANDIDATES];
 };
 
 struct llm_infer_range_result {
@@ -25,6 +43,8 @@ struct llm_infer_range_result {
     uint64_t input_checksum, output_tensor_checksum, range_checksum, real_layers;
     /* Exact bytes written by the serialized result, excluding spare capacity. */
     uint64_t serialized_bytes;
+    uint64_t terminal_present;
+    struct llm_infer_terminal_result terminal;
 };
 
 /* Decode an already completed and CPU-visible result under the caller's SDK
@@ -32,7 +52,10 @@ struct llm_infer_range_result {
  * copies payloads, maps memory, publishes references or grants access. An
  * error clears out. The serialized metadata layout is shared by both models.
  * The caller verifies whole-result integrity. Numerical layer/tensor checksum
- * metadata may differ from the serialized hidden payload's model_checksum. */
+ * metadata may differ from the serialized hidden payload's model_checksum.
+ * A terminal range must contain exactly one structurally valid logits/token
+ * table for expected.step and expected.vocab_size; non-terminal ranges leave
+ * terminal_present clear. */
 int llm_infer_decode_range_result(const void *result, size_t result_bytes,
     uint64_t allocation_offset, const struct llm_infer_range_identity *expected,
     struct llm_infer_range_result *out);

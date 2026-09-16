@@ -22,6 +22,10 @@ Managed model-result ownership:
   decoding. Returned offsets alone grant no mapping or publication authority.
 - Check the authoritative range-table pointer, entry checksum, coordinates,
   payload lengths and serialized KV checksum before returning either subview.
+  A terminal range also requires one bounded full-width logits table followed
+  by its token-text table. Every table entry must match the requested decode
+  step and vocabulary, and the selected token's candidate/text metadata must
+  agree before the decoder exposes the terminal result.
   Whole-result integrity remains the caller's provider/completion obligation;
   the probe checks its independently generated whole-result oracle first.
   Numerical layer/tensor checksums depend on the execution path. Keep those

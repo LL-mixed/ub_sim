@@ -507,6 +507,7 @@ def model_publication_fixture():
         views = (f"MANAGED_MODEL_VIEWS node={node} hidden_offset=60784 hidden_bytes=2048 "
                  "hidden_checksum=0000000000008888 kv_offset=62832 kv_bytes=8232 "
                  f"kv_checksum=0000000000009999 real_layers=1 serialized_bytes={output_bytes} "
+                 "terminal_present=0 terminal_step=0 terminal_token=0 "
                  "payload_copies=0 status=pass\n")
         guests[node] = guests[node].replace(marker, views + marker)
     guests[0] = guests[0].replace("MANAGED_MODEL node=0 action=submitted",
