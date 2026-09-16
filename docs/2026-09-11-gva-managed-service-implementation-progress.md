@@ -5601,3 +5601,38 @@ syntax: PASS
 本批没有启动 QEMU 或 workload。验收入口已经能够证明计划要求的物理事件，真实
 n4 双 guest 结果仍待最终目标验收；PTO 旧访问拒绝、强制撤销、重新加入和重复故障
 矩阵继续保持未完成。父仓库未推送。
+
+## 2026-09-17：精确 holder fencing receipt
+
+独立服务提交 `4ba90ac72810ebf6b1668cf48441fdb49003c5a2` 新增中立 wire
+operation `0x7f fence-allocation-holder`，同时提供 typed SDK 与诊断 CLI。原恢复
+路径把“相同节点出现不同 provider incarnation”当成旧 holder 已被 fencing 的充分
+条件，并由 `mem_service_managed_recover()` 直接清空全部 holder/mapping；旧 guest
+或 QEMU 仍存活时，这会让控制面结果领先于物理撤销。
+
+当前路径把两个事实分开处理：replacement registration 只建立当前调用者身份；
+replacement provider 完成或证明本地 route、VMA、cache、TLB 与设备访问均已撤销
+后，再用精确 allocation generation、旧 holder incarnation 和幂等键提交 receipt。
+daemon 核对调用者是该节点当前 active provider，core 只删除旧身份拥有的 holder
+sessions 及这些 session 在同一 generation 上的 mappings，保留其他节点义务。
+receipt、表状态及成功回复在同一 managed snapshot 中提交。恢复接口看到任何剩余
+holder、mapping 或写入义务都会失败关闭，不再执行隐式清除。
+
+本批轻量定向门禁为：
+
+```text
+python3 -m unittest \
+  tests.test_mem_service_provider_backed_allocation.\
+MemServiceProviderBackedAllocationTests.\
+test_recovery_rejects_live_holder_then_drains_after_rejoin
+Ran 1 test in 2.772s
+OK
+```
+
+用例覆盖 replacement registration 单独不足、错误旧身份拒绝、精确删除 1 个
+holder 与 1 个 mapping、daemon 重启后成功 receipt 的幂等重放，以及 receipt 后
+recovery/reclaim 才完成。host CLI 同时在 `-Wall -Wextra -Werror` 下构建；wire、
+release、package 与兼容清单由 CLI 重新生成。提交已只推送用户授权的
+`origin/codex/gva-managed-service-completion`，远端 ref 精确核验为上述 SHA。
+父仓库只在本地同步 gitlink/lock。此批提供物理证明的控制面消费契约；OBMM/QEMU
+强制撤销生产者、PTO 访问拒绝、完整重新加入和 n4 实际故障注入仍待完成。
