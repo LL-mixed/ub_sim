@@ -5389,3 +5389,48 @@ r2 原生 AArch64/Linux 执行 1/1 通过、6.351 秒；内部 golden 同时断�
 `ed5db57d183a881fc27b44e7a76eadabb01160b8b6d19268137abef3d62bfdce`；两个精确
 checkout 均清洁。该测试使用受控 kernel/service mock，没有启动 QEMU，不能替代
 真实 guest 重启、holder 排空或跨节点重新加入验收。
+
+## 2026-09-16：实际双 guest lost-home recovery
+
+独立服务提交 `3cffb43359c89d934f24df96eff3c180bbc189ed` 为
+object-session 增加成对的 `holder_node_id` 与
+`holder_provider_incarnation` 配置。缺失一项、重复字段或零 incarnation 均拒绝；
+acquire、reference transition、map/unmap 及失败清理使用同一精确身份。持久化后
+daemon 重启可以从 holder 集合恢复完整 recovery scope。该提交已只推送
+`origin/codex/gva-managed-service-completion` 并用远端 `ls-remote` 核验。
+
+父仓库提交 `69097b0c4f473fac3dc891e68907af1a4e6246d0` 在 reference、retired
+和普通 CPU 三个 managed object-session 配置中注入 `guest-node-N` 与当前 provider
+incarnation，并同步 gitlink/lock；父仓库没有推送。受影响的服务定向测试、guest
+配置契约及 lock/gitlink 契约通过。本地只执行轻量定向门禁，没有启动 QEMU、模型
+或多节点 workload。
+
+n4-910c1 使用上述精确父子提交和 validation-only initramfs
+`managed-lost-home-r608.cpio.gz` 运行双 QEMU/guest 实际故障场景。镜像 SHA-256 为
+`8bddfeb34cb2ffbe1f3e06ba54971b876fc551de6a9dd68dccf8bcdd2d3a7e8c`；daemon 与
+worker SHA-256 分别为
+`465f3c15d13ad217a4cb86d993881f8b0763705030487015fa0b39f5c58c1f11` 和
+`fd713bcf1778a5b79fabbfaf0dc043319808c3be28acdb314d0b52084ce89335`。
+
+r608 在 119.267 秒完成，observer exit 0，runner 在 observer 完成后按设计由
+SIGTERM 收尾为 143，结束时没有残留 QEMU。结构化结果满足：
+
+- baseline、lost-home recovery 和 kernel replacement fencing 均为 true；两个
+  replacement kernel instance 与旧值分别不同。
+- daemon checkpoint 恢复后对象进入 quarantine，保留 2 个精确 holder、1 个
+  export mapping、2 个 import mapping 和 2 MiB backing，
+  `managed_recovery_required=1`。
+- 新 incarnation `20260916601` 的两个 required provider 注册完成，目录 ready。
+  首次 recovery 退役并回收 1 个对象、归档旧 ledger；重复 recovery 回收 0 个
+  对象，证明幂等。
+- 最终 live object、backing/address reservation、live refs、export/import mapping、
+  quarantine 和 recovery gate 全部为 0。replacement worker 的 V2 ledger 使用新
+  incarnation，并绑定 replacement kernel instance。
+
+结构化 observation 和 terminal JSON 的 SHA-256 分别为
+`28d79e93aa64db73b53647baa1a1aae6ee63610cc3a1a3fcc558f9e5a8f37005` 和
+`fd8e6298c78724b1fbf4c3759ee035c705ca1997380b93b7a79eca91a98b07b5`。
+结果显式保留 `cross_node_rejoin_verified=false`、`full_recovery_verified=false` 和
+`production_fencing_verified=false`。因此本轮只关闭 home guest/kernel 已替换、
+旧 backing 随旧 kernel 消失的实际恢复子集；同 kernel reservation 续作、跨节点
+映射/计算排空、强制撤销、完整重新加入及重复故障矩阵继续未完成。
