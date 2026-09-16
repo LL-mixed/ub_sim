@@ -157,11 +157,37 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"cleanup=process-exit",
         "old holder PTO dispatch was not rejected after forced revoke",
     )
+    submit_started = require_pattern(
+        node_b,
+        r"MANAGED_PTO_HOLDER_RECOVERY node=1 state=submit-start "
+        r"op_id=([1-9][0-9]*) generation=([1-9][0-9]*) "
+        r"mapping_id=([1-9][0-9]*) retained_cpu_pins=1 retained_leases=3",
+        "old holder PTO dispatch was not submitted after retirement",
+    )
     observed = require_pattern(
         node_b,
         r"mem_service holder-recovery: node=1 phase=pto-prepared-observed "
         r"op_id=([1-9][0-9]*)",
         "controller did not observe the prepared PTO dispatch before fencing",
+    )
+    rejected_observed = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=pto-rejected-observed "
+        r"status=ok op_id=([1-9][0-9]*)",
+        "controller did not observe the stale PTO rejection",
+    )
+    cpu_probe_started = require_pattern(
+        node_b,
+        r"MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-probe-start "
+        r"op_id=([1-9][0-9]*) generation=([1-9][0-9]*) "
+        r"mapping_id=([1-9][0-9]*) retained_cpu_pins=1 retained_leases=3",
+        "old holder CPU probe did not start after PTO rejection",
+    )
+    cpu_probe_observed = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=cpu-probe-start-observed "
+        r"status=ok op_id=([1-9][0-9]*)",
+        "controller did not observe the bounded CPU probe start",
     )
     cpu_rejected = require_pattern(
         node_b,
@@ -171,20 +197,34 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"address=0x[0-9a-f]+ retained_cpu_pins=1 retained_leases=3",
         "old holder CPU access was not rejected inside the PTO owner",
     )
+    cpu_rejected_observed = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=cpu-rejected-observed "
+        r"status=ok op_id=([1-9][0-9]*)",
+        "controller did not observe the bounded CPU rejection",
+    )
     require(prepared.group(1) == rejected.group(1) == rejected.group(2),
             "old holder PTO completion identity does not match its prepared dispatch")
-    require(prepared.group(1) == observed.group(1) == cpu_rejected.group(1),
+    require(prepared.group(1) == submit_started.group(1) == observed.group(1) ==
+            rejected_observed.group(1) == cpu_probe_started.group(1) ==
+            cpu_probe_observed.group(1) == cpu_rejected.group(1) ==
+            cpu_rejected_observed.group(1),
             "CPU/PTO rejection does not match the observed prepared dispatch")
-    require(prepared.group(3) == cpu_rejected.group(3),
+    require(prepared.group(3) == submit_started.group(3) ==
+            cpu_probe_started.group(3) == cpu_rejected.group(3),
             "CPU rejection does not match the prepared mapping")
     require(node_b.index(observed.group(0)) <
             node_b.index("obmm-holder-fence: status=fenced") <
-            node_b.index(cpu_rejected.group(0)) <
-            node_b.index(rejected.group(0)),
+            node_b.index(rejected_observed.group(0)) <
+            node_b.index(cpu_probe_observed.group(0)) <
+            node_b.index(cpu_rejected_observed.group(0)),
             "old holder accesses were not rejected after the observed fence")
     require(node_b.index(prepared.group(0)) <
+            node_b.index(submit_started.group(0)) <
+            node_b.index(rejected.group(0)) <
+            node_b.index(cpu_probe_started.group(0)) <
             node_b.index(cpu_rejected.group(0)),
-            "old holder CPU probe did not use the pre-revoke dispatch mapping")
+            "old holder PTO and CPU probes did not follow the bounded post-revoke order")
     require_pattern(
         node_b,
         r"MANAGED_PTO_RESULT node=1 status=pass .*holder_recovery_probe=1 "

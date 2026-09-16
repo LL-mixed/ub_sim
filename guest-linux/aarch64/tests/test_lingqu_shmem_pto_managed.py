@@ -568,6 +568,15 @@ int main(int argc, char **argv) {
         self.assertIn("MANAGED_PTO_HOLDER_RECOVERY", source)
         self.assertIn("old_cpu_access=%s", source)
         self.assertIn("old_pto_access=%s", source)
+        holder_dispatch = source.split(
+            "static int dispatch_vector_checked(", 1
+        )[1].split("static int dispatch_vector(", 1)[0]
+        self.assertLess(holder_dispatch.index("state=submit-start"),
+                        holder_dispatch.index("lingqu_shmem_pto_endpoint_submit"))
+        self.assertLess(holder_dispatch.index("state=rejected"),
+                        holder_dispatch.index("state=cpu-probe-start"))
+        self.assertLess(holder_dispatch.index("state=cpu-probe-start"),
+                        holder_dispatch.index("lingqu_shmem_pto_probe_revoked_read"))
 
     def test_initramfs_and_dual_node_runner_expose_managed_mode(self):
         build = (ROOT / "guest-linux/aarch64/scripts/build_initramfs.sh").read_text()

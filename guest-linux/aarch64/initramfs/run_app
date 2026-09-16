@@ -1706,6 +1706,76 @@ mem_service_object_share_holder_recovery() {
     'action=wait_state key=holder-recovery-object status=ok state=retired' \
     /tmp/holder-recovery-observer.log || return 1
   [ "$session_status" -eq 0 ] || return 1
+
+  attempt=0
+  while [ "$attempt" -lt 300 ]; do
+    if /bin/busybox grep -q \
+        'MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected' \
+        /tmp/holder-recovery-pto.log 2>/dev/null; then
+      break
+    fi
+    kill -0 "$pto_pid" 2>/dev/null || break
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.1
+  done
+  if [ "$attempt" -ge 300 ] || ! /bin/busybox grep -q \
+      'MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected' \
+      /tmp/holder-recovery-pto.log 2>/dev/null; then
+    echo "mem_service holder-recovery: node=1 phase=pto-rejected-observed status=timeout op_id=$pto_op"
+    /bin/busybox cat /tmp/holder-recovery-pto.log
+    kill -9 "$pto_pid" 2>/dev/null || true
+    wait "$pto_pid" 2>/dev/null || true
+    pto_pid=""
+    return 1
+  fi
+  echo "mem_service holder-recovery: node=1 phase=pto-rejected-observed status=ok op_id=$pto_op"
+
+  attempt=0
+  while [ "$attempt" -lt 50 ]; do
+    if /bin/busybox grep -q \
+        'MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-probe-start' \
+        /tmp/holder-recovery-pto.log 2>/dev/null; then
+      break
+    fi
+    kill -0 "$pto_pid" 2>/dev/null || break
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.1
+  done
+  if ! /bin/busybox grep -q \
+      'MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-probe-start' \
+      /tmp/holder-recovery-pto.log 2>/dev/null; then
+    echo "mem_service holder-recovery: node=1 phase=cpu-probe-start-observed status=missing op_id=$pto_op"
+    /bin/busybox cat /tmp/holder-recovery-pto.log
+    kill -9 "$pto_pid" 2>/dev/null || true
+    wait "$pto_pid" 2>/dev/null || true
+    pto_pid=""
+    return 1
+  fi
+  echo "mem_service holder-recovery: node=1 phase=cpu-probe-start-observed status=ok op_id=$pto_op"
+
+  attempt=0
+  while [ "$attempt" -lt 50 ]; do
+    if /bin/busybox grep -q \
+        'MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected' \
+        /tmp/holder-recovery-pto.log 2>/dev/null; then
+      break
+    fi
+    kill -0 "$pto_pid" 2>/dev/null || break
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.1
+  done
+  if [ "$attempt" -ge 50 ] || ! /bin/busybox grep -q \
+      'MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected' \
+      /tmp/holder-recovery-pto.log 2>/dev/null; then
+    echo "mem_service holder-recovery: node=1 phase=cpu-rejected-observed status=timeout op_id=$pto_op"
+    /bin/busybox cat /tmp/holder-recovery-pto.log
+    kill -9 "$pto_pid" 2>/dev/null || true
+    wait "$pto_pid" 2>/dev/null || true
+    pto_pid=""
+    return 1
+  fi
+  echo "mem_service holder-recovery: node=1 phase=cpu-rejected-observed status=ok op_id=$pto_op"
+
   wait "$pto_pid" || pto_status=$?
   pto_pid=""
   /bin/busybox cat /tmp/holder-recovery-pto.log

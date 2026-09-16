@@ -42,13 +42,18 @@ def fixture():
         "obmm-holder-fence: status=fenced key=holder-recovery-object generation=1",
         "obmm-holder-fence: status=complete node=guest-node-1 allocations=1",
         "mem_service object-session: action=wait_state key=holder-recovery-object status=ok state=retired",
+        "mem_service holder-recovery: node=1 phase=pto-rejected-observed status=ok op_id=8",
+        "mem_service holder-recovery: node=1 phase=cpu-probe-start-observed status=ok op_id=8",
+        "mem_service holder-recovery: node=1 phase=cpu-rejected-observed status=ok op_id=8",
         "MANAGED_PTO node=1 peer_canary=pass",
         "MANAGED_PTO node=1 key=holder-recovery-object generation=1 cpu_base=0x700000000000 address=0x700000000000 logical_bytes=65536 mapping_id=2 mapping_handle=1 access=3 object=input home_node=0 home_provider=guest-node-0 requester_cna=0xf002",
         "MANAGED_OWNER node=1 state=adopted generation=1 mapping_id=2 cpu_pins=1 holder_transferred=1 object=input",
         "MANAGED_PTO_HOLDER_RECOVERY node=1 state=prepared op_id=8 generation=1 mapping_id=2 holder_node=guest-node-1 holder_incarnation=7 retained_leases=3",
         "MANAGED_PTO_HOLDER_RECOVERY node=1 state=retired op_id=8 generation=1 mapping_id=2 retained_leases=3",
-        "MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected op_id=8 generation=1 mapping_id=2 signal=7 code=2 address=0x700000000000 retained_cpu_pins=1 retained_leases=3",
+        "MANAGED_PTO_HOLDER_RECOVERY node=1 state=submit-start op_id=8 generation=1 mapping_id=2 retained_cpu_pins=1 retained_leases=3",
         "MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected op_id=8 completion_op=8 status=3 error=pto_ub_gm_bad_memref pending_op=0 cleanup=process-exit",
+        "MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-probe-start op_id=8 generation=1 mapping_id=2 retained_cpu_pins=1 retained_leases=3",
+        "MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected op_id=8 generation=1 mapping_id=2 signal=7 code=2 address=0x700000000000 retained_cpu_pins=1 retained_leases=3",
         "MANAGED_PTO_RESULT node=1 status=pass key=holder-recovery-object generation=1 holder_recovery_probe=1 role=stale-holder old_cpu_access=rejected old_pto_access=rejected cpu_signal=7 cleanup=process-exit",
         "mem_service holder-recovery: node=1 status=fenced old_cpu_access=rejected old_pto_access=rejected old_cpu_signal=7",
     ))
@@ -102,7 +107,9 @@ class HolderRecoveryGuestTests(unittest.TestCase):
             (1, "obmm-holder-fence: status=fenced"),
             (1, "old_cpu_access=rejected"),
             (1, "state=prepared"),
+            (1, "state=submit-start"),
             (1, "state=rejected"),
+            (1, "state=cpu-probe-start"),
             (1, "old_pto_access=rejected"),
             (0, "status=COMMITTED"),
             (2, "operation=2"),
@@ -134,6 +141,16 @@ class HolderRecoveryGuestTests(unittest.TestCase):
                      if "status=fenced" in line)
         logs[1] = logs[1].replace(fence + "\n", fence + "\n" + observed + "\n")
         with self.assertRaisesRegex(ValueError, "after the observed fence"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        rejected = next(line for line in logs[1].splitlines()
+                        if "state=rejected" in line)
+        cpu_probe = next(line for line in logs[1].splitlines()
+                         if "state=cpu-probe-start" in line)
+        logs[1] = logs[1].replace(rejected + "\n", "")
+        logs[1] = logs[1].replace(cpu_probe + "\n", cpu_probe + "\n" + rejected + "\n")
+        with self.assertRaisesRegex(ValueError, "bounded post-revoke order"):
             validator.validate(*logs)
 
     def test_home_revoke_must_match_retired_identity_and_success(self):

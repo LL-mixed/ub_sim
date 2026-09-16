@@ -1178,7 +1178,6 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
         if (rc) return rc;
     }
     if (forced_revoke) {
-        struct lingqu_shmem_pto_cpu_fault cpu_fault;
         printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=prepared op_id=%" PRIu64
             " generation=%" PRIu64 " mapping_id=%" PRIu64
             " holder_node=guest-node-%u holder_incarnation=%" PRIu64
@@ -1192,17 +1191,6 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
             " retained_leases=3\n",
             state->config.node, request.op_id, state->allocation.generation,
             state->mapping_id);
-        rc = lingqu_shmem_pto_probe_revoked_read(state->mapping.base, &cpu_fault);
-        if (rc || (cpu_fault.signal != SIGBUS && cpu_fault.signal != SIGSEGV))
-            return rc ? rc : -EPROTO;
-        state->holder_recovery_cpu_signal = cpu_fault.signal;
-        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=cpu-rejected"
-            " op_id=%" PRIu64 " generation=%" PRIu64
-            " mapping_id=%" PRIu64 " signal=%d code=%d address=0x%" PRIxPTR
-            " retained_cpu_pins=1 retained_leases=3\n",
-            state->config.node, request.op_id, state->allocation.generation,
-            state->mapping_id, cpu_fault.signal, cpu_fault.code,
-            cpu_fault.address);
     }
     if (state->batch) {
         pthread_mutex_lock(&state->batch->lock);
@@ -1233,6 +1221,13 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
         vector_state(state, vectors[0])->mapping_id,
         vector_state(state, vectors[1])->mapping_id,
         vector_state(state, vectors[2])->mapping_id);
+    if (forced_revoke) {
+        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=submit-start"
+            " op_id=%" PRIu64 " generation=%" PRIu64
+            " mapping_id=%" PRIu64 " retained_cpu_pins=1 retained_leases=3\n",
+            state->config.node, request.op_id, state->allocation.generation,
+            state->mapping_id);
+    }
     state->completion_unknown = true;
     rc = state->batch ? queued_wait_locked(state, &slot, request.op_id, &completion) :
         lingqu_shmem_pto_endpoint_submit(state->endpoint, &slot,
@@ -1275,17 +1270,34 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     }
     state->completion_unknown = false;
     if (forced_revoke) {
+        struct lingqu_shmem_pto_cpu_fault cpu_fault;
         if (completion.status != 3 ||
             (strcmp(completion.error_code, LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED) &&
              strcmp(completion.error_code, LINGQU_PTO_UB_GM_CODE_BAD_MEMREF)) ||
             lingqu_shmem_pto_endpoint_pending_op(state->endpoint)) return -EPROTO;
-        lingqu_shmem_pto_dispatch_finish(state->inflight);
-        state->inflight = NULL;
         printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=rejected op_id=%" PRIu64
             " completion_op=%" PRIu64 " status=%u error=%s pending_op=0"
             " cleanup=process-exit\n",
             state->config.node, request.op_id, completion.op_id,
             completion.status, completion.error_code);
+        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=cpu-probe-start"
+            " op_id=%" PRIu64 " generation=%" PRIu64
+            " mapping_id=%" PRIu64 " retained_cpu_pins=1 retained_leases=3\n",
+            state->config.node, request.op_id, state->allocation.generation,
+            state->mapping_id);
+        rc = lingqu_shmem_pto_probe_revoked_read(state->mapping.base, &cpu_fault);
+        if (rc || (cpu_fault.signal != SIGBUS && cpu_fault.signal != SIGSEGV))
+            return rc ? rc : -EPROTO;
+        state->holder_recovery_cpu_signal = cpu_fault.signal;
+        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=cpu-rejected"
+            " op_id=%" PRIu64 " generation=%" PRIu64
+            " mapping_id=%" PRIu64 " signal=%d code=%d address=0x%" PRIxPTR
+            " retained_cpu_pins=1 retained_leases=3\n",
+            state->config.node, request.op_id, state->allocation.generation,
+            state->mapping_id, cpu_fault.signal, cpu_fault.code,
+            cpu_fault.address);
+        lingqu_shmem_pto_dispatch_finish(state->inflight);
+        state->inflight = NULL;
         return 0;
     }
     if (fault) {
