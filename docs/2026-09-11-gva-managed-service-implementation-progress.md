@@ -5106,3 +5106,42 @@ SHA-256 为 `0799b411492432bb28dc990f468639f15d287d0a6b901676eba3066626175049`�
 当前结果只关闭固定单层输出发布与只读消费子项。完整 W5 serving loop、
 跨 range/step 生命周期、两模型 PP/decode、多 home 及 M1/M3/M4/M5 的未完成
 验收继续保留；M2 和总目标保持进行中。
+
+## 2026-09-16：按请求选择 managed allocation home
+
+独立服务提交 `e133b01` 将 `home_node` 作为 `allocate_object` 的可选中立字段，
+并新增 `mem_service_client_allocate_object_at_home()`。原
+`mem_service_client_allocate_object()` 和 v1 request struct ABI 保持不变。
+daemon 对新 key 查询目标 home 的活动 provider incarnation；省略字段时使用
+配置的默认 home。目标未注册、已过期、超过 63 字节，或已有 key 显式改绑到
+另一 home 时拒绝，且不创建或改写 allocation intent。测试同时确认 node A/B
+各自轮询只看到归属自己的工作。各 home 的物理地址所有权仍由其 worker 独立
+维护，控制面 placement metadata 不提供跨 home 地址区间协调保证。
+
+新增字段使 wire field count 从 224 变为 225。wire schema、compat matrix、
+baseline、old/new matrix、upgrade policy、package manifest 与 release manifest
+的长度和 FNV-1a 校验按依赖顺序重算，所有 fixture 与安装契约同步。SDK 另将
+managed reference 的 key/home 复制改为先验证固定字段长度再按精确长度复制，
+消除了 `-Werror=format-truncation`；五个使用联合类型注解的测试模块启用延迟
+注解，使指定验证机的 Python 3.9 能执行完整测试集合。
+
+n4-910c1 隔离目录
+`/home/ll/gva-manager-integration/multi-home-20260916.N26NIi` 完成以下验证：
+
+- 8 组 wire、compat、baseline、old/new、upgrade、package、release、version
+  fixture 全部通过；wire manifest 为 17344 bytes、checksum `0x3df24455`、
+  39 operations、225 fields。
+- 双 home 定向集成测试通过，覆盖显式 node B、默认 node A、缺失 provider、
+  超长 home、跨 home 重放冲突及原归属保持。
+- 最终 `python3 -m unittest discover tests` 执行 307 项，304 项实际通过、
+  3 项既有环境跳过、零失败，耗时 2208.130 秒。此前完整轮次发现的两处
+  `fields=224` 旧断言保留为修复依据；定点 2/2 通过后重新执行完整回归。
+- `make -C apps/mem_service host-artifact-smoke` 完整通过，覆盖 host 二进制、
+  provider/allocation、release/package、兼容、部署及运维 fixture。
+
+提交已推送到获授权的
+`origin/codex/gva-managed-service-completion`，父仓库 gitlink 与
+`guest-linux/aarch64/mem_service.lock` 本地同步到 `e133b01`，父仓库未推送。
+本批关闭 W5 多 home 所需的控制面 placement 前置能力。实际 W5 serving loop、
+同时多 home 物理运行、跨 range/step 生命周期和 2/3/8-node 两模型多步矩阵仍待
+接入与验证，M2 和总目标保持进行中。

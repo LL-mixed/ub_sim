@@ -514,6 +514,18 @@ home cache refresh 错误请求写权限的问题，两笔均已验证并按授�
 父仓库锁定 `93f5dd8`。本轮仍为固定 Qwen 单层验证，完整 W5 serving、两模型
 2/3/8-node 多步 PP、多 home 和后续阶段继续未完成，详见实施记录。
 
+控制面多 home 前置续作：独立服务 `e133b01` 为 `allocate_object` 增加可选、
+provider 中立的 `home_node`，并通过新的
+`mem_service_client_allocate_object_at_home()` 保持原 v1 request struct ABI。
+新分配只绑定目标节点的活动 provider incarnation；未知、过期、超长 home
+以及把已有 key 重放到另一 home 均 fail-closed。省略字段时继续使用
+`allocation_home_provider` 默认值。wire、compat、baseline、old/new、upgrade、
+package 与 release 契约已按依赖顺序更新。n4-910c1 的完整服务回归执行 307 项，
+304 项实际通过、3 项既有环境跳过、零失败，耗时 2208.130 秒；完整
+`host-artifact-smoke` 同样通过。该提交已按授权推送独立服务目标分支，父仓库
+gitlink/lock 本地同步。此项只关闭按请求选择 home 的控制面能力；同时多 home
+W5 serving、物理地址区间协调及 2/3/8-node 多步矩阵继续未完成。
+
 W5 serving 对象命名约定：输出 allocation 使用
 `w5v1/<run:16hex>/<request:16hex>/<producer:8hex>/<step:16hex>`，均为固定宽度
 小写十六进制；run/request 非零。该完整 key 由 producer 在 allocate 时确定，
