@@ -3408,6 +3408,22 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "coh_remote_retire writeback_verified" in runner
     assert "coh_remote_retire revoked_cpu signal=" in runner
 
+    transport_default = runner.split(
+        'if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then', 1
+    )[1].split("APPEND_EXTRA=", 1)[0]
+    for mode in (
+        "coh_remote_inv",
+        "coh_remote_wb",
+        "coh_remote_downgrade",
+        "coh_remote_token_revoke",
+        "coh_remote_fence",
+        "coh_remote_retire",
+    ):
+        assert mode in transport_default
+    assert "GSVA_COH_UB_LINK_TX=1" in transport_default
+    assert "GSVA_COH_UB_LINK_TX=0" in transport_default
+    assert 'GSVA_COH_UB_LINK_TX="${GSVA_COH_UB_LINK_TX:-0}"' not in runner
+
 
 def test_gsva_coh_and_lifecycle_runner_uses_app_flag_entrypoint():
     two_node_coh_runner = (ROOT / "scripts" / "run_ub_two_node_gsva_coh_test.sh").read_text()

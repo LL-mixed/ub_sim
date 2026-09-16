@@ -27,7 +27,17 @@ GSVA_MODE="${GSVA_MODE:-arm_mmu}"
 GSVA_STRICT="${GSVA_STRICT:-1}"
 GSVA_COH_HOLD_PENDING="${GSVA_COH_HOLD_PENDING:-0}"
 GSVA_COH_TIMEOUT_MS="${GSVA_COH_TIMEOUT_MS:-5000}"
-GSVA_COH_UB_LINK_TX="${GSVA_COH_UB_LINK_TX:-0}"
+if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then
+  case "$GSVA_TEST_MODE" in
+    coh_remote_inv|coh_remote_wb|coh_remote_downgrade|\
+      coh_remote_token_revoke|coh_remote_fence|coh_remote_retire)
+      GSVA_COH_UB_LINK_TX=1
+      ;;
+    *)
+      GSVA_COH_UB_LINK_TX=0
+      ;;
+  esac
+fi
 APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1}"
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
