@@ -58,6 +58,7 @@ struct managed_config {
     bool reference_inputs;
     bool model_probe;
     bool model_publish;
+    bool holder_recovery_probe;
     uint64_t model_output_bytes, model_output_checksum;
     struct managed_geometry geometry;
 };
@@ -160,7 +161,8 @@ static int read_config(const char *path, struct managed_config *config)
         "requester_cna", "artifact_fingerprint", "timeout_ms", "submit_timeout_ms",
         "access_threads", "negative_checks", "readonly_inputs", "layout", "elements", "size_bytes",
         "home_node", "concurrent_requests", "reference_inputs", "model_probe",
-        "model_output_bytes", "model_output_checksum", "model_publish"};
+        "model_output_bytes", "model_output_checksum", "model_publish",
+        "holder_recovery_probe"};
     char *line = NULL;
     size_t capacity = 0;
     ssize_t length;
@@ -234,6 +236,8 @@ static int read_config(const char *path, struct managed_config *config)
             case 19: config->model_output_checksum = number; break;
             case 20: if (number > 1) goto out;
                      config->model_publish = number != 0; break;
+            case 21: if (number > 1) goto out;
+                     config->holder_recovery_probe = number != 0; break;
             default: goto out;
             }
         }
@@ -264,6 +268,11 @@ static int read_config(const char *path, struct managed_config *config)
     } else {
         config->submit_timeout_ms = config->timeout_ms;
     }
+    if (config->holder_recovery_probe &&
+        (config->negative_checks || config->readonly_inputs ||
+         config->reference_inputs || config->model_probe || config->model_publish ||
+         config->recovery_expected || config->access_threads ||
+         config->concurrent_requests != 1)) goto out;
     rc = 0;
 out:
     free(line);
@@ -468,6 +477,25 @@ static int wait_allocation(struct managed_state *state, const char *wanted,
              !strcmp(state->allocation.holders[0].session_id, state->session)))) return 0;
         if (rc && status != MEM_SERVICE_WIRE_STATUS_NOT_FOUND) return rc;
         if (!rc && !strcmp(state->allocation.state, "quarantined")) return -ESTALE;
+        usleep(10000);
+    } while (now_ms() - started < state->config.timeout_ms);
+    return -ETIMEDOUT;
+}
+
+static int wait_holder_recovery_retired(struct managed_state *state)
+{
+    const uint64_t generation = state->allocation.generation;
+    uint64_t started = now_ms();
+    do {
+        enum mem_service_wire_status status;
+        int rc = mem_service_client_inspect_allocation(&state->client,
+            state->config.key, &state->allocation, &status);
+        if (rc) return rc;
+        if (state->allocation.generation != generation) return -ESTALE;
+        if (!strcmp(state->allocation.state, "retired")) return 0;
+        if (strcmp(state->allocation.state, "active") &&
+            strcmp(state->allocation.state, "quarantined") &&
+            strcmp(state->allocation.state, "retiring")) return -EPROTO;
         usleep(10000);
     } while (now_ms() - started < state->config.timeout_ms);
     return -ETIMEDOUT;
@@ -694,8 +722,18 @@ static int map_object(struct managed_state *state)
         goto mapped;
     }
     snprintf(idem, sizeof(idem), "pto-acquire-%s", state->session);
-    rc = mem_service_client_acquire_object(&state->client, state->config.key, idem,
-        state->session, true, state->allocation.generation, &state->allocation, &status);
+    if (state->config.holder_recovery_probe) {
+        char holder_node[32];
+        snprintf(holder_node, sizeof(holder_node), "guest-node-%u", state->config.node);
+        rc = mem_service_client_acquire_object_at_node(&state->client,
+            state->config.key, idem, state->session, holder_node,
+            state->config.generation, true, state->allocation.generation,
+            &state->allocation, &status);
+    } else {
+        rc = mem_service_client_acquire_object(&state->client, state->config.key, idem,
+            state->session, true, state->allocation.generation,
+            &state->allocation, &status);
+    }
     if (rc) return rc;
     state->held = true;
     if (strcmp(state->allocation.home_node, expected_home)) return -ESTALE;
@@ -1092,6 +1130,7 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     uint64_t metadata_iova;
     unsigned vectors[3] = {round == 1 || state->config.concurrent_requests == 2 ? 0 : 2,
                           1, round + 1};
+    const bool forced_revoke = state->config.holder_recovery_probe;
     int rc;
     for (unsigned i = 0; i < 3; ++i) {
         struct lingqu_shmem_memref_spec spec = {
@@ -1137,6 +1176,21 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
     for (unsigned i = 0; i < 3; ++i) {
         rc = lingqu_shmem_mem_service_lease_begin(state->leases[i], request.op_id);
         if (rc) return rc;
+    }
+    if (forced_revoke) {
+        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=prepared op_id=%" PRIu64
+            " generation=%" PRIu64 " mapping_id=%" PRIu64
+            " holder_node=guest-node-%u holder_incarnation=%" PRIu64
+            " retained_leases=3\n",
+            state->config.node, request.op_id, state->allocation.generation,
+            state->mapping_id, state->config.node, state->config.generation);
+        rc = wait_holder_recovery_retired(state);
+        if (rc) return rc;
+        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=retired op_id=%" PRIu64
+            " generation=%" PRIu64 " mapping_id=%" PRIu64
+            " retained_leases=3\n",
+            state->config.node, request.op_id, state->allocation.generation,
+            state->mapping_id);
     }
     if (state->batch) {
         pthread_mutex_lock(&state->batch->lock);
@@ -1208,6 +1262,20 @@ static int dispatch_vector_checked(struct managed_state *state, unsigned round, 
         if (rc) return rc;
     }
     state->completion_unknown = false;
+    if (forced_revoke) {
+        if (completion.status != 3 ||
+            (strcmp(completion.error_code, LINGQU_PTO_UB_GM_CODE_ACCESS_DENIED) &&
+             strcmp(completion.error_code, LINGQU_PTO_UB_GM_CODE_BAD_MEMREF)) ||
+            lingqu_shmem_pto_endpoint_pending_op(state->endpoint)) return -EPROTO;
+        lingqu_shmem_pto_dispatch_finish(state->inflight);
+        state->inflight = NULL;
+        printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=rejected op_id=%" PRIu64
+            " completion_op=%" PRIu64 " status=%u error=%s pending_op=0"
+            " cleanup=process-exit\n",
+            state->config.node, request.op_id, completion.op_id,
+            completion.status, completion.error_code);
+        return 0;
+    }
     if (fault) {
         if (completion.status != 3 || strcmp(completion.error_code, expected_error) ||
             lingqu_shmem_pto_endpoint_pending_op(state->endpoint)) return -EPROTO;
@@ -1695,6 +1763,20 @@ static int run_model_probe(struct managed_state *state)
 
 static int run_data(struct managed_state *state)
 {
+    if (state->config.holder_recovery_probe &&
+        state->config.node == state->config.home_node) {
+        int rc = wait_allocation(state, "active", false);
+        if (!rc) {
+            printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=peer-ready"
+                " generation=%" PRIu64 "\n",
+                state->config.node, state->allocation.generation);
+            rc = wait_holder_recovery_retired(state);
+        }
+        if (!rc) printf("MANAGED_PTO_HOLDER_RECOVERY node=%u state=peer-retired"
+                        " generation=%" PRIu64 "\n",
+                        state->config.node, state->allocation.generation);
+        return rc;
+    }
     int rc = map_object(state);
     if (!rc) rc = adopt_mapping(state);
     if (!rc && state->config.readonly_inputs) rc = open_output_object(state);
@@ -1712,13 +1794,17 @@ static int run_data(struct managed_state *state)
         if (!rc && state->output) rc = wait_allocation(state->output, "active", true);
         return rc;
     }
-    rc = verify_vector(state, 0, "cpu-cpu");
-    if (!rc) rc = verify_vector(state, 1, "cpu-cpu");
+    if (!state->config.holder_recovery_probe)
+        rc = verify_vector(state, 0, "cpu-cpu");
+    if (!rc && !state->config.holder_recovery_probe)
+        rc = verify_vector(state, 1, "cpu-cpu");
     if (!rc && state->config.readonly_inputs) rc = probe_readonly_input(state);
     if (!rc) rc = open_compute(state);
     struct lingqu_shmem_pto_endpoint_info endpoint_info;
     if (!rc) rc = lingqu_shmem_pto_endpoint_open(&state->endpoint, &endpoint_info);
     if (rc) return rc;
+    if (state->config.holder_recovery_probe)
+        return dispatch_vector(state, 1);
     rc = start_workers(state);
     for (unsigned fault = 1; !rc && state->config.negative_checks && fault <= NEGATIVE_CASES; ++fault)
         rc = dispatch_vector_checked(state, 1, fault);
@@ -1767,13 +1853,15 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
         printf("MANAGED_PTO_CONFIG status=ok node=%u nodes=2 bytes=%u layout=%s "
             "elements=%u callable=%u network_operations=0 submit_timeout_ms=%" PRIu64
             " recovery_expected=%u access_threads=%u negative_checks=%u readonly_inputs=%u home_node=%u"
-            " concurrent_requests=%u reference_inputs=%u model_probe=%u model_publish=%u\n",
+            " concurrent_requests=%u reference_inputs=%u model_probe=%u model_publish=%u"
+            " holder_recovery_probe=%u\n",
             config.node, config.geometry.object_bytes, config.geometry.name,
             config.geometry.elements, config.model_probe ? (unsigned)W5_MANAGED_MODEL_CALLABLE_ID : 1,
             config.submit_timeout_ms,
             config.recovery_expected ? 1 : 0, config.access_threads, config.negative_checks ? 1 : 0,
             config.readonly_inputs ? 1 : 0, config.home_node, config.concurrent_requests,
-            config.reference_inputs ? 1 : 0, config.model_probe ? 1 : 0, config.model_publish ? 1 : 0);
+            config.reference_inputs ? 1 : 0, config.model_probe ? 1 : 0,
+            config.model_publish ? 1 : 0, config.holder_recovery_probe ? 1 : 0);
         return 0;
     }
     state = calloc(1, sizeof(*state));
@@ -1795,6 +1883,24 @@ int lingqu_shmem_pto_managed_main(const char *config_path, bool validate_only)
     stage = "data";
     rc = run_data(state);
     if (rc) goto failed;
+    if (config.holder_recovery_probe) {
+        if (config.node == config.home_node) {
+            stage = "provider-close";
+            rc = mem_service_provider_obmm_endpoint_close_checked(&state->provider);
+            if (rc) goto failed;
+        }
+        printf("MANAGED_PTO_RESULT node=%u status=pass key=%s generation=%" PRIu64
+            " holder_recovery_probe=1 role=%s old_pto_access=%s"
+            " cleanup=%s\n",
+            config.node, config.key, state->allocation.generation,
+            config.node == config.home_node ? "peer" : "stale-holder",
+            config.node == config.home_node ? "not-applicable" : "rejected",
+            config.node == config.home_node ? "provider-close" : "process-exit");
+        pthread_cond_destroy(&state->workers_condition);
+        pthread_mutex_destroy(&state->workers_lock);
+        free(state);
+        return 0;
+    }
     stage = "unmap-release";
     rc = close_mapping(state);
     if (rc) goto failed;

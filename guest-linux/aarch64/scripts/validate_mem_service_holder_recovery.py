@@ -95,6 +95,21 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"mem_service holder-recovery: node=0 status=recovered .*state=retired",
         "home recovery completion is missing",
     )
+    require_pattern(
+        node_a,
+        r"MANAGED_PTO_HOLDER_RECOVERY node=0 state=peer-ready generation=[1-9][0-9]*",
+        "home PTO peer did not establish the pre-revoke endpoint",
+    )
+    require_pattern(
+        node_a,
+        r"MANAGED_PTO_HOLDER_RECOVERY node=0 state=peer-retired generation=[1-9][0-9]*",
+        "home PTO peer did not observe retirement",
+    )
+    require_pattern(
+        node_a,
+        r"MANAGED_PTO_RESULT node=0 status=pass .*holder_recovery_probe=1 role=peer",
+        "home PTO peer did not close successfully",
+    )
 
     require_pattern(node_b, r"action=map key=holder-recovery-object status=ok",
                     "old holder mapping was not established")
@@ -119,6 +134,34 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"obmm-holder-fence: status=complete node=guest-node-1 .*allocations=1",
         "holder fencing did not complete exactly one allocation",
     )
+    prepared = require_pattern(
+        node_b,
+        r"MANAGED_PTO_HOLDER_RECOVERY node=1 state=prepared "
+        r"op_id=([1-9][0-9]*) generation=([1-9][0-9]*) "
+        r"mapping_id=([1-9][0-9]*) holder_node=guest-node-1 "
+        r"holder_incarnation=([1-9][0-9]*) retained_leases=3",
+        "old holder PTO dispatch was not prepared before fencing",
+    )
+    rejected = require_pattern(
+        node_b,
+        r"MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected "
+        r"op_id=([1-9][0-9]*) completion_op=([1-9][0-9]*) status=3 "
+        r"error=(pto_ub_gm_(?:access_denied|bad_memref)) pending_op=0 "
+        r"cleanup=process-exit",
+        "old holder PTO dispatch was not rejected after forced revoke",
+    )
+    require(prepared.group(1) == rejected.group(1) == rejected.group(2),
+            "old holder PTO completion identity does not match its prepared dispatch")
+    require(node_b.index(prepared.group(0)) <
+            node_b.index("obmm-holder-fence: status=fenced") <
+            node_b.index(rejected.group(0)),
+            "old holder PTO dispatch was not fenced between prepare and rejection")
+    require_pattern(
+        node_b,
+        r"MANAGED_PTO_RESULT node=1 status=pass .*holder_recovery_probe=1 "
+        r"role=stale-holder old_pto_access=rejected cleanup=process-exit",
+        "old holder PTO probe did not report a bounded successful result",
+    )
     require_pattern(
         node_b,
         r"action=wait_state key=holder-recovery-object status=ok state=retired",
@@ -129,7 +172,7 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     signal = require_pattern(
         node_b,
         r"mem_service holder-recovery: node=1 status=fenced "
-        r"old_cpu_access=rejected signal_exit=(135|139)",
+        r"old_cpu_access=rejected old_pto_access=rejected signal_exit=(135|139)",
         "old CPU mapping was not rejected after forced revoke",
     ).group(1)
 
@@ -149,8 +192,11 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
 
     return {
         "status": "pass",
-        "scope": "replacement-holder-physical-revoke-and-home-retire",
+        "scope": "replacement-holder-cpu-pto-revoke-and-home-retire",
         "old_cpu_signal_exit": int(signal),
+        "old_pto_error": rejected.group(3),
+        "old_pto_operation_id": int(rejected.group(1)),
+        "old_pto_mapping_id": int(prepared.group(3)),
         "home_retire": home_retire,
         "node_a_sha256": hashlib.sha256(node_a.encode()).hexdigest(),
         "node_b_sha256": hashlib.sha256(node_b.encode()).hexdigest(),
@@ -174,7 +220,7 @@ def main() -> None:
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     except (OSError, ValueError) as error:
         parser.exit(1, f"managed holder recovery validation failed: {error}\n")
-    print("managed_holder_recovery=pass physical_revoke=1 home_retire=1")
+    print("managed_holder_recovery=pass physical_revoke=1 old_pto_rejected=1 home_retire=1")
 
 
 if __name__ == "__main__":

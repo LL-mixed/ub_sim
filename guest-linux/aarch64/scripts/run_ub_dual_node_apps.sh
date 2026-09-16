@@ -470,6 +470,16 @@ managed_pto_selected() {
      "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-pto" ]]
 }
 
+holder_recovery_pto_selected() {
+  [[ "$APPEND_EXTRA" == *"linqu_mem_service_object_share=1"* &&
+     "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]
+}
+
+pto_device_selected() {
+  [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]] ||
+    managed_pto_selected || holder_recovery_pto_selected
+}
+
 validate_lingqu_shmem_pto_config() {
   local cancel_after_ns=0
   local expected_layout_elements=0
@@ -1167,13 +1177,19 @@ if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" != "cpu" &&
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
-        "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
         "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
         "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "none" ||
         "$GSVA_COH_UB_LINK_TX" != "1" ]]; then
-    echo "cpu-holder-recovery requires OBMM, 65536 bytes, one round, no fault and UB link coherence" >&2
+    echo "cpu-holder-recovery requires OBMM, one round, no fault and UB link coherence" >&2
     exit 2
   fi
+  case "$LINGQU_SHMEM_PTO_LAYOUT:$LINGQU_SHMEM_PTO_ELEMENTS:$MEM_SERVICE_OBJECT_SHARE_SIZE" in
+    cross-page:64:65536|nd:16384:262144|tail:16256:262144) ;;
+    *)
+      echo "cpu-holder-recovery requires a matching PTO geometry" >&2
+      exit 2
+      ;;
+  esac
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-retired" ]]; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
@@ -1214,7 +1230,7 @@ if managed_pto_selected; then
       ;;
   esac
 fi
-if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]] || managed_pto_selected; then
+if pto_device_selected; then
   validate_lingqu_shmem_pto_config
 fi
 if [[ "$APPEND_EXTRA" == *"linqu_obmm_async_coroutine=1"* ]]; then
@@ -2545,7 +2561,7 @@ start_node() {
       -global "ubc.source-void-response-policy=$SOURCE_VOID_RESPONSE_POLICY"
     )
   fi
-  if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]] || managed_pto_selected; then
+  if pto_device_selected; then
     if (( LINGQU_SHMEM_PTO_INJECT_DUPLICATE_COMPLETION != 0 )); then
       pto_duplicate_completion="on"
     fi
@@ -3119,7 +3135,8 @@ run_iteration() {
     nodea_w4_guest_append="linqu_w4_role=nodeA linqu_w4_local_ip=10.0.0.1"
     nodeb_w4_guest_append="linqu_w4_role=nodeB linqu_w4_local_ip=10.0.0.2"
   fi
-  if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]] || managed_pto_selected; then
+  if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]] ||
+     managed_pto_selected || holder_recovery_pto_selected; then
     nodea_lingqu_shmem_pto_append="linqu_node_idx=0 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEA_CNA"
     nodeb_lingqu_shmem_pto_append="linqu_node_idx=1 lingqu_shmem_pto_requester_cna=$LINGQU_SHMEM_PTO_NODEB_CNA"
   fi
@@ -4122,7 +4139,7 @@ echo "Pass rate: ${pass_rate}% (required >= ${MIN_PASS_RATE_PERCENT}%)" >&2
   echo "logs_dir=${LOG_DIR}"
   echo "min_pass_rate_percent=${MIN_PASS_RATE_PERCENT}"
   echo "max_runtime=${MAX_RUNTIME}"
-  if [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]]; then
+  if pto_device_selected; then
     echo "lingqu_shmem_pto_manifest=${SIMPLER_HOST_VECTOR_MANIFEST}"
     echo "lingqu_shmem_pto_artifact_fingerprint=${LINGQU_SHMEM_PTO_ARTIFACT_FINGERPRINT}"
     echo "lingqu_shmem_pto_layout=${LINGQU_SHMEM_PTO_LAYOUT}"

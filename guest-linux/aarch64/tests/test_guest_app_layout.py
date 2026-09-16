@@ -1534,6 +1534,11 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "fence-holder-state" in holder_recovery
     assert "recover-allocation" in holder_recovery
     assert "old_cpu_access=rejected" in holder_recovery
+    assert "old_pto_access=rejected" in holder_recovery
+    assert "holder-recovery-pto-ready" in holder_recovery
+    assert "--managed-config /tmp/holder-recovery-pto.conf" in holder_recovery
+    assert "MANAGED_PTO_HOLDER_RECOVERY node=1 state=prepared" in holder_recovery
+    assert "MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected" in holder_recovery
     assert "signal_exit=$session_status" in holder_recovery
     assert "holder_fence_receipt_required" in holder_recovery
     assert holder_recovery.count('echo "provider=obmm"') == 2
@@ -1550,6 +1555,9 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     ) == 2
     assert "timeout_ms=90000" not in holder_recovery
     assert "/bin/busybox cat /tmp/holder-recovery-fence.log" in holder_recovery
+    assert "holder_recovery_pto_selected()" in apps_runner
+    assert "pto_device_selected()" in apps_runner
+    assert "cpu-holder-recovery requires a matching PTO geometry" in apps_runner
     managed = run_app.split("mem_service_object_share_managed() (", 1)[1].split(
         "\nrun_mem_service_object_share()", 1)[0]
     assert managed.index("mem_service_object_share_holder_barrier") < managed.index(

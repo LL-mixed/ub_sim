@@ -135,6 +135,23 @@ class ManagedPtoCliTest(unittest.TestCase):
                                          "generation": str((1 << 64) - 8)}).returncode, 2)
         self.assertEqual(self.run_config(extra="negative_checks=1\nnegative_checks=1\n").returncode, 2)
 
+    def test_holder_recovery_probe_is_bounded_and_side_effect_free_when_validated(self):
+        for node in ("0", "1"):
+            result = self.run_config({**CONFIG, "node_id": node,
+                                      "holder_recovery_probe": "1"})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("holder_recovery_probe=1", result.stdout)
+            self.assertIn("network_operations=0", result.stdout)
+        for invalid in ("2", "-1", "true", "18446744073709551616"):
+            result = self.run_config({**CONFIG, "holder_recovery_probe": invalid})
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        for conflict in ({"negative_checks": "1"}, {"readonly_inputs": "1"},
+                         {"access_threads": "1"}, {"concurrent_requests": "2"},
+                         {"submit_timeout_ms": "5"}):
+            result = self.run_config({**CONFIG, **conflict,
+                                      "holder_recovery_probe": "1"})
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
     def test_readonly_inputs_preserve_negative_and_recovery_options(self):
         for extra in ({}, {"negative_checks": "1"}, {"submit_timeout_ms": "5"},
                       {"access_threads": "4"}):
@@ -545,6 +562,10 @@ int main(int argc, char **argv) {
         self.assertIn("lingqu_shmem_pto_endpoint_wait(state->endpoint, request.op_id", source)
         self.assertIn("lingqu_shmem_pto_endpoint_close_checked(state->endpoint) != -EBUSY", source)
         self.assertIn("state->config.recovery_expected && !recovered", source)
+        self.assertIn("mem_service_client_acquire_object_at_node", source)
+        self.assertIn("wait_holder_recovery_retired", source)
+        self.assertIn("MANAGED_PTO_HOLDER_RECOVERY", source)
+        self.assertIn("old_pto_access=%s", source)
 
     def test_initramfs_and_dual_node_runner_expose_managed_mode(self):
         build = (ROOT / "guest-linux/aarch64/scripts/build_initramfs.sh").read_text()
@@ -558,6 +579,8 @@ int main(int argc, char **argv) {
         self.assertIn('access="${8:-cpu}"', run_app)
         self.assertIn("mem_service_object_share_access cpu", run_app)
         self.assertIn("managed_pto_selected()", runner)
+        self.assertIn("holder_recovery_pto_selected()", runner)
+        self.assertIn("pto_device_selected()", runner)
         self.assertIn('"${SCRIPT_DIR}/validate_managed_pto.py"', runner)
         self.assertIn("MANAGED_PTO_RESULT .*status=fail", runner)
         self.assertIn("lingqu_shmem_pto_submit_timeout_ms", run_app)
