@@ -1010,6 +1010,8 @@ int main(void)
             struct worker_config saved;
             struct worker_ledger_entry entry;
             struct stat st;
+            unsigned char original_start[WORKER_LEDGER_FRAME_BYTES];
+            unsigned char legacy_start[WORKER_LEDGER_FRAME_BYTES];
             unsigned char byte, last;
             struct flock lock = {.l_type = F_WRLCK, .l_whence = SEEK_SET};
             int fd = open(state_path, O_RDWR), status;
@@ -1081,6 +1083,19 @@ int main(void)
             drive_worker_quarantine = true;
             quarantine_status = MEM_SERVICE_WIRE_STATUS_OK;
             unsigned quarantine_before = provider_deregistrations;
+            assert(pread(fd, original_start, sizeof(original_start), 0) ==
+                   (ssize_t)sizeof(original_start));
+            assert(lseek(fd, 0, SEEK_SET) == 0 &&
+                   !ledger_read_entry(fd, 1, &saved, &entry));
+            entry.config.binding_version = 0;
+            assert(!ledger_encode(legacy_start, &entry));
+            assert(pwrite(fd, legacy_start, sizeof(legacy_start), 0) ==
+                   (ssize_t)sizeof(legacy_start) && !fsync(fd));
+            assert(mem_service_provider_obmm_quarantine_allocation_state(
+                       config_path) == 1);
+            assert(provider_deregistrations == quarantine_before);
+            assert(pwrite(fd, original_start, sizeof(original_start), 0) ==
+                   (ssize_t)sizeof(original_start) && !fsync(fd));
             assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
             quarantine_status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
             assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
@@ -1125,7 +1140,8 @@ int main(void)
             drive_worker_quarantine = false;
             puts("gva_worker_durable_ledger=pass identity=1 corruption=1 torn=1 writer_lock=1");
             puts("gva_worker_quarantine=pass complete=1 invalid_tail=1 torn_tail=1 "
-                 "invalid_start=reject writer_lock=reject idempotent_states=3");
+                 "invalid_start=reject legacy_start=reject writer_lock=reject "
+                 "idempotent_states=3");
         }
         snprintf(replacement_path, sizeof(replacement_path),
                  "%s/replacement.conf", directory);

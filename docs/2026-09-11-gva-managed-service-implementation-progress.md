@@ -5704,3 +5704,26 @@ lost-home reclaim 必须观察到旧 HOME holder receipt。服务提交已只推
 仅在本地同步 gitlink/lock；kernel、QEMU 与父仓库均未推送。n4 上的原生 ioctl、真实
 旧 CPU/PTO 访问拒绝、provider 重新加入和重复故障注入仍未验收，M3 与总目标继续
 保持进行中。
+
+### n4 原生 r1：隔离首帧配置绑定缺失
+
+n4-910c1 在隔离目录
+`/home/ll/gva-manager-integration/holder-revoke-20260917.tABLC1` 锁定父仓库
+`e41ca9a3fc03ed94dbe1fde81636031f4aaafbbf`、独立服务
+`6d3ebe38ec92b01948a874d6be0131091e59d52f` 与一致 lock 后，原生执行单项
+`test_worker_build_and_startup_guards`。r1 在 7.262 秒后失败，进入新 holder 撤销
+用例之前，`quarantine-allocation-state` 对完整首帧报告
+`reason=ledger-start-invalid`；原日志为 `holder-revoke-worker-native-r1.log`。
+
+源码检查确认私有 ledger v2 只编码 node、incarnation、readiness、粒度与 kernel
+instance，没有编码隔离入口声明要核对的 endpoint、state file 或 fast-allocation
+模式。解码后的字符串为空，正常首帧因此必然被拒绝；此前该新增隔离路径只完成
+macOS 交叉编译，没有形成 AArch64 原生执行证据。
+
+独立服务修复提交 `688db48104395db5d71a2ee4f51b39895f3c3ba8` 使用现有
+1024-byte 帧保留区增加配置长度、双 domain-separated 摘要与分配模式，格式升级为
+v3，并在所有帧核对同一绑定。旧 v2 继续供 inspect/resume/recovery 读取；由于缺少
+隔离授权所需配置证明，`quarantine-allocation-state` 对 v2 明确失败关闭。golden
+增加旧 v2 首帧不得发送 provider deregister 的断言。本地仅重跑受影响的交叉编译
+目标，1 项通过、4.742 秒；该提交已只推送授权服务分支并核验远端 SHA。n4 原失败
+用例尚待使用该精确修复重跑。

@@ -138,7 +138,8 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
             )
             self.assertIn(
                 "gva_worker_quarantine=pass complete=1 invalid_tail=1 torn_tail=1 "
-                "invalid_start=reject writer_lock=reject idempotent_states=3",
+                "invalid_start=reject legacy_start=reject writer_lock=reject "
+                "idempotent_states=3",
                 result.stdout,
             )
             config = pathlib.Path(directory) / "worker.conf"
