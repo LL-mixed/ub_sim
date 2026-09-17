@@ -146,7 +146,6 @@ int mem_service_client_reference_transition(
     struct mem_service_client_reference_result *result_out,
     enum mem_service_wire_status *status_out)
 {
-    (void)client;
     memset(result_out, 0, sizeof(*result_out));
     *status_out = MEM_SERVICE_WIRE_STATUS_OK;
     switch (request->action) {
@@ -168,6 +167,10 @@ int mem_service_client_reference_transition(
         break;
     case MEM_SERVICE_REFERENCE_RESOLVE:
         assert(strstr(request->key, "/hidden") != NULL);
+        assert(client->wire_options.timeout_ms == 5000);
+        assert(client->wire_options.max_attempts == 1);
+        assert(client->wire_options.retry_backoff_ms == 0);
+        assert(client->wire_options.retry_on_timeout == 0);
         ++resolves;
         if (resolve_timeouts_remaining) {
             --resolve_timeouts_remaining;
@@ -180,6 +183,8 @@ int mem_service_client_reference_transition(
     default:
         assert(0);
     }
+    if (request->action != MEM_SERVICE_REFERENCE_RESOLVE)
+        assert(client->wire_options.timeout_ms == 300000);
     return 0;
 }
 
@@ -190,7 +195,7 @@ int mem_service_client_reference_transition_at_node(
     struct mem_service_client_reference_result *result_out,
     enum mem_service_wire_status *status_out)
 {
-    (void)client;
+    assert(client->wire_options.timeout_ms == 300000);
     assert(request->action == MEM_SERVICE_REFERENCE_ACQUIRE);
     assert(request->access == LINGQU_OBJECT_REF_V2_READ);
     assert(memcmp(&request->reference, &published, sizeof(published)) == 0);
@@ -465,7 +470,13 @@ int mem_service_client_retire_object(
 
 int main(void)
 {
-    struct mem_service_client client = {.connect_spec = "unix:/tmp/service"};
+    struct mem_service_client client = {
+        .connect_spec = "unix:/tmp/service",
+        .wire_options = {
+            .timeout_ms = 300000,
+            .max_attempts = 1,
+        },
+    };
     struct mem_service_provider_channel channel = {0};
     struct mem_service_access_domain domain = {&channel};
     struct w5_managed_object_guest *writer = NULL;
@@ -510,7 +521,7 @@ int main(void)
     struct w5_managed_reader_config reader_config = {
         .reference_key = reference_key, .session_id = "reader-session",
         .holder_node_id = "guest-node-3", .holder_provider_incarnation = 11,
-        .operation_prefix = "reader-op", .timeout_ms = 1000, .pin_limit = 8,
+        .operation_prefix = "reader-op", .timeout_ms = 10000, .pin_limit = 8,
     };
     resolve_timeouts_remaining = 2;
     assert(w5_managed_reader_open(&client, &channel, &domain, &reader_config,

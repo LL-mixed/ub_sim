@@ -172,11 +172,7 @@ int mem_service_access_domain_create(
     struct mem_service_access_domain **domain_out)
 {
     assert(!strcmp(client->connect_spec, "unix:/tmp/mem-service.sock"));
-    assert(client->wire_options.timeout_ms == 5000);
-    assert(client->wire_options.max_attempts == 1);
-    assert(client->wire_options.retry_backoff_ms == 0);
-    assert(client->wire_options.retry_on_timeout == 0);
-    assert(channel->provider);
+    assert(client->wire_options.timeout_ms == 300000 && channel->provider);
     *domain_out = calloc(1, sizeof(**domain_out));
     (*domain_out)->id = 1;
     return 0;

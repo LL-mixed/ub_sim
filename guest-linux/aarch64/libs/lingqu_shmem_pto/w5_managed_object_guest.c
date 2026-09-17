@@ -10,6 +10,8 @@
 #include <string.h>
 #include <time.h>
 
+#define W5_MANAGED_DISCOVERY_ATTEMPT_TIMEOUT_MS 5000U
+
 struct w5_managed_object_guest {
     const struct mem_service_client *client;
     const struct mem_service_provider_channel *channel;
@@ -48,12 +50,6 @@ static void wait_tick(void)
 {
     const struct timespec delay = {.tv_nsec = 1000000};
     (void)nanosleep(&delay, NULL);
-}
-
-static bool waitable_status(enum mem_service_wire_status status)
-{
-    return status == MEM_SERVICE_WIRE_STATUS_NOT_FOUND ||
-           status == MEM_SERVICE_WIRE_STATUS_TIMEOUT;
 }
 
 static int copy_text(char *out, size_t capacity, const char *text)
@@ -118,6 +114,8 @@ static int transition(struct w5_managed_object_guest *object,
 {
     struct mem_service_reference_request request = {0};
     struct mem_service_client_reference_result result;
+    struct mem_service_client discovery_client;
+    const struct mem_service_client *transition_client = object->client;
     char suffix[48];
     int rc;
     if (!object || !key || !result_out || !status_out) return -EINVAL;
@@ -144,13 +142,23 @@ static int transition(struct w5_managed_object_guest *object,
     if (reference) request.reference = *reference;
     if (action == MEM_SERVICE_REFERENCE_ACQUIRE)
         request.access = LINGQU_OBJECT_REF_V2_READ;
+    if (action == MEM_SERVICE_REFERENCE_RESOLVE) {
+        discovery_client = *object->client;
+        discovery_client.wire_options.timeout_ms =
+            object->timeout_ms < W5_MANAGED_DISCOVERY_ATTEMPT_TIMEOUT_MS ?
+            object->timeout_ms : W5_MANAGED_DISCOVERY_ATTEMPT_TIMEOUT_MS;
+        discovery_client.wire_options.max_attempts = 1;
+        discovery_client.wire_options.retry_backoff_ms = 0;
+        discovery_client.wire_options.retry_on_timeout = 0;
+        transition_client = &discovery_client;
+    }
     memset(&result, 0, sizeof(result));
     *status_out = MEM_SERVICE_WIRE_STATUS_INTERNAL;
     rc = action == MEM_SERVICE_REFERENCE_ACQUIRE ?
-        mem_service_client_reference_transition_at_node(object->client,
+        mem_service_client_reference_transition_at_node(transition_client,
             &request, object->holder_node_id,
             object->holder_provider_incarnation, &result, status_out) :
-        mem_service_client_reference_transition(object->client, &request,
+        mem_service_client_reference_transition(transition_client, &request,
                                                  &result, status_out);
     if (!rc) *result_out = result;
     return rc;
@@ -169,7 +177,7 @@ static int wait_allocation_active(struct w5_managed_object_guest *object,
             if (!strcmp(allocation.state, "active")) return 0;
             if (!strcmp(allocation.state, "quarantined") ||
                 !strcmp(allocation.state, "retired")) return -ESTALE;
-        } else if (!waitable_status(*status_out)) {
+        } else if (*status_out != MEM_SERVICE_WIRE_STATUS_NOT_FOUND) {
             return rc;
         }
         wait_tick();
@@ -304,7 +312,8 @@ int w5_managed_reader_open(
         rc = transition(object, MEM_SERVICE_REFERENCE_RESOLVE,
             config->reference_key, NULL, &result, status_out);
         if (!rc) break;
-        if (!waitable_status(*status_out) &&
+        if (*status_out != MEM_SERVICE_WIRE_STATUS_NOT_FOUND &&
+            *status_out != MEM_SERVICE_WIRE_STATUS_TIMEOUT &&
             *status_out != MEM_SERVICE_WIRE_STATUS_STALE_REF) return rc;
         wait_tick();
     } while (now_ms() - start < object->timeout_ms);
