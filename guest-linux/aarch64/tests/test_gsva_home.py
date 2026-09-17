@@ -212,13 +212,33 @@ int main(int argc, char **argv) {
         self.run_case("export")
         source = (QEMU / "hw/ub/ub_ubc.c").read_text()
         bootstrap = source.split(
-            "static void sim_dec_register_obmm_gsva_route(", 1
+            "static int sim_dec_register_obmm_gsva_route(", 1
         )[1].split("/* Helper for sim_dec_gva_tcg_translate", 1)[0]
         self.assertIn("gsva_home_resolve_export(", bootstrap)
         self.assertIn("key = managed.identity.key;", bootstrap)
         self.assertIn("token_id = managed.identity.token_id;", bootstrap)
         self.assertIn("route->backing_token_id = record->token_id;", bootstrap)
         self.assertIn("managed bootstrap identity rejected", bootstrap)
+        publisher = source.split(
+            "static int sim_dec_handle_obmm_bootstrap_publish(", 1
+        )[1].split("static int sim_dec_load_bootstrap_record", 1)[0]
+        self.assertIn("route_status = sim_dec_register_obmm_gsva_route(record)",
+                      publisher)
+        self.assertIn("return route_status;", publisher)
+
+    def test_home_revoke_finalizes_the_exact_managed_route(self):
+        source = (QEMU / "hw/ub/ub_ubc.c").read_text()
+        handler = source.split("case SIM_DEC_OP_GSVA_HOME_V1:", 1)[1].split(
+            "case SIM_DEC_OP_MAP:", 1
+        )[0]
+        self.assertIn("request->operation == GSVA_HOME_REVOKE", handler)
+        self.assertIn("ubc_gsva_complete_home_retire(", handler)
+        self.assertIn("route_error != GSVA_ERR_ROUTE_MISSING", handler)
+        unmap = source.split("static int sim_dec_handle_gsva_unmap(", 1)[1].split(
+            "int ubc_gsva_complete_home_retire(", 1
+        )[0]
+        self.assertIn("route->backing_token_id ?", unmap)
+        self.assertIn("route->backing_token_id : route->token.token_id", unmap)
 
     def test_device_reset_closes_bindings_preserves_pins_and_denies_reactivation(self):
         self.run_case("reset")
@@ -269,9 +289,9 @@ struct obmm_gsva_segment {
 };
 struct obmm_cmd_export { u64 length, size[1], uba, flags, mem_id; u32 tokenid; };
 static struct obmm_gsva_segment segment;
-static int obmm_gsva_segment_lock, pool_error, home_error;
+static int obmm_gsva_segment_lock, pool_error, home_error, route_error;
 static bool locked, unbacked;
-static unsigned calls;
+static unsigned calls, route_calls;
 static unsigned revisions;
 static void obmm_gsva_changed(void) { assert(locked); revisions++; }
 static void mutex_lock(int *lock) { (void)lock; assert(!locked); locked = true; }
@@ -297,24 +317,35 @@ static int obmm_gsva_home_update(const struct obmm_gsva_segment_desc_v1 *desc,
     calls++;
     return home_error;
 }
+static int obmm_gsva_publish_route(const struct obmm_gsva_segment_desc_v1 *desc,
+                                  u64 mem_id, u32 token)
+{
+    assert(!locked && segment.export_busy && segment.managed_export_id == 2);
+    assert(!memcmp(desc, &segment.desc, sizeof(*desc)) && mem_id == 2 && token == 97);
+    route_calls++;
+    return route_error;
+}
 """ + functions + r"""
 int main(void) {
-    for (int failure = 0; failure < 3; ++failure) {
+    for (int failure = 0; failure < 4; ++failure) {
         segment = (struct obmm_gsva_segment){.desc = {.version = 1,
             .flags = OBMM_GSVA_SEG_F_ACTIVE, .segment_id = 1,
             .home_va = 0x700000000000ULL, .size = 2097152}};
         struct obmm_cmd_gsva_export_segment_v1 cmd = {.version = 1, .segment = segment.desc};
-        calls = revisions = 0; home_error = failure ? -EIO : 0;
-        pool_error = failure == 2 ? -ENOMEM : 0; unbacked = failure == 2;
+        calls = route_calls = revisions = 0;
+        home_error = failure == 1 ? -EIO : 0;
+        route_error = failure == 2 ? -EIO : 0;
+        pool_error = failure == 3 ? -ENOMEM : 0; unbacked = failure == 3;
         assert(obmm_gsva_export_segment(&cmd) == 0);
         assert(!locked && !segment.export_busy);
-        assert(revisions == (failure == 2 ? 2U : 3U));
-        if (failure == 2) {
-            assert(cmd.outcome == OBMM_GSVA_EXPORT_NO_BACKING && !calls);
+        assert(revisions == (failure == 3 ? 2U : 3U));
+        if (failure == 3) {
+            assert(cmd.outcome == OBMM_GSVA_EXPORT_NO_BACKING && !calls && !route_calls);
             assert(!segment.managed_export_id && !cmd.export_mem_id);
             continue;
         }
         assert(calls == 1 && segment.managed_export_id == 2);
+        assert(route_calls == (failure == 1 ? 0U : 1U));
         assert(segment.managed_export_token == 97 && cmd.export_mem_id == 2);
         assert(cmd.outcome == (failure ? OBMM_GSVA_EXPORT_UNKNOWN : OBMM_GSVA_EXPORT_CREATED));
         assert(cmd.error == (failure ? EIO : 0));
@@ -345,6 +376,13 @@ int main(void) {
         self.assertEqual(result.returncode, 0, result.stderr)
         result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stderr)
+        route = source.split("static int obmm_gsva_publish_route(", 1)[1].split(
+            "static int obmm_gsva_export_segment(", 1
+        )[0]
+        self.assertIn(".generation = desc->segment_id", route)
+        self.assertIn(".node_id = desc->owner_node_id", route)
+        self.assertIn("record.backing_uba = sg_phys(export->sgt.sgl);", route)
+        self.assertIn("export->sim_bootstrap_published = true;", route)
 
 
 if __name__ == "__main__":
