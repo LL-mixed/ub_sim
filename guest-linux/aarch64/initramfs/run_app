@@ -2882,7 +2882,7 @@ mem_service_object_share_guest_recovery() {
     /bin/linqu_mem_service recover-allocation --connect "$connect" \
       --timeout-ms 1000 --max-attempts 1 \
       --key "$key" --node-id guest-node-0 --incarnation "$home_incarnation" \
-      --generation "$generation" --fenced-incarnation "$old_incarnation" \
+      --generation "$generation" --fenced-incarnation "$home_incarnation" \
       --backing-gone 0 >/tmp/guest-recovery-reconcile.log 2>&1 || result=$?
     if [ "$result" -eq 0 ]; then
       /bin/busybox grep -q '^status=ok$' \

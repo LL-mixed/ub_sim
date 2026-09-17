@@ -344,6 +344,16 @@ class GuestCrashGuestTests(unittest.TestCase):
         self.assertIn("expired_count=$cycle", function)
         self.assertIn("new_incarnation=$replacement_incarnation", function)
         self.assertIn("managed_reconciliation_required", function)
+        self.assertIn(
+            '--generation "$generation" '
+            '--fenced-incarnation "$home_incarnation"',
+            function,
+        )
+        self.assertNotIn(
+            '--generation "$generation" '
+            '--fenced-incarnation "$old_incarnation"',
+            function,
+        )
         self.assertIn("fence-terminated-holder-state", function)
         self.assertIn("--terminated-kernel-instance", function)
         self.assertIn("phase=holder-fenced status=complete", function)
