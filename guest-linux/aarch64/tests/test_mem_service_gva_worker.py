@@ -148,6 +148,11 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                 "idempotent_states=3",
                 result.stdout,
             )
+            self.assertIn(
+                "gva_worker_fault_injection=pass reserve_intent=durable "
+                "torn_frame=durable quarantine=2",
+                result.stdout,
+            )
             config = pathlib.Path(directory) / "worker.conf"
             state = pathlib.Path(directory) / "worker.state"
             good = (f"connect=unix:{directory}/absent.sock\nnode_id=nodeA\n"
@@ -156,6 +161,12 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
             for content in ["", good + "unknown=1\n", good + "node_id=duplicate\n",
                             good + "fast_allocation=2\n", good + "fast_allocation=-1\n",
                             good + "fast_allocation=0\nfast_allocation=1\n",
+                            good + "fault_injection_phase=reserve-intent\n",
+                            good + "fault_injection_mode=sync-exit\n",
+                            good + "fault_injection_phase=reserved\n"
+                                   "fault_injection_mode=sync-exit\n",
+                            good + "fault_injection_phase=reserve-intent\n"
+                                   "fault_injection_mode=invalid\n",
                             good.replace("incarnation=1", "incarnation=-1"),
                             good.replace("allocation_granularity_bytes=2097152\n", ""),
                             good.replace("allocation_granularity_bytes=2097152", "allocation_granularity_bytes=3")]:

@@ -591,6 +591,68 @@ int __wrap_mem_service_client_retire_object(
     return mode == CANCEL_FAIL ? -1 : 0;
 }
 
+static void run_worker_fault_injection_case(const char *fault_mode, bool torn)
+{
+    char directory[] = "/tmp/gva-worker-fault-XXXXXX";
+    char config_path[256], state_path[256];
+    struct worker_config saved;
+    struct worker_ledger_entry entry;
+    struct stat state;
+    unsigned deregistrations_before;
+    int fd, status;
+    pid_t child;
+    FILE *file;
+
+    assert(mkdtemp(directory));
+    snprintf(config_path, sizeof(config_path), "%s/worker.conf", directory);
+    snprintf(state_path, sizeof(state_path), "%s/worker.state", directory);
+    file = fopen(config_path, "w");
+    assert(file);
+    fprintf(file, "connect=unix:/unused\nnode_id=nodeA\nincarnation=7\n"
+            "readiness_generation=1\nallocation_granularity_bytes=2097152\n"
+            "state_file=%s\nfault_injection_phase=reserve-intent\n"
+            "fault_injection_mode=%s\n", state_path, fault_mode);
+    assert(!fclose(file));
+
+    drive_worker_loop = true;
+    drive_worker_quarantine = false;
+    empty_cancel = true;
+    inventory_mode = loop_polls = 0;
+    mode = GOOD;
+    child = fork();
+    assert(child >= 0);
+    if (!child) {
+        int result = mem_service_provider_obmm_serve_allocations(config_path);
+        _exit(result);
+    }
+    assert(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+           WEXITSTATUS(status) == WORKER_FAULT_INJECTION_EXIT_CODE);
+    drive_worker_loop = false;
+    assert(!stat(state_path, &state));
+    assert((size_t)state.st_size % WORKER_LEDGER_FRAME_BYTES ==
+           (torn ? WORKER_LEDGER_FRAME_BYTES / 2 : 0));
+    assert(!read_config(config_path, &saved));
+    fd = open(state_path, O_RDONLY);
+    assert(fd >= 0);
+    if (!torn) {
+        uint64_t sequence = (uint64_t)state.st_size / WORKER_LEDGER_FRAME_BYTES;
+        assert(sequence >= 2 && !ledger_read_entry(fd, 1, &saved, &entry) &&
+               lseek(fd, (off_t)(sequence - 1) * WORKER_LEDGER_FRAME_BYTES,
+                     SEEK_SET) >= 0 &&
+               !ledger_read_entry(fd, sequence, &saved, &entry));
+        assert(!strcmp(entry.phase, "reserve-intent") && entry.work.generation);
+    }
+    assert(!close(fd));
+
+    drive_worker_quarantine = true;
+    quarantine_status = MEM_SERVICE_WIRE_STATUS_OK;
+    deregistrations_before = provider_deregistrations;
+    assert(!mem_service_provider_obmm_quarantine_allocation_state(config_path));
+    assert(provider_deregistrations == deregistrations_before + 1);
+    drive_worker_quarantine = false;
+    assert(!unlink(state_path) && !unlink(config_path) && !rmdir(directory));
+}
+
 int main(void)
 {
     struct worker_config config = {.node = "nodeA", .incarnation = 7,
@@ -1279,6 +1341,10 @@ int main(void)
         assert(!unlink(archive_path) && !unlink(replacement_path) &&
                !unlink(config_path) && !rmdir(directory));
     }
+    run_worker_fault_injection_case("sync-exit", false);
+    run_worker_fault_injection_case("torn-exit", true);
+    puts("gva_worker_fault_injection=pass reserve_intent=durable "
+         "torn_frame=durable quarantine=2");
     fclose(journal);
     puts("gva_worker_transaction=pass");
     return 0;
