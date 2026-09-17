@@ -176,9 +176,18 @@ class W5LingquShmemPtoTest(unittest.TestCase):
         self.assertIn("lingqu_shmem_mem_service_obmm.c", source)
         self.assertIn("lingqu_shmem_pto_endpoint.c", source)
         self.assertIn("obmm_async.c", source)
+        self.assertIn("-DLINGQU_SHMEM_MANAGED_MAPPING", source)
+        self.assertIn("-pthread", source)
         self.assertIn('"$LINGQU_SHMEM_MEM_SERVICE_SRC"', initramfs_builder)
         self.assertIn('"$LINGQU_SHMEM_MEM_SERVICE_OBMM_SRC"', initramfs_builder)
         self.assertIn('"$OBMM_ASYNC_COROUTINE_LIB_SRC"', initramfs_builder)
+        self.assertIn(
+            'LLM_INFER_MANAGED_CFLAGS="-DLINGQU_SHMEM_MANAGED_MAPPING -pthread"',
+            initramfs_builder,
+        )
+        self.assertGreaterEqual(
+            initramfs_builder.count("${=LLM_INFER_MANAGED_CFLAGS}"), 2
+        )
 
     def test_runner_enables_per_node_pto_and_checks_zero_staging(self):
         source = RUNNER.read_text()

@@ -1,5 +1,5 @@
 CC = aarch64-linux-gnu-gcc
-CFLAGS ?= -O2 -Wall -Wextra -static
+CFLAGS ?= -O2 -Wall -Wextra -static -DLINGQU_SHMEM_MANAGED_MAPPING -pthread
 ROOT := ../..
 # mem_service lives in the root-level Git submodule. Override MEM_SERVICE_ROOT
 # only when intentionally validating another standalone checkout.
