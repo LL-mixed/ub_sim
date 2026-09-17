@@ -354,6 +354,14 @@ class W5ClusterTopologyTest(unittest.TestCase):
             'if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]; then\n    return 0',
             boundary_validation,
         )
+        artifact_validation = source.split(
+            "validate_w5_artifact_sizes() {", 1
+        )[1].split("\nemit_w5_inference_run_report()", 1)[0]
+        managed_skip = artifact_validation.index(
+            'if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]'
+        )
+        legacy_store_check = artifact_validation.index('"memory_store_json"')
+        self.assertLess(managed_skip, legacy_store_check)
         self.assertIn(
             "live_objects=0 backing_bytes=0 address_bytes=0 "
             "export_mappings=0 import_mappings=0",

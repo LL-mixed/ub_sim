@@ -1914,6 +1914,9 @@ validate_w5_artifact_sizes() {
       1 || return 1
     return 0
   fi
+  if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]; then
+    return 0
+  fi
   if [[ -n "${SIM_QWEN3_GUEST_ENGRAM_STATE_REF:-}" ]]; then
     shortpath_required=0
   fi
