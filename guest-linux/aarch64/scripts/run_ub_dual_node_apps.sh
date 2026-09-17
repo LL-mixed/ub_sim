@@ -475,6 +475,17 @@ holder_recovery_pto_selected() {
      "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]
 }
 
+mem_service_recovery_fault_selected() {
+  case "$MEM_SERVICE_OBJECT_SHARE_FAULT" in
+    reserve_intent_crash|torn_ledger_crash|address_reserved_crash|\
+    backing_exported_crash|published_crash|release_intent_crash|\
+    unexported_crash|retired_crash|reclaimed_crash|manager_crash|guest_crash)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 pto_device_selected() {
   [[ "$APPEND_EXTRA" == *"linqu_shmem_pto_direct=1"* ]] ||
     managed_pto_selected || holder_recovery_pto_selected
@@ -1179,18 +1190,12 @@ fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" ]]; then
   if [[ "$MEM_SERVICE_OBJECT_SHARE_BACKEND" != "obmm" ||
         "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
-        "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
-        ( "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "reserve_intent_crash" &&
-          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "torn_ledger_crash" &&
-          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "manager_crash" &&
-          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "guest_crash" ) ]]; then
+        "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ]] ||
+      ! mem_service_recovery_fault_selected; then
     echo "cpu-recovery-fault requires OBMM, 65536 bytes, one round and a supported recovery fault" >&2
     exit 2
   fi
-elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "reserve_intent_crash" ||
-        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "torn_ledger_crash" ||
-        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "manager_crash" ||
-        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "guest_crash" ]]; then
+elif mem_service_recovery_fault_selected; then
   echo "recovery faults require cpu-recovery-fault access" >&2
   exit 2
 fi

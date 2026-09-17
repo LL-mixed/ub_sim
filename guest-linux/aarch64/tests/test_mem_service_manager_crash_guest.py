@@ -158,7 +158,9 @@ class ManagerCrashGuestTests(unittest.TestCase):
         self.assertIn("provider_active_count=(0|1)", function)
         self.assertIn("quarantined_bytes", function)
         self.assertIn('mem_service_object_share_manager_recovery "$node"', run_app)
-        self.assertIn('[ "$fault" != "manager_crash" ]; } ||', run_app)
+        self.assertIn("mem_service_recovery_fault_supported() {", run_app)
+        self.assertIn("reclaimed_crash|manager_crash|guest_crash)", run_app)
+        self.assertIn('if [ "$fault" = "manager_crash" ]; then', run_app)
         self.assertIn("validate_mem_service_manager_crash_guest.py", runner)
         self.assertIn("managed-manager-crash-validation.json", runner)
 
