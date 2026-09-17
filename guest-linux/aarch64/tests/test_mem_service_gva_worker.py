@@ -172,8 +172,6 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                             good + "fast_allocation=0\nfast_allocation=1\n",
                             good + "fault_injection_phase=reserve-intent\n",
                             good + "fault_injection_mode=sync-exit\n",
-                            good + "fault_injection_phase=reserved\n"
-                                   "fault_injection_mode=sync-exit\n",
                             good + "fault_injection_phase=reserve-intent\n"
                                    "fault_injection_mode=invalid\n",
                             good.replace("incarnation=1", "incarnation=-1"),
@@ -184,6 +182,16 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertFalse(state.exists())
+            config.write_text(
+                good + "fault_injection_phase=reserved\n"
+                "fault_injection_mode=sync-exit\n"
+            )
+            result = subprocess.run(
+                [str(binary), "serve-allocations", "--config", str(config)],
+                capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertFalse(state.exists())
             state.write_text("unreconciled reservation\n")
             for optional in ("", "fast_allocation=0\n", "fast_allocation=1\n"):
                 config.write_text(good + optional)
