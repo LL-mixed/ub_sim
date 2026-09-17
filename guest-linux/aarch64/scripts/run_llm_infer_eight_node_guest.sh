@@ -143,6 +143,7 @@ SIM_W5_MANAGED_APERTURE_BASE="${SIM_W5_MANAGED_APERTURE_BASE:-0x700000000000}"
 SIM_W5_MANAGED_APERTURE_SIZE="${SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000}"
 SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="${SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES:-2097152}"
 SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="${SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE:-1000000}"
+SIM_W5_MANAGED_BOOTSTRAP_GENERATION="${SIM_W5_MANAGED_BOOTSTRAP_GENERATION:-$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE}"
 export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
 SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
 SIM_W5_PTO_UB_GM_PROGRAM="${SIM_W5_PTO_UB_GM_PROGRAM:-quadratic}"
@@ -589,7 +590,8 @@ validate_w5_managed_serving() {
       "$SIM_W5_MANAGED_IMPORT_REGION_BYTES" \
       "$SIM_W5_MANAGED_MAX_MAPPINGS" \
       "$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES" \
-      "$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE"; do
+      "$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE" \
+      "$SIM_W5_MANAGED_BOOTSTRAP_GENERATION"; do
     if [[ ! "$numeric" =~ '^[1-9][0-9]*$' ]]; then
       trace "FAIL: managed serving numeric configuration must be positive decimal, got $numeric"
       return 1
@@ -1012,6 +1014,7 @@ export SIM_W5_MANAGED_APERTURE_BASE="$SIM_W5_MANAGED_APERTURE_BASE"
 export SIM_W5_MANAGED_APERTURE_SIZE="$SIM_W5_MANAGED_APERTURE_SIZE"
 export SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES"
 export SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE"
+export SIM_W5_MANAGED_BOOTSTRAP_GENERATION="$SIM_W5_MANAGED_BOOTSTRAP_GENERATION"
 export SIM_W5_QWEN3_PTO_TOKEN_TABLE="/tmp/qwen3_pto_token_table.bin"
 export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
 export SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM"
@@ -1303,7 +1306,8 @@ start_w5_managed_service() {
     export W5_MANAGED_DAEMON_PID
   fi
   if ! /bin/linqu_gva_manager --bootstrap --node-id "\$node" \
-      --node-count "\$LINQU_UB_NODE_COUNT" --generation "\$incarnation" \
+      --node-count "\$LINQU_UB_NODE_COUNT" \
+      --generation "\$SIM_W5_MANAGED_BOOTSTRAP_GENERATION" \
       --aperture-base "\$SIM_W5_MANAGED_APERTURE_BASE" \
       --aperture-size "\$SIM_W5_MANAGED_APERTURE_SIZE"; then
     log "FAIL: managed GVA bootstrap node=\$node"
@@ -1342,7 +1346,7 @@ start_w5_managed_service() {
     log "FAIL: managed OBMM provider worker exited node=\$node"
     return 1
   fi
-  log "managed_service ready node=\$node incarnation=\$incarnation connect=\$SIM_W5_MANAGED_CONNECT aperture_base=\$SIM_W5_MANAGED_APERTURE_BASE aperture_size=\$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=kernel-selected-noncontiguous"
+  log "managed_service ready node=\$node incarnation=\$incarnation bootstrap_generation=\$SIM_W5_MANAGED_BOOTSTRAP_GENERATION connect=\$SIM_W5_MANAGED_CONNECT aperture_base=\$SIM_W5_MANAGED_APERTURE_BASE aperture_size=\$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=kernel-selected-noncontiguous"
   return 0
 }
 
