@@ -218,10 +218,10 @@ int main(int argc, char **argv) {
         self.assertIn("key = managed.identity.key;", bootstrap)
         self.assertIn("token_id = managed.identity.token_id;", bootstrap)
         self.assertIn("route->backing_token_id = record->token_id;", bootstrap)
+        self.assertIn("route->direct_home_backing = true;", bootstrap)
         self.assertIn("existing->cpu_window_initialized", bootstrap)
         self.assertIn("existing->cpu_window_mapped", bootstrap)
-        self.assertIn("gsva_route_init_cpu_window(", bootstrap)
-        self.assertIn("route->cpu_window_mapped = true;", bootstrap)
+        self.assertNotIn("gsva_route_init_cpu_window(", bootstrap)
         self.assertIn("managed bootstrap identity rejected", bootstrap)
         publisher = source.split(
             "static int sim_dec_handle_obmm_bootstrap_publish(", 1
@@ -244,7 +244,7 @@ int main(int argc, char **argv) {
         self.assertIn("route->backing_token_id ?", unmap)
         self.assertIn("route->backing_token_id : route->token.token_id", unmap)
 
-    def test_local_strict_io_bypasses_and_restores_the_cpu_window(self):
+    def test_local_strict_io_uses_direct_home_backing(self):
         source = (QEMU / "hw/ub/ub_ubc.c").read_text()
         body = source.split(
             "static MemTxResult ubc_sim_dec_remote_io_body(" , 2
@@ -256,13 +256,13 @@ int main(int argc, char **argv) {
         )[0]
         self.assertIn("gsva_home_acquire(", local)
         self.assertIn("gsva_route_lookup_base(&g_gsva_routes", local)
-        self.assertIn("ubc_cpu_window_detach(&home_route->cpu_window)", local)
+        self.assertIn("home_route->direct_home_backing", local)
+        self.assertIn("home_route->cpu_window_initialized", local)
+        self.assertIn("home_route->cpu_window_mapped", local)
         self.assertIn("ubc_dma_write_local_data_tid_strict(", local)
-        self.assertIn("memory_region_add_subregion_overlap(", local)
-        self.assertLess(local.index("ubc_cpu_window_detach("),
-                        local.index("ubc_dma_write_local_data_tid_strict("))
-        self.assertLess(local.index("ubc_dma_read_local_data_tid_strict("),
-                        local.index("memory_region_add_subregion_overlap("))
+        self.assertIn("ubc_dma_read_local_data_tid_strict(", local)
+        self.assertNotIn("ubc_cpu_window_detach(", local)
+        self.assertNotIn("memory_region_add_subregion_overlap(", local)
 
     def test_routine_cpu_window_hits_are_page_scoped(self):
         source = (QEMU / "hw/ub/ub_ubc.c").read_text()
