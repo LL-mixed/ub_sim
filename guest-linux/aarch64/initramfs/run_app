@@ -1558,6 +1558,7 @@ mem_service_object_share_holder_recovery() {
       echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
       echo "op=wait_state key=$ready_key state=active timeout_ms=60000 poll_ms=50"
       echo "op=wait_state key=$pto_ready_key state=active timeout_ms=60000 poll_ms=50"
+      echo "op=wait_state key=$receipt_gate_key state=active timeout_ms=60000 poll_ms=50"
     } >/tmp/holder-recovery-controller.conf
     /bin/linqu_mem_service object-session \
       --config /tmp/holder-recovery-controller.conf || return 1
@@ -1615,22 +1616,21 @@ mem_service_object_share_holder_recovery() {
     done
     [ "$attempt" -lt 600 ] || return 1
     echo "mem_service holder-recovery: node=0 phase=receipt-required status=confirmed generation=$generation remaining_holders=$remaining_holders"
-    /bin/linqu_mem_service allocate-object --connect "$connect" \
-      --key "$receipt_gate_key" \
-      --idempotency-key holder-recovery-receipt-required \
-      --session-id holder-recovery-controller --home-node guest-node-0 \
-      --size-bytes 65536 --capabilities 1 \
-      >/tmp/holder-recovery-receipt-gate.log 2>&1 || return 1
-    /bin/busybox cat /tmp/holder-recovery-receipt-gate.log
     {
       echo "session_id=holder-recovery-receipt-gate"
       echo "connect=$connect"
       echo "request_timeout_ms=30000"
-      echo "op=wait_state key=$receipt_gate_key state=active timeout_ms=60000 poll_ms=50"
+      echo "op=retire key=$receipt_gate_key idempotency_key=holder-recovery-receipt-required-retire"
+      echo "op=wait_state key=$receipt_gate_key state=retired timeout_ms=60000 poll_ms=50"
     } >/tmp/holder-recovery-receipt-gate.conf
     /bin/linqu_mem_service object-session \
-      --config /tmp/holder-recovery-receipt-gate.conf || return 1
-    echo "mem_service holder-recovery: node=0 phase=receipt-required-gate status=active generation=$generation"
+      --config /tmp/holder-recovery-receipt-gate.conf \
+      >/tmp/holder-recovery-receipt-gate.log 2>&1 || {
+        /bin/busybox cat /tmp/holder-recovery-receipt-gate.log
+        return 1
+      }
+    /bin/busybox cat /tmp/holder-recovery-receipt-gate.log
+    echo "mem_service holder-recovery: node=0 phase=receipt-required-gate status=retired generation=$generation"
 
     attempt=0
     while [ "$attempt" -lt 600 ]; do
@@ -1727,6 +1727,13 @@ mem_service_object_share_holder_recovery() {
     --size-bytes 65536 --capabilities 1 \
     >/tmp/holder-recovery-pto-ready.log 2>&1 || return 1
   /bin/busybox cat /tmp/holder-recovery-pto-ready.log
+  /bin/linqu_mem_service allocate-object --connect "$connect" \
+    --key "$receipt_gate_key" \
+    --idempotency-key holder-recovery-receipt-required \
+    --session-id holder-recovery-pto-controller --home-node guest-node-0 \
+    --size-bytes 65536 --capabilities 1 \
+    >/tmp/holder-recovery-receipt-gate-allocate.log 2>&1 || return 1
+  /bin/busybox cat /tmp/holder-recovery-receipt-gate-allocate.log
 
   kill -9 "$worker" 2>/dev/null || return 1
   wait "$worker" 2>/dev/null || true
@@ -1766,7 +1773,7 @@ mem_service_object_share_holder_recovery() {
     echo "session_id=holder-recovery-receipt-observer"
     echo "connect=$connect"
     echo "request_timeout_ms=30000"
-    echo "op=wait_state key=$receipt_gate_key state=active timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=$receipt_gate_key state=retired timeout_ms=60000 poll_ms=50"
   } >/tmp/holder-recovery-receipt-observer.conf
   /bin/linqu_mem_service object-session \
     --config /tmp/holder-recovery-receipt-observer.conf \
@@ -1776,7 +1783,7 @@ mem_service_object_share_holder_recovery() {
     }
   /bin/busybox cat /tmp/holder-recovery-receipt-observer.log
   /bin/busybox grep -q \
-    "action=wait_state key=$receipt_gate_key status=ok state=active" \
+    "action=wait_state key=$receipt_gate_key status=ok state=retired" \
     /tmp/holder-recovery-receipt-observer.log || return 1
   echo "mem_service holder-recovery: node=1 phase=receipt-required-gate status=observed old_incarnation=$incarnation current_incarnation=$replacement"
   if ! /bin/linqu_mem_service_provider_obmm fence-holder-state \

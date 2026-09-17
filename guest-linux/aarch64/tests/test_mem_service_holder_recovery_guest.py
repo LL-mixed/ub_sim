@@ -25,8 +25,11 @@ def fixture():
         "reason=holder_fence_receipt_required",
         "remaining_holders=1",
         "mem_service holder-recovery: node=0 phase=receipt-required status=confirmed generation=1 remaining_holders=1",
-        "mem_service holder-recovery: node=0 phase=receipt-required-gate status=active generation=1",
+        "mem_service object-session: action=retire key=holder-recovery-receipt-required status=ok state=retiring generation=6",
+        "mem_service object-session: action=wait_state key=holder-recovery-receipt-required status=ok state=retired generation=6",
+        "mem_service holder-recovery: node=0 phase=receipt-required-gate status=retired generation=1",
         "mem_service recover-allocation: status=ok",
+        "status=ok",
         "state=retiring",
         "obmm-worker generation=1 phase=release-intent segment=14177894576915742721 export=1",
         "obmm-worker generation=1 phase=unexported segment=14177894576915742721 export=1",
@@ -49,7 +52,7 @@ def fixture():
         "expired_count=1",
         "mem_service provider-register: status=ok",
         "replaced=0",
-        "mem_service object-session: action=wait_state key=holder-recovery-receipt-required status=ok state=active generation=3",
+        "mem_service object-session: action=wait_state key=holder-recovery-receipt-required status=ok state=retired generation=6",
         "mem_service holder-recovery: node=1 phase=receipt-required-gate status=observed old_incarnation=7 current_incarnation=8",
         "obmm-holder-fence: status=fenced key=holder-recovery-object generation=1",
         "obmm-holder-fence: status=complete node=guest-node-1 allocations=1",
@@ -143,8 +146,9 @@ class HolderRecoveryGuestTests(unittest.TestCase):
 
     def test_missing_or_unsafe_recovery_evidence_is_rejected(self):
         for index, marker in (
-            (0, "state=retiring"),
+            (0, "\nstate=retiring\n"),
             (0, "phase=receipt-required status=confirmed"),
+            (0, "phase=receipt-required-gate status=retired"),
             (1, "expired_count=1"),
             (1, "phase=receipt-required-gate status=observed"),
             (1, "obmm-holder-fence: status=fenced"),

@@ -113,15 +113,22 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"remaining_holders=([1-9][0-9]*)",
         "home recovery was not rejected before the holder receipt",
     )
+    receipt_gate_retired = require_pattern(
+        node_a,
+        r"mem_service holder-recovery: node=0 phase=receipt-required-gate "
+        r"status=retired generation=([1-9][0-9]*)",
+        "home did not publish the missing-receipt barrier",
+    )
     recovery_accepted = require_pattern(
-        node_a, r"mem_service recover-allocation: status=ok",
+        node_a,
+        r"mem_service recover-allocation: status=ok\n"
+        r"status=ok\nstate=retiring$",
         "home recovery was not accepted after the holder receipt",
     )
     require(node_a.index(receipt_required.group(0)) <
+            node_a.index(receipt_gate_retired.group(0)) <
             node_a.index(recovery_accepted.group(0)),
             "home recovery was accepted before the missing receipt was observed")
-    require_pattern(node_a, r"^state=retiring$",
-                    "home recovery did not enter RETIRING")
     require_pattern(
         node_a,
         r"action=wait_state key=holder-recovery-object status=ok state=retired",
@@ -445,6 +452,8 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     home_retire = require_home_retire(node_a, qemu_a)
     require(int(receipt_required.group(1)) == home_retire["worker_generation"],
             "missing-receipt denial used the wrong allocation generation")
+    require(receipt_gate_retired.group(1) == receipt_required.group(1),
+            "missing-receipt barrier used the wrong allocation generation")
     require(receipt_gate.groups() == (old_incarnation, current_incarnation),
             "missing-receipt barrier used the wrong replacement identity")
 
