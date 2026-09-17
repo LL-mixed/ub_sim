@@ -7274,3 +7274,36 @@ backing/address bytes 和 quarantine 均为零，终态无 QEMU。该结果关�
 “发布包可在真实双节点 managed 数据路径启动”子项。A18 仍未关闭：n4-910c 还需
 使用匹配的双/多节点 fabric 完成计划指定的 A01-A04、四种访问、重用/旧引用、
 provider 重启隔离和两模型 8-node/4-step 同包复现。
+
+n4-910c 随后使用当前已验证构建产物完成第二台机器的包运行。目标目录由父仓库
+`HEAD` 的只读 runner archive、预构建 QEMU/kernel/sim-cli 和 package initramfs
+组成；其中没有 `mem_service/components/mem_service/mem_service_module.c` 或其他
+mem_service 源码。传输后指纹为：
+
+```text
+qemu              13e055366ac307a582dbf60fae68899c59e743038f7475fafa9b623d2aa27ed6
+kernel            befadfaa4f9b94d98a7988846f6531699308063aef70e526eff7f411dc5c63bf
+sim-cli           f5c3095a0f250be1c34d07945f027557e397bef603d75310bf5bd7980bc2bf40
+package initramfs b503969138fe4362ac4a7e8ab58c01a8bdcc400411b91fd1c0faaf05c780d42f
+package tar       45794cd6e82762b0d4c8bfa64923ee1554097bc896a882ae7b8a3a4ef30b09b7
+```
+
+portable runner 第一次 preflight 因缺少 QEMU 源码 build stamp 停在 guest 启动前；
+随后使用既有 `UB_USE_PREBUILT_QEMU=1`，该入口先核对二进制具备
+`ummu/ub-cluster-mode` 选项，再启动同一 case。实际结果为：
+
+```text
+run          2026-09-18_04-56-43_w5_qwen3_0_6b_decode_22176_headless8
+nodes/steps  2/2, 1/1
+workers      2
+handoffs     2
+token/text   264 / " a"
+round_ms     10543
+summary      f45799a7a4600e404e0477eb003f8a31c9bbfa90d478b26340b985c6bf2f52ce
+```
+
+报告器返回 `status=pass`；两条 cleanup 各核对 `allocations=2` 且全部资源归零，
+终态无 QEMU。由此，完全相同的 source-free 包已在 n4-910c1 与 n4-910c 两台机器
+完成真实双节点 managed 数据路径。A18 的独立包、两机可执行和基础跨节点复现子项
+通过；完整 A18 仍保留四种访问、重用/旧引用、provider 重启隔离和两模型
+8-node/4-step 同包复现。
