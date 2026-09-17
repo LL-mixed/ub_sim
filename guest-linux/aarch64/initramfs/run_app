@@ -2991,6 +2991,45 @@ mem_service_transaction_fault_supported() {
   esac
 }
 
+mem_service_prepare_recovery_fault_worker_config() {
+  local fault="$1"
+  local cycle="$2"
+  local cycle_suffix=""
+
+  case "$cycle" in ''|0|*[!0-9]*) return 2 ;; esac
+  [ "$cycle" -le 8 ] || return 2
+  [ "$cycle" = "1" ] || cycle_suffix="-$cycle"
+  /bin/busybox sed \
+    "s#^state_file=.*#state_file=/tmp/managed-share.worker$cycle_suffix.state#" \
+    /tmp/managed-share.worker.base.conf \
+    >/tmp/managed-share.worker.resume.conf || return 1
+  /bin/busybox cp /tmp/managed-share.worker.resume.conf \
+    /tmp/managed-share.worker.conf || return 1
+  case "$fault" in
+    reserve_intent_crash)
+      echo "fault_injection_phase=reserve-intent"
+      echo "fault_injection_mode=sync-exit"
+      ;;
+    torn_ledger_crash)
+      echo "fault_injection_phase=reserve-intent"
+      echo "fault_injection_mode=torn-exit"
+      ;;
+    address_reserved_crash) echo "fault_injection_phase=reserved" ;;
+    backing_exported_crash) echo "fault_injection_phase=exported" ;;
+    published_crash) echo "fault_injection_phase=published" ;;
+    release_intent_crash) echo "fault_injection_phase=release-intent" ;;
+    unexported_crash) echo "fault_injection_phase=unexported" ;;
+    retired_crash) echo "fault_injection_phase=retired" ;;
+    reclaimed_crash) echo "fault_injection_phase=reclaimed" ;;
+    *) return 2 ;;
+  esac >>/tmp/managed-share.worker.conf
+  case "$fault" in
+    reserve_intent_crash|torn_ledger_crash) ;;
+    *) echo "fault_injection_mode=sync-exit" \
+         >>/tmp/managed-share.worker.conf ;;
+  esac
+}
+
 mem_service_object_share_recovery_fault() {
   local node="$1"
   local size="$2"
@@ -3112,6 +3151,8 @@ mem_service_object_share_recovery_fault() {
     read -r uptime ignored </proc/uptime
     [ "${uptime%%.*}" -lt "$deadline" ] || {
       /bin/busybox cat /tmp/recovery-fault-directory-ready.log
+      [ "$node" != "0" ] || \
+        /bin/busybox cat /tmp/managed-share.worker.log 2>/dev/null
       return 1
     }
     /bin/busybox sleep 0.05
@@ -3394,33 +3435,13 @@ mem_service_object_share_managed() (
     [ "$fault" != "backing_capacity" ] || echo "fast_allocation=1"
   } >/tmp/managed-share.worker.resume.conf
   /bin/busybox cp /tmp/managed-share.worker.resume.conf \
-    /tmp/managed-share.worker.conf || exit 1
+    /tmp/managed-share.worker.base.conf || exit 1
   if [ "$node" = "0" ] && [ "$access" = "cpu-recovery-fault" ] &&
       [ "$fault" != "manager_crash" ] && [ "$fault" != "guest_crash" ]; then
-    case "$fault" in
-      reserve_intent_crash)
-        echo "fault_injection_phase=reserve-intent"
-        echo "fault_injection_mode=sync-exit"
-        ;;
-      torn_ledger_crash)
-        echo "fault_injection_phase=reserve-intent"
-        echo "fault_injection_mode=torn-exit"
-        ;;
-      address_reserved_crash) echo "fault_injection_phase=reserved" ;;
-      backing_exported_crash) echo "fault_injection_phase=exported" ;;
-      published_crash) echo "fault_injection_phase=published" ;;
-      release_intent_crash) echo "fault_injection_phase=release-intent" ;;
-      unexported_crash) echo "fault_injection_phase=unexported" ;;
-      retired_crash) echo "fault_injection_phase=retired" ;;
-      reclaimed_crash) echo "fault_injection_phase=reclaimed" ;;
-      *) exit 2 ;;
-    esac >>/tmp/managed-share.worker.conf
-    case "$fault" in
-      torn_ledger_crash) ;;
-      reserve_intent_crash) ;;
-      *) echo "fault_injection_mode=sync-exit" \
-           >>/tmp/managed-share.worker.conf ;;
-    esac
+    mem_service_prepare_recovery_fault_worker_config "$fault" 1 || exit 2
+  else
+    /bin/busybox cp /tmp/managed-share.worker.resume.conf \
+      /tmp/managed-share.worker.conf || exit 1
   fi
   if [ "$fault" = "guest_crash" ] && [ "$guest_restart_index" -gt 0 ] &&
       [ "$node" = "1" ]; then
@@ -3471,6 +3492,8 @@ mem_service_object_share_managed() (
         if [ "$node" = "0" ] && [ "$cycle" -le "$transaction_crash_cycles" ]; then
           kill "$worker_pid" 2>/dev/null || true
           wait "$worker_pid" 2>/dev/null || true
+          mem_service_prepare_recovery_fault_worker_config \
+            "$fault" "$cycle" || exit 1
           /bin/linqu_mem_service_provider_obmm serve-allocations \
             --config /tmp/managed-share.worker.conf \
             >/tmp/managed-share.worker.log 2>&1 &

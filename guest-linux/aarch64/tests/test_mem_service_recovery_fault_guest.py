@@ -219,6 +219,13 @@ class RecoveryFaultGuestTests(unittest.TestCase):
         self.assertIn("resource_reconciliation_required=1", function)
         self.assertIn("cycle=$cycle", function)
         self.assertIn("recovery-fault-observer-$node$cycle_suffix", function)
+        self.assertIn("managed-share.worker.base.conf", run_app)
+        self.assertIn(
+            "state_file=/tmp/managed-share.worker$cycle_suffix.state",
+            run_app,
+        )
+        self.assertIn("mem_service_prepare_recovery_fault_worker_config", run_app)
+        self.assertIn('"$fault" "$cycle" || exit 1', run_app)
         self.assertIn('final_state="quarantined"', function)
         self.assertIn('final_state="retired"', function)
         self.assertIn("in_flight=1 quarantined_objects=1", function)
