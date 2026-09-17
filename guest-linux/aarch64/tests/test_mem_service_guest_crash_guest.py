@@ -158,6 +158,17 @@ class GuestCrashGuestTests(unittest.TestCase):
         self.assertIn("expired_count=1", function)
         self.assertIn("new_incarnation=$replacement_incarnation", function)
         self.assertIn("managed_reconciliation_required", function)
+        self.assertIn("phase=rejoin-bootstrap status=start", function)
+        self.assertIn(
+            '--generation "$replacement_incarnation" '
+            '--aperture-base 0x700000000000',
+            function,
+        )
+        self.assertIn(
+            '--node-count 2 --generation "$replacement_incarnation"',
+            function,
+        )
+        self.assertIn("phase=rejoin-bootstrap status=ready", function)
         self.assertIn('kill -9 "$guest_pid"', runner)
         self.assertIn("mem_service.object_share_guest_restart=1", runner)
         restart_block = runner.split(
