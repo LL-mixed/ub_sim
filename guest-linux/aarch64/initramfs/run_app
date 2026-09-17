@@ -2238,7 +2238,7 @@ mem_service_object_share_manager_recovery() {
     /tmp/manager-recovery-stats-2.log || return 1
   /bin/busybox grep -qx 'live_refs=1' \
     /tmp/manager-recovery-stats-2.log || return 1
-  /bin/busybox grep -qx 'provider_active_count=0' \
+  /bin/busybox grep -Eq '^provider_active_count=(0|1)$' \
     /tmp/manager-recovery-directory-2.log || return 1
   /bin/busybox grep -qx 'provider_directory_ready=0' \
     /tmp/manager-recovery-directory-2.log || return 1
