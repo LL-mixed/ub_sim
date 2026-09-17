@@ -52,7 +52,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     f"SIM_W5_CLUSTER_NODE_COUNT={node_count}\n", result.stdout
                 )
 
-    def test_cli_managed_serving_derives_callable_fingerprint(self):
+    def test_cli_managed_serving_refreshes_callable_fingerprint(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             sim_cli = Path(temp_dir) / "sim-cli"
             sim_cli.write_text(
@@ -63,7 +63,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
             )
             sim_cli.chmod(0o755)
             env = os.environ.copy()
-            env.pop("SIM_W5_MANAGED_ARTIFACT_FINGERPRINT", None)
+            env["SIM_W5_MANAGED_ARTIFACT_FINGERPRINT"] = "111"
             env["SIM_CLI_BIN"] = str(sim_cli)
             result = subprocess.run(
                 [
@@ -84,6 +84,10 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("SIM_W5_MANAGED_SERVING=1\n", result.stdout)
         self.assertIn(
             "SIM_W5_MANAGED_ARTIFACT_FINGERPRINT=424242\n", result.stdout
+        )
+        self.assertIn(
+            "refreshing stale managed artifact fingerprint: 111 -> 424242",
+            result.stderr,
         )
         self.assertIn("SIM_W5_MANAGED_CONNECT=tcp:10.0.0.1:9700\n", result.stdout)
         self.assertIn(

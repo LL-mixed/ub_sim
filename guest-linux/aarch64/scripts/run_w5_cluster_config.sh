@@ -390,13 +390,9 @@ bool_enabled() {
 }
 
 resolve_w5_managed_fingerprint() {
-  local sim_cli fingerprint
+  local sim_cli fingerprint configured_fingerprint
 
   if ! bool_enabled "${SIM_W5_MANAGED_SERVING:-0}"; then
-    return 0
-  fi
-  if [[ -n "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}" &&
-        "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" != "0" ]]; then
     return 0
   fi
   sim_cli="${SIM_CLI_BIN:-$ROOT_DIR/../../target/release/sim-cli}"
@@ -409,6 +405,12 @@ resolve_w5_managed_fingerprint() {
   if [[ ! "$fingerprint" =~ '^[1-9][0-9]*$' ]]; then
     echo "managed model provider returned an invalid fingerprint: $fingerprint" >&2
     return 2
+  fi
+  configured_fingerprint="${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
+  if [[ -n "$configured_fingerprint" &&
+        "$configured_fingerprint" != "0" &&
+        "$configured_fingerprint" != "$fingerprint" ]]; then
+    echo "refreshing stale managed artifact fingerprint: $configured_fingerprint -> $fingerprint" >&2
   fi
   export SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="$fingerprint"
 }
