@@ -2402,6 +2402,19 @@ static uint64_t w5_managed_identity_hash(const char *text)
     return hash ? hash : 1;
 }
 
+static uint64_t w5_managed_provider_bootstrap_generation(
+    const char *run_id,
+    uint64_t gva_bootstrap_generation)
+{
+    uint64_t generation = w5_managed_identity_hash(run_id) ^
+        UINT64_C(0xd6e8feb86659fd93);
+
+    if (!generation || generation == gva_bootstrap_generation)
+        generation = gva_bootstrap_generation == UINT64_MAX
+            ? UINT64_C(1) : gva_bootstrap_generation + 1U;
+    return generation;
+}
+
 static int w5_managed_reference_key(char *out, size_t capacity,
                                     uint64_t run, uint64_t request,
                                     uint32_t producer, uint64_t step,
@@ -11145,9 +11158,13 @@ int main(int argc, char **argv)
         const char *serving_request_id = getenv("SIM_W5_SERVING_REQUEST_ID");
         struct w5_managed_runtime_config runtime_config;
         uint64_t max_mappings = env_u64_or_default(
-            "SIM_W5_MANAGED_MAX_MAPPINGS", 16);
+            "SIM_W5_MANAGED_MAX_MAPPINGS", 8);
         uint64_t provider_incarnation_base = env_u64_or_default(
             "SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE", 1000000);
+        uint64_t gva_bootstrap_generation = env_u64_or_default(
+            "SIM_W5_MANAGED_BOOTSTRAP_GENERATION",
+            provider_incarnation_base);
+        uint64_t provider_bootstrap_generation = 0;
         uint64_t client_provider_incarnation = 0;
         uint32_t managed_local_node = UINT32_MAX;
         char managed_client_node[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN] = "";
@@ -11166,6 +11183,9 @@ int main(int argc, char **argv)
             "SIM_W5_MANAGED_IMPORT_REGION_BYTES", 256ULL * 1024ULL * 1024ULL);
         w5_managed_run = w5_managed_identity_hash(run_id);
         w5_managed_request = w5_managed_identity_hash(serving_request_id);
+        provider_bootstrap_generation =
+            w5_managed_provider_bootstrap_generation(
+                run_id, gva_bootstrap_generation);
         if (w4_cluster_role_index(role, cluster_node_count,
                                   &managed_local_node) &&
             provider_incarnation_base <= UINT64_MAX - managed_local_node) {
@@ -11208,7 +11228,10 @@ int main(int argc, char **argv)
             .client_provider_incarnation = client_provider_incarnation,
             .timeout_ms = w5_pto_ub_gm_timeout_ms,
             .import_region_bytes = w5_managed_import_region_bytes,
+            .bootstrap_generation = provider_bootstrap_generation,
             .max_mappings = (uint32_t)max_mappings,
+            .local_node = managed_local_node,
+            .node_count = cluster_node_count,
         };
         managed_rc = w5_managed_runtime_open(&runtime_config,
                                              &w5_managed_runtime);
@@ -11227,10 +11250,12 @@ int main(int argc, char **argv)
                " run=0x%016" PRIx64 " request=0x%016" PRIx64
                " nodes=%u output_capacity=%" PRIu64
                " import_region=%" PRIu64
+               " provider_bootstrap_generation=%" PRIu64
                " holder_node=%s holder_incarnation=%" PRIu64
                " callable=4 control=mem_service data=obmm status=ok\n",
                w5_managed_run, w5_managed_request, cluster_node_count,
                w5_managed_output_capacity, w5_managed_import_region_bytes,
+               provider_bootstrap_generation,
                managed_client_node, client_provider_incarnation);
     }
     init_supernode_clock(&supernode_clock);

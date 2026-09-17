@@ -8,6 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define W5_MANAGED_CANARY_REGION_BYTES (2U * 1024U * 1024U)
+#define W5_MANAGED_CANARY_VISIBLE_BYTES 256U
+#define W5_MANAGED_CANARY_SEED_BASE 41U
+
 struct w5_managed_runtime_guest {
     struct mem_service_client client;
     struct mem_service_provider_registry registry;
@@ -30,16 +34,28 @@ int w5_managed_runtime_open(
     struct w5_managed_runtime_guest *runtime;
     struct mem_service_provider_obmm_config provider_config;
     struct mem_service_provider_registration registration;
+    struct mem_service_provider_remote_region local_canary;
+    struct mem_service_provider_remote_region
+        peer_canaries[MEM_SERVICE_PROVIDER_OBMM_MAX_MAPPINGS];
+    struct mem_service_region canary_region;
     struct lingqu_shmem_pto_endpoint_info endpoint_info;
+    uint8_t canary_pattern[W5_MANAGED_CANARY_VISIBLE_BYTES];
+    uint64_t canary_checksum;
     char probe_detail[256] = "";
     size_t connect_length, node_length;
+    uint32_t peer;
     int rc;
     if (!config || !runtime_out || !config->connect_spec ||
         !config->connect_spec[0] || !config->timeout_ms ||
         !config->client_node_id || !config->client_node_id[0] ||
         !config->client_provider_incarnation ||
-        !config->import_region_bytes || !config->max_mappings ||
-        config->max_mappings > MEM_SERVICE_PROVIDER_OBMM_MAX_MAPPINGS)
+        !config->import_region_bytes || !config->bootstrap_generation ||
+        !config->max_mappings ||
+        config->max_mappings > MEM_SERVICE_PROVIDER_OBMM_MAX_MAPPINGS ||
+        config->node_count < 2 ||
+        config->node_count > MEM_SERVICE_PROVIDER_OBMM_MAX_MAPPINGS ||
+        config->local_node >= config->node_count ||
+        config->max_mappings < config->node_count - 1U)
         return -EINVAL;
     *runtime_out = NULL;
     connect_length = strlen(config->connect_spec);
@@ -61,7 +77,7 @@ int w5_managed_runtime_open(
         .instance = "w5-managed-serving",
         .import_region_bytes = config->import_region_bytes,
         .max_remote_mappings = config->max_mappings,
-        .required_peer_mappings = 1,
+        .required_peer_mappings = config->node_count - 1U,
     };
     rc = mem_service_provider_obmm_probe_device(
         provider_config.device_path, provider_config.primary_cna_path,
@@ -91,6 +107,49 @@ int w5_managed_runtime_open(
                     rc, (unsigned long long)provider_config.import_region_bytes,
                     provider_config.max_remote_mappings,
                     provider_config.required_peer_mappings, probe_detail);
+    }
+    if (!rc) {
+        runtime->open_stage = "canary-prepare";
+        rc = mem_service_provider_obmm_endpoint_prepare_canary_region(
+            &runtime->provider, W5_MANAGED_CANARY_REGION_BYTES,
+            W5_MANAGED_CANARY_VISIBLE_BYTES,
+            (uint8_t)(W5_MANAGED_CANARY_SEED_BASE + config->local_node),
+            &canary_region, &local_canary, &canary_checksum);
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=canary-prepare rc=%d\n",
+                    rc);
+    }
+    if (!rc) {
+        runtime->open_stage = "canary-exchange";
+        rc = mem_service_provider_obmm_endpoint_exchange_remote_regions(
+            &runtime->provider, config->local_node, config->node_count,
+            config->bootstrap_generation, &local_canary, peer_canaries,
+            MEM_SERVICE_PROVIDER_OBMM_MAX_MAPPINGS);
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=canary-exchange rc=%d"
+                    " generation=%llu node=%u/%u\n",
+                    rc, (unsigned long long)config->bootstrap_generation,
+                    config->local_node, config->node_count);
+    }
+    for (peer = 0; !rc && peer < config->node_count; ++peer) {
+        if (peer == config->local_node) continue;
+        for (size_t i = 0; i < sizeof(canary_pattern); ++i)
+            canary_pattern[i] =
+                (uint8_t)(W5_MANAGED_CANARY_SEED_BASE + peer + i * 29U);
+        runtime->open_stage = "peer-canary";
+        rc = mem_service_provider_obmm_endpoint_verify_mapping(
+            &runtime->provider, &peer_canaries[peer], 0,
+            sizeof(canary_pattern),
+            mem_service_provider_checksum64(canary_pattern,
+                                            sizeof(canary_pattern)),
+            config->timeout_ms);
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=peer-canary rc=%d"
+                    " peer=%u node=%u/%u\n",
+                    rc, peer, config->local_node, config->node_count);
     }
     if (!rc) {
         runtime->open_stage = "provider-registration";

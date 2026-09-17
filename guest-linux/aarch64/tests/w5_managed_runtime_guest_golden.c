@@ -14,6 +14,22 @@ struct lingqu_shmem_pto_endpoint { unsigned id; };
 static struct mem_service_provider provider;
 static unsigned closed;
 static int endpoint_open_result;
+static unsigned canary_prepared;
+static unsigned canary_exchanged;
+static unsigned canary_verified;
+
+uint64_t mem_service_provider_checksum64(const void *data, uint64_t len)
+{
+    const uint8_t *bytes = data;
+    uint64_t checksum = UINT64_C(1469598103934665603);
+
+    assert(data || !len);
+    for (uint64_t i = 0; i < len; ++i) {
+        checksum ^= bytes[i];
+        checksum *= UINT64_C(1099511628211);
+    }
+    return checksum;
+}
 
 int mem_service_provider_obmm_probe_device(const char *device_path,
                                            const char *primary_cna_path,
@@ -63,6 +79,63 @@ int mem_service_provider_obmm_endpoint_registration(
         .name = "obmm", .instance = "w5-managed-serving",
         .capabilities = MEM_SERVICE_PROVIDER_CAP_PEER_MAPPING,
     };
+    return 0;
+}
+
+int mem_service_provider_obmm_endpoint_prepare_canary_region(
+    struct mem_service_provider_obmm_endpoint *endpoint,
+    uint64_t region_len,
+    uint64_t visible_len,
+    uint8_t seed,
+    struct mem_service_region *region_out,
+    struct mem_service_provider_remote_region *remote_out,
+    uint64_t *checksum_out)
+{
+    assert(endpoint->implementation);
+    assert(region_len == 2 * 1024 * 1024);
+    assert(visible_len == 256 && seed == 42);
+    memset(region_out, 0, sizeof(*region_out));
+    memset(remote_out, 0, sizeof(*remote_out));
+    region_out->handle = 1;
+    region_out->len = region_len;
+    strcpy(remote_out->provider_name, "obmm");
+    remote_out->len = region_len;
+    remote_out->memory_kind = MEM_SERVICE_MEMORY_HOST;
+    *checksum_out = 1;
+    ++canary_prepared;
+    return 0;
+}
+
+int mem_service_provider_obmm_endpoint_exchange_remote_regions(
+    struct mem_service_provider_obmm_endpoint *endpoint,
+    uint32_t local_node,
+    uint32_t node_count,
+    uint64_t generation,
+    const struct mem_service_provider_remote_region *local,
+    struct mem_service_provider_remote_region *regions_out,
+    size_t region_capacity)
+{
+    assert(endpoint->implementation && local);
+    assert(local_node == 1 && node_count == 2);
+    assert(generation == 0x12345678 && region_capacity >= node_count);
+    regions_out[0] = *local;
+    regions_out[1] = *local;
+    ++canary_exchanged;
+    return 0;
+}
+
+int mem_service_provider_obmm_endpoint_verify_mapping(
+    struct mem_service_provider_obmm_endpoint *endpoint,
+    const struct mem_service_provider_remote_region *remote,
+    uint64_t offset,
+    uint64_t len,
+    uint64_t expected_checksum,
+    uint64_t timeout_ms)
+{
+    assert(endpoint->implementation && remote);
+    assert(offset == 0 && len == 256 && expected_checksum != 0);
+    assert(timeout_ms == 300000);
+    ++canary_verified;
     return 0;
 }
 
@@ -166,7 +239,10 @@ int main(void)
         .client_provider_incarnation = 1000003,
         .timeout_ms = 300000,
         .import_region_bytes = 64 * 1024 * 1024,
+        .bootstrap_generation = 0x12345678,
         .max_mappings = 8,
+        .local_node = 1,
+        .node_count = 2,
     };
     assert(w5_managed_runtime_open(&config, &runtime) == 0 && runtime);
     assert(!strcmp(w5_managed_runtime_open_stage(runtime), "ready"));
@@ -183,6 +259,9 @@ int main(void)
            1000003);
     assert(w5_managed_runtime_close(&runtime) == 0 && !runtime);
     assert(closed == 4);
+    assert(canary_prepared == 1);
+    assert(canary_exchanged == 1);
+    assert(canary_verified == 1);
     endpoint_open_result = -EPERM;
     assert(w5_managed_runtime_open(&config, &runtime) == -EPERM && runtime);
     assert(!strcmp(w5_managed_runtime_open_stage(runtime), "obmm-endpoint"));

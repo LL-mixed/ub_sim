@@ -16,7 +16,10 @@ struct w5_managed_runtime_config {
     uint64_t client_provider_incarnation;
     uint64_t timeout_ms;
     uint64_t import_region_bytes;
+    uint64_t bootstrap_generation;
     uint32_t max_mappings;
+    uint32_t local_node;
+    uint32_t node_count;
 };
 
 /* Provider selection is a deployment adapter detail. Model code receives only
