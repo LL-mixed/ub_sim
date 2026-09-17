@@ -2021,7 +2021,7 @@ validate_node_log() {
   if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]; then
     local expected_managed_steps="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
 
-    assert_log_has "$log_file" "\\[w4guest8:initramfs\\] managed_service ready node=$((idx - 1)) .*allocation_policy=kernel-selected-noncontiguous" "$node_id managed service readiness" || return 1
+    assert_log_has "$log_file" "\\[w4guest8:initramfs\\] managed_service ready node=$((idx - 1)) .*allocation_policy=node-partitioned-kernel-probed" "$node_id managed service readiness" || return 1
     assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=4 control=mem_service data=obmm status=ok" "$node_id managed runtime" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=4 .*status=ok" "$expected_managed_steps" "$node_id managed model ranges" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable4" "$expected_managed_steps" "$node_id managed completion gate" || return 1
