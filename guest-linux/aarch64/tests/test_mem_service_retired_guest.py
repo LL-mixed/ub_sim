@@ -132,7 +132,7 @@ class RetiredGuestTests(unittest.TestCase):
             self.assertLessEqual(len(rows), 64)
             self.assertTrue(all(row["probe_unmapped"] == "1" for row in rows if row["op"] == "unmap"))
         harness = source.split("mem_service_object_share_retired() (", 1)[1].split(
-            "\nmem_service_object_share_managed()", 1)[0]
+            "\nmem_service_object_share_wait_infrastructure()", 1)[0]
         self.assertEqual(harness.count("/bin/linqu_mem_service object-session"), 1)
         self.assertNotIn("request_timeout_ms=", harness)
 

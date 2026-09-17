@@ -1976,6 +1976,128 @@ mem_service_object_share_holder_rejoin() {
   return 0
 }
 
+mem_service_object_share_recovery_fault() (
+  node="$1"
+  size="$2"
+  incarnation="$3"
+  connect="$4"
+  worker="$5"
+  fault="$6"
+  key="recovery-fault-$fault"
+  expected_mode=""
+  expected_integrity=""
+
+  case "$fault" in
+    reserve_intent_crash)
+      expected_mode="sync-exit"
+      expected_integrity="complete"
+      ;;
+    torn_ledger_crash)
+      expected_mode="torn-exit"
+      expected_integrity="torn"
+      ;;
+    *) return 2 ;;
+  esac
+
+  # Do not consume the allocation until both provider registrations are
+  # visible. The recovery case has no data-plane session whose peer canary
+  # could otherwise provide this barrier.
+  read -r uptime ignored </proc/uptime
+  deadline=$((${uptime%%.*} + 60))
+  while true; do
+    result=0
+    /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+      --timeout-ms 1000 --max-attempts 1 \
+      >/tmp/recovery-fault-directory-ready.log 2>&1 || result=$?
+    if [ "$result" -eq 0 ] &&
+        /bin/busybox grep -qx 'provider_active_count=2' \
+          /tmp/recovery-fault-directory-ready.log &&
+        /bin/busybox grep -qx 'provider_directory_ready=1' \
+          /tmp/recovery-fault-directory-ready.log; then
+      break
+    fi
+    read -r uptime ignored </proc/uptime
+    [ "${uptime%%.*}" -lt "$deadline" ] || {
+      /bin/busybox cat /tmp/recovery-fault-directory-ready.log
+      return 1
+    }
+    /bin/busybox sleep 0.05
+  done
+
+  if [ "$node" = "0" ]; then
+    /bin/linqu_mem_service allocate-object --connect "$connect" \
+      --key "$key" --idempotency-key "$key-allocate" \
+      --session-id recovery-fault-controller --home-node guest-node-0 \
+      --size-bytes "$size" --capabilities 1 \
+      >/tmp/recovery-fault-allocate.log 2>&1 || return 1
+    /bin/busybox cat /tmp/recovery-fault-allocate.log
+    generation="$(/bin/busybox sed -n 's/^generation=//p' \
+      /tmp/recovery-fault-allocate.log | /bin/busybox head -n 1)"
+    case "$generation" in ''|0*|*[!0-9]*) return 1 ;; esac
+
+    attempt=0
+    while [ "$attempt" -lt 600 ]; do
+      if /bin/busybox grep -q \
+          "obmm-worker fault-injection=triggered phase=reserve-intent mode=$expected_mode ledger_bytes=[1-9][0-9]*" \
+          /tmp/managed-share.worker.log 2>/dev/null; then
+        break
+      fi
+      kill -0 "$worker" 2>/dev/null || break
+      attempt=$((attempt + 1))
+      /bin/busybox sleep 0.1
+    done
+    worker_status=0
+    wait "$worker" || worker_status=$?
+    /bin/busybox cat /tmp/managed-share.worker.log
+    [ "$worker_status" -eq 86 ] || return 1
+    /bin/busybox grep -q \
+      "obmm-worker fault-injection=triggered phase=reserve-intent mode=$expected_mode ledger_bytes=[1-9][0-9]*" \
+      /tmp/managed-share.worker.log || return 1
+    echo "mem_service recovery-fault: node=0 phase=worker-exit status=expected fault=$fault mode=$expected_mode exit_code=$worker_status key=$key generation=$generation"
+
+    /bin/linqu_mem_service_provider_obmm quarantine-allocation-state \
+      --config /tmp/managed-share.worker.conf \
+      >/tmp/recovery-fault-quarantine.log 2>&1 || {
+        /bin/busybox cat /tmp/recovery-fault-quarantine.log
+        return 1
+      }
+    /bin/busybox cat /tmp/recovery-fault-quarantine.log
+    /bin/busybox grep -q \
+      "obmm-worker-quarantine: status=complete node=guest-node-0 incarnation=$incarnation provider_state=isolated ledger_integrity=$expected_integrity scope=provider-control-plane backing_reconciled=0 resource_reconciliation_required=1" \
+      /tmp/recovery-fault-quarantine.log || return 1
+  fi
+
+  {
+    echo "session_id=recovery-fault-observer-$node"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=$key state=quarantined timeout_ms=60000 poll_ms=50"
+    echo "op=inspect key=$key expect_state=quarantined"
+    echo "op=stats"
+  } >/tmp/recovery-fault-observer.conf
+  /bin/linqu_mem_service object-session \
+    --config /tmp/recovery-fault-observer.conf \
+    >/tmp/recovery-fault-observer.log 2>&1 || {
+      /bin/busybox cat /tmp/recovery-fault-observer.log
+      return 1
+    }
+  /bin/busybox cat /tmp/recovery-fault-observer.log
+  /bin/busybox grep -q \
+    'action=stats status=ok live_objects=0 backing_allocated_bytes=0 address_reserved_bytes=0 live_refs=0 in_flight=1 quarantined_objects=1 quarantined_bytes=0 import_mappings=0' \
+    /tmp/recovery-fault-observer.log || return 1
+
+  /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+    >/tmp/recovery-fault-directory-isolated.log 2>&1 || return 1
+  /bin/busybox cat /tmp/recovery-fault-directory-isolated.log
+  /bin/busybox grep -qx 'provider_active_count=1' \
+    /tmp/recovery-fault-directory-isolated.log || return 1
+  /bin/busybox grep -qx 'provider_directory_ready=0' \
+    /tmp/recovery-fault-directory-isolated.log || return 1
+  /bin/busybox grep -qx 'data_plane_ready=0' \
+    /tmp/recovery-fault-directory-isolated.log || return 1
+  echo "mem_service recovery-fault: node=$node phase=observation status=pass fault=$fault mode=$expected_mode ledger_integrity=$expected_integrity key=$key"
+)
+
 mem_service_object_share_managed() (
   node="$1"
   size="$2"
@@ -2069,10 +2191,31 @@ mem_service_object_share_managed() (
     echo "state_file=/tmp/managed-share.worker.state"
     echo "allocation_granularity_bytes=2097152"
     [ "$fault" != "backing_capacity" ] || echo "fast_allocation=1"
+    if [ "$node" = "0" ] && [ "$access" = "cpu-recovery-fault" ]; then
+      echo "fault_injection_phase=reserve-intent"
+      case "$fault" in
+        reserve_intent_crash) echo "fault_injection_mode=sync-exit" ;;
+        torn_ledger_crash) echo "fault_injection_mode=torn-exit" ;;
+        *) exit 2 ;;
+      esac
+    fi
   } >/tmp/managed-share.worker.conf
-  /bin/linqu_mem_service_provider_obmm serve-allocations \
-    --config /tmp/managed-share.worker.conf &
+  if [ "$node" = "0" ] && [ "$access" = "cpu-recovery-fault" ]; then
+    /bin/linqu_mem_service_provider_obmm serve-allocations \
+      --config /tmp/managed-share.worker.conf \
+      >/tmp/managed-share.worker.log 2>&1 &
+  else
+    /bin/linqu_mem_service_provider_obmm serve-allocations \
+      --config /tmp/managed-share.worker.conf &
+  fi
   worker_pid=$!
+  if [ "$access" = "cpu-recovery-fault" ]; then
+    mem_service_object_share_recovery_fault "$node" "$size" "$incarnation" \
+      "$connect" "$worker_pid" "$fault" || exit 1
+    if [ "$node" = "0" ]; then
+      worker_pid=""
+    fi
+  fi
   if [ "$access" = "cpu-holder-recovery" ]; then
     mem_service_object_share_holder_barrier "$node" "$size" "$connect" || exit 1
     mem_service_object_share_holder_recovery "$node" "$size" "$seed" \
@@ -2258,7 +2401,11 @@ mem_service_object_share_managed() (
   fi
   # The headless runner owns infrastructure shutdown after both clients pass.
   # Keep home exports and the daemon alive independently of client sessions.
-  mem_service_object_share_wait_infrastructure "$node" "$worker_pid"
+  if [ "$access" = "cpu-recovery-fault" ] && [ "$node" = "0" ]; then
+    mem_service_object_share_wait_infrastructure "$node" "$daemon_pid"
+  else
+    mem_service_object_share_wait_infrastructure "$node" "$worker_pid"
+  fi
 )
 
 run_mem_service_object_share() {
@@ -2292,7 +2439,8 @@ run_mem_service_object_share() {
 
   if { [ "$access" != "cpu" ] && [ "$access" != "cpu-pto" ] &&
        [ "$access" != "cpu-reference" ] && [ "$access" != "cpu-retired" ] &&
-       [ "$access" != "cpu-holder-recovery" ]; } ||
+       [ "$access" != "cpu-holder-recovery" ] &&
+       [ "$access" != "cpu-recovery-fault" ]; } ||
       { [ "$access" = "cpu-pto" ] &&
         { [ "$backend" != "obmm" ] ||
           [ "$iterations" != "1" ] || [ "$fault" != "none" ]; }; }; then
@@ -2315,6 +2463,20 @@ run_mem_service_object_share() {
       { [ "$backend" != "obmm" ] || [ "$iterations" != "1" ] ||
         [ "$fault" != "none" ]; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=holder_recovery_config"
+    return 2
+  fi
+  if [ "$access" = "cpu-recovery-fault" ] &&
+      { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] ||
+        [ "$iterations" != "1" ] ||
+        { [ "$fault" != "reserve_intent_crash" ] &&
+          [ "$fault" != "torn_ledger_crash" ]; }; }; then
+    log "mem_service object-share: status=fail node=$node_idx reason=recovery_fault_config"
+    return 2
+  fi
+  if [ "$access" != "cpu-recovery-fault" ] &&
+      { [ "$fault" = "reserve_intent_crash" ] ||
+        [ "$fault" = "torn_ledger_crash" ]; }; then
+    log "mem_service object-share: status=fail node=$node_idx reason=recovery_fault_access"
     return 2
   fi
   if [ "$access" = "cpu-holder-recovery" ]; then
@@ -2357,7 +2519,9 @@ run_mem_service_object_share() {
         { [ "$fault" != "none" ] && [ "$fault" != "sdk_contract" ] &&
           [ "$fault" != "map_conflict" ] && [ "$fault" != "descriptor_contract" ] &&
           [ "$fault" != "capacity" ] && [ "$fault" != "address_capacity" ] &&
-          [ "$fault" != "backing_capacity" ] && [ "$fault" != "allocation_pressure" ]; } ||
+          [ "$fault" != "backing_capacity" ] && [ "$fault" != "allocation_pressure" ] &&
+          [ "$fault" != "reserve_intent_crash" ] &&
+          [ "$fault" != "torn_ledger_crash" ]; } ||
         { { [ "$fault" = "capacity" ] || [ "$fault" = "address_capacity" ] ||
             [ "$fault" = "backing_capacity" ] || [ "$fault" = "allocation_pressure" ]; } &&
           [ "$iterations" != "1" ]; }; then
