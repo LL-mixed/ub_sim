@@ -5851,3 +5851,76 @@ nodeB qemu    5f08dd6bd217dce930800d686bf2c40e5922f6f3e15ed5f69dedc1876648fb3d
 通过真实 QEMU `LOCAL_REVOKE` 产生 fencing receipt、旧 CPU VMA 失效及 home 物理
 退役子项。旧 PTO 在强制撤销后的实际拒绝、裸 reserve-intent/torn 隔离注入、完整
 杀死/重启/rejoin 和重复故障矩阵仍未完成。
+
+### n4 双 guest holder-recovery r8-r12：同一 owner 的 CPU/PTO 撤销
+
+r8 尝试用独立 object-session CPU mapping 和 PTO process mapping 指向同一个远端
+segment，第二次 OBMM import 被内核以 `EEXIST` 拒绝。父仓库 `219a804` 因而收敛为
+单一 mapping owner：PTO 进程在 fence 前保留一份 CPU pin、三份 compute lease 和
+预构造 dispatch，controller 只观察控制状态。该实现避免用第二个 mapping 伪造同一
+holder 的访问生命周期。
+
+r9 完成 replacement `LOCAL_REVOKE`、fencing receipt 和 home retire，但 PTO 进程
+在提交旧 dispatch 前进入 CPU 探针失败路径；当时 guest 只能等到总超时后看到失败。
+`62a28e0` 把顺序固定为 `retired -> PTO submit/reject -> CPU probe/reject`，并增加
+30 秒 PTO、5 秒 CPU 分阶段观察，任何阶段失败立即输出内部日志并停止本轮。
+
+r10 在执行新顺序前暴露 OBMM bootstrap namespace 冲突。provider worker 与 PTO
+endpoint 都用旧 provider incarnation `7` 发布 discovery record；node B 在 node A
+PTO endpoint 覆盖记录前读到 worker descriptor，随后持续校验错误 backing。
+保留的 `node0-generation7.ini` 最终 token 为 `99`，而 node B 已捕获的旧记录 token
+为 `96`。父仓库 `eadaff1` 从 object key、incarnation 和 artifact fingerprint 派生
+domain-separated generation，两端还必须在 validator 中报告同一值，且不得等于
+被 fence 的 provider incarnation。
+
+r11 越过 canary、fence 和物理撤销，旧 PTO op `8` 已得到
+`pto_ub_gm_bad_memref`。随后 CPU 探针返回 `EINVAL`。源码核对确认
+`mem_service_mapping_owner_adopt()` 成功时按契约清零源 mapping，真实地址只存在于
+owner 的 retained CPU lease view。父仓库 `c0f0c09` 将探针放入
+`mem_service_mapping_lease_apply(state->cpu_pin, ...)` callback，继续使用同一 owner，
+没有重新映射或重新 acquire。
+
+r12 的实际运行组合为：
+
+```text
+parent      c0f0c097a13cbb80326f86e4bb076d46cddcccf1
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+mem_service b0d5a8ae5f7be591b18bbef98e34057bbc4cecfc
+```
+
+远端 initramfs-only 构建 exit 0；一次双 guest 场景运行 44.393 秒并 exit 0，runner
+报告 1/1 PASS。node B 在 fence 前准备 op `8`、mapping `1`，物理撤销后按同一身份
+先得到 PTO `status=3/error=pto_ub_gm_bad_memref`，随后 retained CPU lease 对原地址
+`0x700000000000` 的读取得到 signal `7`、code `3`。两端 canary 使用相同的独立
+bootstrap generation `10690227482818386410`，旧 provider incarnation 为 `7`。
+
+QEMU node B 记录 `remote_retire_quarantine`、成功 `FENCE_ACK`、
+`remote_retire_drained`、`tombstone=yes` 和 `local holder revoked`；QEMU node A
+记录同一 segment/epoch/export 的 bind、home fence 和 revoke。home worker 依次
+记录 release-intent、unexported、kernel COMMITTED retire、retired 和 reclaimed。
+机器可读报告内容为：
+
+```text
+status                   pass
+scope                    replacement-holder-cpu-pto-revoke-and-home-retire
+old_cpu_signal           7
+old_pto_error            pto_ub_gm_bad_memref
+old_pto_operation_id     8
+old_pto_mapping_id       1
+home segment/epoch/export 0xc4c2000000000001 / 1 / 1
+```
+
+四份原始日志的报告 SHA-256：
+
+```text
+nodeA guest f2dc84fa8a814357aa498cdbbcee9be9ebbf5d2d7f4dd2a33c31d29fc1f837de
+nodeB guest 266b794f28ed8fcf192c1f93bdcc8bdbfcb81c9595eba6e533acd3a806417e19
+nodeA qemu  3364b4cd6f73d3d92244f57095daea5d74531a0c3d3797fbf8cfe55b3f952393
+nodeB qemu  f59b095336ba461319858feef7f4131ced63727d3d61e65412096ca42321fdb7
+```
+
+精确进程查询确认运行后没有 `qemu-system-aarch64` 遗留。该结果关闭 M3 的旧 PTO
+访问拒绝子项，同时重新证明旧 CPU pin、fencing receipt 与 home 物理退役闭环。
+裸 reserve-intent/torn 隔离实际注入、完整杀死/重启/rejoin 和重复故障矩阵仍未
+完成，M3 与总目标继续保持进行中。

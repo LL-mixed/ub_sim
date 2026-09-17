@@ -563,6 +563,26 @@ segment/epoch/export 的 `GSVA_HOME_REVOKE=2 error=0`。它直接复核原 r7 �
 receipt、旧 CPU VMA 拒绝和 home 退役子项；旧 PTO、裸 reserve/torn、完整重启/rejoin
 及重复故障矩阵继续待验收。
 
+同日 holder-recovery CPU/PTO 同 owner 续作：父仓库 `219a804` 让一个实际 GSVA
+mapping owner 同时保留 CPU pin、三份 compute lease 和 fence 前准备的 PTO op；
+`62a28e0` 将撤销后的验证顺序固定为 PTO submit/reject 后再执行有界 CPU 探针。
+r10 进一步暴露 PTO endpoint 与 provider worker 复用了 incarnation `7` 作为 OBMM
+bootstrap generation，node B 因读到旧 worker descriptor 而等待错误 canary；
+`eadaff1` 改用 key、incarnation 和 artifact fingerprint 派生的独立 discovery
+generation。r11 证明旧 PTO op 已被拒绝，并定位 owner adopt 后源 mapping 被清零；
+`c0f0c09` 改为通过 retained CPU lease view 执行旧地址探针。
+
+n4-910c1 r12 使用父仓库 `c0f0c09`、QEMU `5809bc8a1a`、kernel
+`dd07fe43c50d` 和服务 `b0d5a8a`，一次双 guest 运行在 44.393 秒内 exit 0。
+同一 op `8`、mapping `1` 在物理撤销后先得到
+`pto_ub_gm_bad_memref`，随后旧 CPU 地址 `0x700000000000` 得到 `SIGBUS(7)`；
+两端 canary 使用相同的独立 generation `10690227482818386410`。QEMU 同时记录
+quarantine、成功 home fence ACK、drain、tombstone 和 local revoke；home 完成
+unexport、segment retire 和 reclaim。机器报告为
+`replacement-holder-cpu-pto-revoke-and-home-retire: pass`，终态无遗留 QEMU。
+该结果关闭旧 PTO 访问拒绝子项；裸 reserve/torn、完整杀死/重启/rejoin 及重复
+故障矩阵继续待验收，M3 和总目标保持进行中。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1349,7 +1369,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
 | M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 688db48；callable 4 主循环、请求级退役及精确 holder 身份已完成构建/契约门禁，r608 实际 guest 证明 object-session holder 身份可驱动 lost-home recovery | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序；4ba90ac 要求持久化的精确 holder fencing receipt；dd07fe43c50d/854a8d8449/6d3ebe3 接通本地强制撤销、holder-scoped 枚举、物理优先 receipt 和 lost-home HOME holder 消失证明；688db48/n4 原生 r2 补齐可验证配置绑定并通过完整 worker golden；5809bc8/9abca2c 与 n4-910c1 remote-retire-r8 证明真实跨 guest 脏回写、成功 fence/ACK、TLB/VMA 撤销、两端 route tombstone 和协调端完成；b0d5a8a/c8155a5 与 n4-910c1 holder-recovery-r7 证明 replacement provider 真实 LOCAL_REVOKE、fencing receipt、旧 CPU VMA 拒绝及 home 物理退役 | 实际杀死/重启注入矩阵、裸 reserve-intent/torn 隔离实际证据、旧 PTO 访问拒绝、完整重新加入及重复故障矩阵仍未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序；4ba90ac 要求持久化的精确 holder fencing receipt；dd07fe43c50d/854a8d8449/6d3ebe3 接通本地强制撤销、holder-scoped 枚举、物理优先 receipt 和 lost-home HOME holder 消失证明；688db48/n4 原生 r2 补齐可验证配置绑定并通过完整 worker golden；5809bc8/9abca2c 与 n4-910c1 remote-retire-r8 证明真实跨 guest 脏回写、成功 fence/ACK、TLB/VMA 撤销、两端 route tombstone 和协调端完成；b0d5a8a/c8155a5 与 n4-910c1 holder-recovery-r7 证明 replacement provider 真实 LOCAL_REVOKE、fencing receipt、旧 CPU VMA 拒绝及 home 物理退役；c0f0c09 与 n4-910c1 holder-recovery-pto-r12 进一步证明同一 owner 的旧 PTO op 和旧 CPU pin 均在撤销后被拒绝 | 实际杀死/重启注入矩阵、裸 reserve-intent/torn 隔离实际证据、完整重新加入及重复故障矩阵仍未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
