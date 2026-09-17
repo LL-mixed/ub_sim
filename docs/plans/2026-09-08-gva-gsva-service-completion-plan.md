@@ -1622,7 +1622,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
 | M2 动态身份与 W5 | 通过 | r123/r124 覆盖 home 与 consumer 的 token/epoch/owner/descriptor 身份拒绝；r274/r38/r41 覆盖错误、重复、迟到和缺失 ACK、恢复回执及旧 CPU/PTO 拒绝；r286/r384 覆盖正常 PTO drain；r322 百轮拒绝旧 key/V2 并读取新代；r381 拒绝退役 descriptor 的 CPU 访问并验证新映射；当前锁定服务 `3592080c`、QEMU `02d214fe`；r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node，两个核心配置均完成 8-step 和终态资源归零 | 无；本文 M2 的身份、故障和模型/拓扑矩阵已满足。M4 压力/收益与 M5 tokenless replay 继续独立验收 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
-| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零；A16 以 managed W5 的 2/3/4/8-node 每节点 home 记录和 `a8787024` 的 2/3/4/8-node 全有向矩阵共同关闭，8-node 56 个有向节点对各执行 10 轮数据核对并完成三次同源码冷启动；A18 的 hash-bound source-free 包已在 n4-910c1 和 n4-910c 分别完成 2-node/1-step managed 数据路径 | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成；A18 的四种访问、重用/旧引用、provider 重启隔离及两模型 8-node/4-step 同包复现仍待验收 |
+| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零；A16 以 managed W5 的 2/3/4/8-node 每节点 home 记录和 `a8787024` 的 2/3/4/8-node 全有向矩阵共同关闭，8-node 56 个有向节点对各执行 10 轮数据核对并完成三次同源码冷启动；A18 的 hash-bound source-free 包已在 n4-910c1 和 n4-910c 分别完成 2-node/1-step managed 数据路径，并在 n4-910c 以同一发布组合完成 Qwen 与 DeepSeek 8-node/4-step | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成；A18 的四种访问、重用/旧引用和 provider 重启隔离仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
 2026-09-17 M2 补记：Qwen 8-node/8-step 的首次 r83 在 32 个历史
@@ -1790,6 +1790,37 @@ summary SHA-256 为
 `dcbc37158b098f9850270ac4062aebafc369267e8785c2494a62e9e1147fba87`。
 两组证据共同关闭 A16；raw 机制结果没有被当作 managed service 控制面结果。
 A18 和 M4 的 prefix 语义压力仍保持未完成。
+
+2026-09-18 A18 两模型同包补记：父仓库提交 `6aacb70c` 允许 Simpler artifact
+producer 通过 `SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR` 解析部署目录，W5 固定入口默认
+导出当前 `scripts/` 绝对路径并在 preflight 核对两个 producer。26 项 launcher
+契约测试、Rust resolver 定向测试、zsh 语法和 diff 检查通过；远端同样为
+26/26 和 1/1 通过。该改动消除了 QEMU 中固化构建机源码路径的部署缺口。
+
+n4-910c 使用同一服务 tar
+`45794cd6e82762b0d4c8bfa64923ee1554097bc896a882ae7b8a3a4ef30b09b7`、package
+initramfs `b503969138fe4362ac4a7e8ab58c01a8bdcc400411b91fd1c0faaf05c780d42f`、QEMU
+`93e5d2e267a7fad9997d2b5ebe626ef24bcb3606f2976354e52b3d559fdba8c7` 和 sim-cli
+`2f6c0c551cbc24310cc6e8469ddf9631c6cbb773742ad97ecdf902bb9351181a`。DeepSeek
+运行所需的预构建 Simpler cache 为 160 个 manifest/runtime/orchestration/kernel
+文件，压缩包 SHA-256 为
+`867c424d60215257b79dce67527df253ec4133010f4a032e1788e7d050a2940d`；包内源码和
+`build/` 条目为 0，安装后 51 份 manifest 的 109 个 artifact 引用全部存在。
+
+同一组合的实际结果为：
+
+| 模型 | run ID | nodes / steps | token / text | summary SHA-256 |
+| --- | --- | --- | --- | --- |
+| DeepSeek V4 Flash Q2/Q4-head | `2026-09-18_05-21-55_w5_deepseek_v4_flash_decode_12029` | 8/8, 4/4 | `260,6646,5217,1951` / `" a leading global information"` | `9bdb86911efd1748675cb1109b9565ca7fac30b4def43ed040cdee00a85fa2e5` |
+| Qwen3-0.6B | `2026-09-18_05-44-35_w5_qwen3_0_6b_decode_16571` | 8/8, 4/4 | `264,3644,7653,304` / `" a global leader in"` | `1c0f578a1e9a51bc1ceebca140f5071b29fa124894953cd2fa382fde106e9376` |
+
+两次运行均有 32 条 worker、32 条 handoff 和 8 条 cleanup；每条 cleanup 核对
+32 个 allocation，live object、backing/address bytes 和 quarantine 全部归零，
+终态无 QEMU。此前三次 DeepSeek step 0 失败分别定位出固化源码路径、QEMU 与
+sim-cli fingerprint 不一致、以及 source-free 目标机缺少预构建 Simpler artifact；
+三项均在下一次运行前独立修正，失败样本没有计为通过。A18 的两模型 8-node/4-step
+同包子项据此通过；四种访问组合、一次重用/旧引用拒绝和一次 provider 重启隔离
+继续未完成。
 
 ## 9. Review 意见处置
 

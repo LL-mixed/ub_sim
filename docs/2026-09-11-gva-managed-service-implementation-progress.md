@@ -7307,3 +7307,64 @@ summary      f45799a7a4600e404e0477eb003f8a31c9bbfa90d478b26340b985c6bf2f52ce
 完成真实双节点 managed 数据路径。A18 的独立包、两机可执行和基础跨节点复现子项
 通过；完整 A18 仍保留四种访问、重用/旧引用、provider 重启隔离和两模型
 8-node/4-step 同包复现。
+
+## 2026-09-18：A18 两模型 8-node/4-step 同一发布组合
+
+n4-910c 的首次 DeepSeek 同包运行
+`2026-09-18_05-02-38_w5_deepseek_v4_flash_decode_15410` 在 step 0 失败。
+QEMU 日志显示 Rust 运行时使用了构建机 checkout 的固化绝对路径，目标机没有该
+`prepare_simpler_host_artifacts.py`。父仓库提交 `6aacb70c` 增加
+`SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR` resolver；W5 固定入口默认导出当前部署的
+`scripts/` 目录，并在运行前核对 generic/vector producer。26 项 launcher 契约
+测试、Rust resolver 1/1、zsh 语法和 diff 检查通过；n4-910c1 同样完成 26/26、
+1/1 和 QEMU release 重建。
+
+第二次运行 `2026-09-18_05-12-19_w5_deepseek_v4_flash_decode_5015` 在 callable
+准入处拒绝：新 QEMU 期望 fingerprint `adb46a34d030d006`，portable runner 的旧
+sim-cli 仍提交 `8d1191c6eabf2da0`。从同一源码重建并同步 sim-cli 后，目标机
+输出精确的 `adb46a34d030d006`。第三次运行
+`2026-09-18_05-14-57_w5_deepseek_v4_flash_decode_18458` 已通过 fingerprint，随后
+因目标机没有 `PTO_ISA_ROOT` 而停止；这证明即时编译与 A18 无源码部署条件不兼容。
+
+n4-910c1 上一轮成功 DeepSeek 运行留下的 artifact cache 随后被封装为只含
+manifest/runtime/orchestration/kernel 二进制的运行包。生成源码、`build/`、
+PTO-ISA 和 Simpler 源码均未进入包：
+
+```text
+artifact package  a18-simpler-runtime-cache.tar.gz
+sha256             867c424d60215257b79dce67527df253ec4133010f4a032e1788e7d050a2940d
+compressed bytes   192271205
+installed files    160
+installed bytes    571968146
+source entries     0
+manifests/refs      51 / 109
+missing refs        0
+```
+
+最终发布组合为：
+
+```text
+mem_service tar    45794cd6e82762b0d4c8bfa64923ee1554097bc896a882ae7b8a3a4ef30b09b7
+package initramfs  b503969138fe4362ac4a7e8ab58c01a8bdcc400411b91fd1c0faaf05c780d42f
+qemu               93e5d2e267a7fad9997d2b5ebe626ef24bcb3606f2976354e52b3d559fdba8c7
+sim-cli            2f6c0c551cbc24310cc6e8469ddf9631c6cbb773742ad97ecdf902bb9351181a
+```
+
+DeepSeek 使用该组合的正式运行是
+`2026-09-18_05-21-55_w5_deepseek_v4_flash_decode_12029`。8/8 节点完成 4/4 step，
+worker/handoff 均为 32；token 为 `260,6646,5217,1951`，文本为
+`" a leading global information"`，round time 为
+626235、565623、184102、185286 ms。报告 `status=pass`，summary SHA-256 为
+`9bdb86911efd1748675cb1109b9565ca7fac30b4def43ed040cdee00a85fa2e5`。
+
+为了让两模型绑定完全相同的平台组合，Qwen 随后只重跑受 QEMU/sim-cli 更新影响的
+8-node/4-step：`2026-09-18_05-44-35_w5_qwen3_0_6b_decode_16571`。8/8 节点、
+4/4 step 和 32 条 worker/handoff 全部通过；token 为
+`264,3644,7653,304`，文本为 `" a global leader in"`，round time 为
+16517、19434、26881、30571 ms。summary SHA-256 为
+`1c0f578a1e9a51bc1ceebca140f5071b29fa124894953cd2fa382fde106e9376`。
+
+两次正式运行各有 8 条 `allocations=32` cleanup，非零 live object、backing/
+address bytes 和 quarantine 记录均为 0，终态无 QEMU。A18 的两模型
+8-node/4-step 同包复现子项通过。三次失败样本保留为部署依赖缺口证据，没有计入
+通过结果。A18 仍需四种访问组合、一次重用/旧引用拒绝和一次 provider 重启隔离。
