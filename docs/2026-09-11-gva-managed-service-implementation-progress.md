@@ -6766,3 +6766,47 @@ r81 关闭 callable 4 连续 decode、Qwen 2-node/4-step 和同一运行内每�
 home 子项。M2 仍缺 Qwen 3/8-node、核心 8-step，DeepSeek 2/3/8-node 的 4-step
 与核心 8-step，以及计划列明的完整身份/故障矩阵。M4 仍缺混合压力和至少五轮
 正式重复性能样本；M5 仍未开始。总目标继续进行。
+
+### n4-910c1 Qwen 3-node/4-step（r82）
+
+参数化 launcher、三节点 full-mesh topology、节点枚举和 managed validator 已有
+3-node 支持，本批没有为运行复制脚本或新增专用分支。远端精确组合为：
+
+```text
+parent      361a8c0ee7218eb4beb5ac547dc54265d6358c1c
+mem_service 163dc8c321449a420e389c53ef7ccffd9211e75e
+qemu        d1307d0f8d2464c64df9f0942685b381cf33e2d8
+fingerprint 9115506146201997557
+run         2026-09-17_19-32-20_w5_qwen3_0_6b_decode_23234_headless8
+```
+
+唯一一次实际命令使用 `--managed-serving --nodes 3 --steps 4`。runner exit 0，
+报告器直接返回 `status=pass`：
+
+```text
+decode_steps_expected 4
+decode_steps_observed 4
+passed_nodes          3/3
+worker_records        12
+tokens                264,3644,7653,304
+text                  " a global leader in"
+round_ms              6599,6329,6254,7160
+```
+
+node C 是 terminal node，四步分别发布相同的 token/text oracle。各节点 4/4 step；
+12 条 provider LOAD/STORE/FENCE/UNBIND completion 全部成功。kernel 实际分配为：
+
+```text
+node A 0x700000000000 0x70000c000000 0x700018000000 0x700024000000
+node B 0x7000b0000000 0x7000bc000000 0x7000c8000000 0x7000d4000000
+node C 0x700160000000 0x70016c000000 0x700178000000 0x700184000000
+```
+
+三个节点各有一条 request cleanup，均核对 `allocations=12`、
+`live_objects=0`、`backing_bytes=0`、`address_bytes=0`、export/import mapping、
+reference、in-flight、quarantine 全部为零。运行结束后精确进程查询没有
+`qemu-system-aarch64`。该 case 没有重跑。
+
+r82 关闭 Qwen 3-node/4-step 子项。M2 仍缺 Qwen 8-node 与核心 8-step、DeepSeek
+2/3/8-node 的 4-step 与核心 8-step，以及正文保留的完整身份/故障矩阵。M4、M5
+和总目标状态不变。
