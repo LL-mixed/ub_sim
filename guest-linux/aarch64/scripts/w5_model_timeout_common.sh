@@ -73,3 +73,44 @@ w5_resolve_managed_timeout_ms() {
       ;;
   esac
 }
+
+# Resolve how long the control plane tolerates a provider refresh gap. QEMU can
+# prevent the guest provider worker from being scheduled while a long simpler
+# range executes. The DeepSeek profile therefore uses the provider directory's
+# bounded ten-minute maximum; shorter Qwen ranges keep the existing two-minute
+# fail-closed window.
+w5_resolve_managed_provider_lease_ms() {
+  local managed_enabled="${SIM_W5_MANAGED_SERVING:-0}"
+  local configured_lease="${SIM_W5_MANAGED_PROVIDER_LEASE_MS:-}"
+  local profile="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
+  local backend="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}"
+  local min_lease_ms=100
+  local max_lease_ms=600000
+
+  case "$managed_enabled" in
+    1|true|TRUE|yes|YES)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if [[ -n "$configured_lease" ]]; then
+    if [[ ! "$configured_lease" =~ '^[1-9][0-9]*$' ]] ||
+       (( configured_lease < min_lease_ms || configured_lease > max_lease_ms )); then
+      echo "SIM_W5_MANAGED_PROVIDER_LEASE_MS must be $min_lease_ms..$max_lease_ms: $configured_lease" >&2
+      return 2
+    fi
+    export SIM_W5_MANAGED_PROVIDER_LEASE_MS="$configured_lease"
+    return 0
+  fi
+
+  case "$profile:$backend" in
+    deepseek_v4_flash_decode:deepseek-v4-flash-simpler|deepseek_v4_flash_decode:deepseek_v4_flash_simpler)
+      export SIM_W5_MANAGED_PROVIDER_LEASE_MS="$max_lease_ms"
+      ;;
+    *)
+      export SIM_W5_MANAGED_PROVIDER_LEASE_MS=120000
+      ;;
+  esac
+}

@@ -145,6 +145,7 @@ SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="${SIM_W5_MANAGED_ALLOCATION_GRANULA
 SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="${SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE:-1000000}"
 SIM_W5_MANAGED_BOOTSTRAP_GENERATION="${SIM_W5_MANAGED_BOOTSTRAP_GENERATION:-$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE}"
 SIM_W5_MANAGED_TIMEOUT_MS="${SIM_W5_MANAGED_TIMEOUT_MS:-300000}"
+SIM_W5_MANAGED_PROVIDER_LEASE_MS="${SIM_W5_MANAGED_PROVIDER_LEASE_MS:-120000}"
 export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
 SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
 SIM_W5_PTO_UB_GM_PROGRAM="${SIM_W5_PTO_UB_GM_PROGRAM:-quadratic}"
@@ -597,7 +598,8 @@ validate_w5_managed_serving() {
       "$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES" \
       "$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE" \
       "$SIM_W5_MANAGED_BOOTSTRAP_GENERATION" \
-      "$SIM_W5_MANAGED_TIMEOUT_MS"; do
+      "$SIM_W5_MANAGED_TIMEOUT_MS" \
+      "$SIM_W5_MANAGED_PROVIDER_LEASE_MS"; do
     if [[ ! "$numeric" =~ '^[1-9][0-9]*$' ]]; then
       trace "FAIL: managed serving numeric configuration must be positive decimal, got $numeric"
       return 1
@@ -612,11 +614,13 @@ validate_w5_managed_serving() {
           SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES + 4096 ||
         SIM_W5_MANAGED_IMPORT_REGION_BYTES <
           SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES ||
-        SIM_W5_MANAGED_MAX_MAPPINGS > 8 )); then
+        SIM_W5_MANAGED_MAX_MAPPINGS > 8 ||
+        SIM_W5_MANAGED_PROVIDER_LEASE_MS < 100 ||
+        SIM_W5_MANAGED_PROVIDER_LEASE_MS > 600000 )); then
     trace "FAIL: managed serving output/allocator/import/mapping capacity is invalid"
     return 1
   fi
-  trace "prepare: managed serving connect=$SIM_W5_MANAGED_CONNECT nodes=$SIM_W5_CLUSTER_NODE_COUNT timeout_ms=$SIM_W5_MANAGED_TIMEOUT_MS aperture_base=$SIM_W5_MANAGED_APERTURE_BASE aperture_size=$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=node-partitioned-kernel-probed"
+  trace "prepare: managed serving connect=$SIM_W5_MANAGED_CONNECT nodes=$SIM_W5_CLUSTER_NODE_COUNT timeout_ms=$SIM_W5_MANAGED_TIMEOUT_MS provider_lease_ms=$SIM_W5_MANAGED_PROVIDER_LEASE_MS aperture_base=$SIM_W5_MANAGED_APERTURE_BASE aperture_size=$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=node-partitioned-kernel-probed"
   return 0
 }
 
@@ -1029,6 +1033,7 @@ export SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="$SIM_W5_MANAGED_ALLOCATION_G
 export SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE"
 export SIM_W5_MANAGED_BOOTSTRAP_GENERATION="$SIM_W5_MANAGED_BOOTSTRAP_GENERATION"
 export SIM_W5_MANAGED_TIMEOUT_MS="$SIM_W5_MANAGED_TIMEOUT_MS"
+export SIM_W5_MANAGED_PROVIDER_LEASE_MS="$SIM_W5_MANAGED_PROVIDER_LEASE_MS"
 export SIM_W5_QWEN3_PTO_TOKEN_TABLE="/tmp/qwen3_pto_token_table.bin"
 export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
 export SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM"
@@ -1313,7 +1318,7 @@ start_w5_managed_service() {
         i=\$((i + 1))
       done
       echo "allocation_home_provider=guest-node-0"
-      echo "provider_lease_ms=120000"
+      echo "provider_lease_ms=\$SIM_W5_MANAGED_PROVIDER_LEASE_MS"
     } >/tmp/w5-managed.daemon.conf
     /bin/linqu_mem_service serve --config /tmp/w5-managed.daemon.conf &
     W5_MANAGED_DAEMON_PID=\$!

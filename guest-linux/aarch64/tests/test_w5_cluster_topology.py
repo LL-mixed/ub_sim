@@ -135,6 +135,96 @@ class W5ClusterTopologyTest(unittest.TestCase):
                         f"SIM_W5_MANAGED_TIMEOUT_MS={expected_timeout}\n",
                         result.stdout,
                     )
+                    self.assertIn(
+                        "SIM_W5_MANAGED_PROVIDER_LEASE_MS=600000\n",
+                        result.stdout,
+                    )
+
+    def test_managed_provider_lease_defaults_and_override_are_bounded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            sim_cli = temp / "sim-cli"
+            sim_cli.write_text(
+                "#!/bin/sh\n"
+                "[ \"$1\" = managed-model-provider-fingerprint ] || exit 2\n"
+                "echo 424242\n",
+                encoding="utf-8",
+            )
+            sim_cli.chmod(0o755)
+            qwen_config = temp / "qwen.env"
+            qwen_config.write_text(
+                "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode\n"
+                "SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense\n",
+                encoding="utf-8",
+            )
+            base_env = os.environ.copy()
+            base_env["SIM_CLI_BIN"] = str(sim_cli)
+            base_env.pop("SIM_W5_MANAGED_PROVIDER_LEASE_MS", None)
+
+            qwen = subprocess.run(
+                [
+                    str(self.config_runner),
+                    "--print-env",
+                    "--managed-serving",
+                    str(qwen_config),
+                ],
+                cwd=self.repo,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=base_env,
+            )
+            self.assertEqual(qwen.returncode, 0, qwen.stderr)
+            self.assertIn(
+                "SIM_W5_MANAGED_PROVIDER_LEASE_MS=120000\n", qwen.stdout
+            )
+
+            override_env = base_env.copy()
+            override_env["SIM_W5_MANAGED_PROVIDER_LEASE_MS"] = "345678"
+            override = subprocess.run(
+                [
+                    str(self.config_runner),
+                    "--print-env",
+                    "--managed-serving",
+                    str(self.deepseek_config),
+                ],
+                cwd=self.repo,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=override_env,
+            )
+            self.assertEqual(override.returncode, 0, override.stderr)
+            self.assertIn(
+                "SIM_W5_MANAGED_PROVIDER_LEASE_MS=345678\n",
+                override.stdout,
+            )
+
+            for invalid_lease in ("99", "600001"):
+                with self.subTest(invalid_lease=invalid_lease):
+                    invalid_env = base_env.copy()
+                    invalid_env["SIM_W5_MANAGED_PROVIDER_LEASE_MS"] = invalid_lease
+                    invalid = subprocess.run(
+                        [
+                            str(self.config_runner),
+                            "--print-env",
+                            "--managed-serving",
+                            str(self.deepseek_config),
+                        ],
+                        cwd=self.repo,
+                        check=False,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=invalid_env,
+                    )
+                    self.assertEqual(invalid.returncode, 2)
+                    self.assertIn(
+                        "SIM_W5_MANAGED_PROVIDER_LEASE_MS must be 100..600000",
+                        invalid.stderr,
+                    )
 
     def test_managed_timeout_is_separate_from_pto_timeout(self):
         runner = self.guest_runner.read_text(encoding="utf-8")
@@ -377,6 +467,15 @@ class W5ClusterTopologyTest(unittest.TestCase):
             'SIM_W5_MANAGED_BOOTSTRAP_GENERATION="${SIM_W5_MANAGED_BOOTSTRAP_GENERATION:-$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE}"',
             source,
         )
+        self.assertIn(
+            'SIM_W5_MANAGED_PROVIDER_LEASE_MS="${SIM_W5_MANAGED_PROVIDER_LEASE_MS:-120000}"',
+            source,
+        )
+        self.assertIn(
+            'echo "provider_lease_ms=\\$SIM_W5_MANAGED_PROVIDER_LEASE_MS"',
+            source,
+        )
+        self.assertNotIn('echo "provider_lease_ms=120000"', source)
         self.assertIn(
             '--generation "\\$SIM_W5_MANAGED_BOOTSTRAP_GENERATION"', source
         )

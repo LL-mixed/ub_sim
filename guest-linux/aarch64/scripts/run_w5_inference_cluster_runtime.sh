@@ -160,6 +160,12 @@ if (( w5_resolve_managed_timeout_status != 0 )); then
   exit "$w5_resolve_managed_timeout_status"
 fi
 
+w5_resolve_managed_provider_lease_status=0
+w5_resolve_managed_provider_lease_ms || w5_resolve_managed_provider_lease_status=$?
+if (( w5_resolve_managed_provider_lease_status != 0 )); then
+  exit "$w5_resolve_managed_provider_lease_status"
+fi
+
 case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
   deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
     prompt_token_ids=("${(@s:,:)SIM_LLM_INFER_PROMPT_TOKEN_IDS}")
