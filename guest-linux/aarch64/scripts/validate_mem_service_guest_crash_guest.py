@@ -20,6 +20,15 @@ def one_record(text, prefix, required):
     return matches[0]
 
 
+def managed_mapping_records(text, prefix):
+    """Return structured map records without consuming QEMU diagnostics."""
+    structured = "\n".join(
+        line for line in text.splitlines()
+        if line.startswith(f"{prefix} map_id=")
+    )
+    return records(structured, prefix)
+
+
 def kernel_snapshots(text):
     snapshots = []
     phase = None
@@ -87,7 +96,8 @@ def validate(node_a, node_b_before, node_b_after, qemu_b_before, host_log):
     address = int(crash_ready["address"])
     require(len(crash_ready) == 11 and address > 0,
             "invalid guest crash barrier")
-    matching_routes = [row for row in records(qemu_b_before, "GSVA_MAP:")
+    matching_routes = [row for row in
+                       managed_mapping_records(qemu_b_before, "GSVA_MAP:")
                        if int(row.get("home_va", "0"), 0) == address]
     require(len(matching_routes) == 1 and
             int(matching_routes[0].get("size", "0"), 0) == 2097152 and
@@ -96,7 +106,8 @@ def validate(node_a, node_b_before, node_b_after, qemu_b_before, host_log):
             "lost guest QEMU did not establish the exact managed mapping")
     map_id = matching_routes[0].get("map_id")
     require(not any(row.get("map_id") == map_id
-                    for row in records(qemu_b_before, "GSVA_UNMAP:")),
+                    for row in managed_mapping_records(
+                        qemu_b_before, "GSVA_UNMAP:")),
             "lost guest mapping was removed before the crash")
 
     guest_kill = one_record(host_log, "mem_service guest-recovery-host:", {

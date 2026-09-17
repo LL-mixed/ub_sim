@@ -70,8 +70,10 @@ def fixture():
         "mem_service object-share: status=ok node=1 role=consumer backend=obmm",
     ))
     qemu_b_before = (
+        "GSVA_MAP: cpu_window registered at pa=40000200000 size=200000\n"
         "GSVA_MAP: map_id=5 segment_id=14177894576915742721 "
         "home_va=0x700000000000 epoch=1 size=2097152 source=2 profile=1\n"
+        "GSVA_UNMAP: cpu_window remains registered\n"
     )
     host_log = "\n".join((
         "mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 pid=123",
