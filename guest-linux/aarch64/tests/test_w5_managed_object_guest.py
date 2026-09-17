@@ -25,6 +25,9 @@ class W5ManagedObjectGuestTest(unittest.TestCase):
                 result.stdout.strip(),
                 "w5_managed_object_guest=pass writer_lifecycle=1 "
                 "reader_lifecycle=1 writer_abort=1 owner_cleanup=1")
+            self.assertIn(
+                "[w5_managed_object] role=writer stage=map rc=-5 status=10 ",
+                result.stderr)
 
 
 if __name__ == "__main__":

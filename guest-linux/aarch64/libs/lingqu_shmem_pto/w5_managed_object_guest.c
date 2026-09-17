@@ -185,6 +185,17 @@ static int adopt(struct w5_managed_object_guest *object,
     return rc;
 }
 
+static int report_open_failure(const struct w5_managed_object_guest *object,
+    const char *role, const char *stage, int rc,
+    enum mem_service_wire_status status)
+{
+    fprintf(stderr,
+            "[w5_managed_object] role=%s stage=%s rc=%d status=%u key=%s\n",
+            role, stage, rc, (unsigned)status,
+            object && object->key[0] ? object->key : "none");
+    return rc;
+}
+
 int w5_managed_writer_open(
     const struct mem_service_client *client,
     const struct mem_service_provider_channel *channel,
@@ -221,9 +232,13 @@ int w5_managed_writer_open(
     object->allocation_requested = true;
     rc = mem_service_client_allocate_object_at_home(client, &request,
         config->home_node, &object->allocation, status_out);
-    if (rc) return rc;
+    if (rc)
+        return report_open_failure(object, "writer", "allocate", rc,
+                                   *status_out);
     rc = wait_allocation_active(object, status_out);
-    if (rc) return rc;
+    if (rc)
+        return report_open_failure(object, "writer", "wait-active", rc,
+                                   *status_out);
     rc = operation_id(object, "acquire", acquire_operation,
                       sizeof(acquire_operation));
     if (rc) return rc;
@@ -231,11 +246,15 @@ int w5_managed_writer_open(
         acquire_operation, object->session, object->holder_node_id,
         object->holder_provider_incarnation, true,
         object->allocation.generation, &object->allocation, status_out);
-    if (rc) return rc;
+    if (rc)
+        return report_open_failure(object, "writer", "holder-acquire", rc,
+                                   *status_out);
     object->holder_owned = true;
     rc = transition(object, MEM_SERVICE_REFERENCE_BEGIN, object->key, NULL,
                     &result, status_out);
-    if (rc) return rc;
+    if (rc)
+        return report_open_failure(object, "writer", "reference-begin", rc,
+                                   *status_out);
     object->allocation = result.allocation;
     object->begun = true;
     rc = operation_id(object, "map", map_operation, sizeof(map_operation));
@@ -244,8 +263,12 @@ int w5_managed_writer_open(
         &object->allocation, object->session, map_operation,
         MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE,
         &object->mapping, &object->lifecycle, status_out);
-    if (rc) return rc;
-    return adopt(object, status_out);
+    if (rc)
+        return report_open_failure(object, "writer", "map", rc,
+                                   *status_out);
+    rc = adopt(object, status_out);
+    return rc ? report_open_failure(object, "writer", "adopt", rc,
+                                    *status_out) : 0;
 }
 
 int w5_managed_reader_open(

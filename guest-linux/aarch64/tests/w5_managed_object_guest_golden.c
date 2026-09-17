@@ -37,6 +37,7 @@ static unsigned destroys;
 static unsigned retires;
 static unsigned char backing[65536];
 static struct lingqu_object_ref_wire_v2 published;
+static int map_result;
 
 static void fill_allocation(struct mem_service_client_allocation *allocation,
                             const char *session)
@@ -232,6 +233,10 @@ int mem_service_client_map_managed_allocation(
     enum mem_service_wire_status *status_out)
 {
     (void)client; (void)channel;
+    if (map_result) {
+        *status_out = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        return map_result;
+    }
     map_common(allocation, flags, mapping, lifecycle, session_id, operation_id);
     *status_out = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
@@ -520,6 +525,9 @@ int main(void)
     assert(resolves == 1 && acquires == 1 && holder_acquires == 2 &&
            maps == 3 && adopts == 3);
     assert(closes == 3 && destroys == 3 && releases == 3 && retires == 1);
+    map_result = -EIO;
+    assert(w5_managed_writer_open(&client, &channel, &domain, &writer_config,
+                                  &writer, &status) == -EIO);
     puts("w5_managed_object_guest=pass writer_lifecycle=1 reader_lifecycle=1 writer_abort=1 owner_cleanup=1");
     return 0;
 }
