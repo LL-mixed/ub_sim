@@ -5995,3 +5995,83 @@ nodeB qemu  3cd4a01b4e2777821abc2db784f3823fb0a2d4b380264b91417cec44bfbcaec9
 kill/replacement/rejoin、旧 provider 身份拒绝和新 allocation 跨 guest 数据闭环。
 管理进程与 guest 故障、其他事务注入点、裸 reserve-intent/torn 隔离及重复故障
 矩阵继续未完成，M3 与总目标保持进行中。
+
+### n4 双 guest recovery-fault r16-r20：裸事务故障隔离
+
+独立服务 `0313f1f` 为 OBMM allocation worker 增加确定性故障注入配置：
+`fault_injection_phase=reserve-intent` 与
+`fault_injection_mode=sync-exit|torn-exit`。sync 模式在完整 reserve-intent 帧
+同步落盘后退出；torn 模式只写入该帧的一半后退出；退出码固定为 86。默认配置
+不触发故障，未知 phase/mode 严格拒绝。故障发生在 allocation ioctl 前，因此该
+用例可以分别证明“完整未确认意图”和“半写 ledger”进入隔离，同时排除实际
+backing 分配对结果的干扰。该提交已只推送授权的
+`origin/codex/gva-managed-service-completion`。
+
+父仓库 `b6c9c9f` 增加 `reserve_intent_crash` 与 `torn_ledger_crash` 两个实际
+guest 场景、启动编排和专用验证器。本地轻量门禁覆盖 54 项，全部执行项通过，
+另有 16 项因目标环境缺失按既有条件跳过；专用 recovery-fault 测试 6/6 通过。
+r17 随后暴露 helper 运行在 subshell 中，无法等待父 shell 创建的 worker PID，
+故障发生前便失败。`e416f34` 将 helper 改为当前 shell 函数，保持局部变量作用域，
+专用测试继续 6/6 通过。
+
+实际运行使用以下不可变组合：
+
+```text
+parent      1f62b429de96b627562378c397c1adf2ec9d88a9
+mem_service 0313f1f8da991431487d05d7425f74e4020665ae
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   d0400c9b56b06051bfd1fdb300cab932a48e7ec2d626972306c2f673318c6928
+```
+
+r19 `reserve_intent_crash` 从 01:52:58 至 01:53:11 UTC 运行约 13 秒。guest
+业务路径完整完成，记录完整故障回执：
+
+```text
+phase=reserve-intent mode=sync-exit ledger_bytes=1024 worker_exit_code=86
+ledger_integrity=complete generation=1 provider_state=isolated
+resource_reconciliation_required=1
+```
+
+两个节点均观察到同一 generation 的隔离状态，统计均为
+`live_objects=0 backing_allocated_bytes=0 address_reserved_bytes=0 live_refs=0
+in_flight=1 quarantined_objects=1 quarantined_bytes=0 import_mappings=0`；活动 provider
+为 1，目录与 data plane 均未就绪，故障前后的 kernel region 基线一致。原 runner
+exit 1 的唯一原因是验证器把普通 `obmm-worker initial refresh` 日志误当成 KV 故障
+回执。`1f62b42` 将解析范围限定为
+`obmm-worker fault-injection=triggered`；提交后的验证器直接复核同一组不可变原始
+日志通过，没有重跑 QEMU：
+
+```text
+managed_recovery_fault=pass fault=reserve_intent_crash generation=1
+provider_state=isolated
+```
+
+r19 原始日志 SHA-256：
+
+```text
+nodeA 3b9f0be1a55b65f9233fff6f3724d1c634dc63a7a00847027e1626fd669b9e23
+nodeB d21a05d16c906247226905326f99cc2a0e2b20e91a72cecccb2470a6b7ffb2b7
+```
+
+r20 `torn_ledger_crash` 从 01:55:33 至 01:55:45 UTC 运行约 13 秒，完整 runner
+1/1 通过。worker 同样以 86 退出，generation 为 1，验证器确认
+`mode=torn-exit ledger_integrity=torn provider_state=isolated` 及
+`resource_reconciliation_required=1`；两节点资源、quarantine、readiness 与 kernel
+region 判据和 r19 一致。结果为：
+
+```text
+managed_recovery_fault=pass fault=torn_ledger_crash generation=1
+provider_state=isolated
+```
+
+r20 原始日志 SHA-256：
+
+```text
+nodeA 4040170db9e575215a7909d813d0e094f37f4a83b713e3cc7bd69fdd8021672a
+nodeB 037c271c79b6a1df634558d00c5b2418e1f3737646dfcf5ee4dff1b228ba5707
+```
+
+两轮结束后均通过精确进程查询确认没有 `qemu-system-aarch64` 遗留。该结果关闭
+M3 的裸 reserve-intent 与 torn ledger 实际隔离子项。管理进程故障、整个 guest
+故障、其他事务注入阶段及重复故障矩阵仍未完成；M3 与总目标继续保持进行中。
