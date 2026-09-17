@@ -1622,7 +1622,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
 | M2 动态身份与 W5 | 通过 | r123/r124 覆盖 home 与 consumer 的 token/epoch/owner/descriptor 身份拒绝；r274/r38/r41 覆盖错误、重复、迟到和缺失 ACK、恢复回执及旧 CPU/PTO 拒绝；r286/r384 覆盖正常 PTO drain；r322 百轮拒绝旧 key/V2 并读取新代；r381 拒绝退役 descriptor 的 CPU 访问并验证新映射；当前锁定服务 `3592080c`、QEMU `02d214fe`；r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node，两个核心配置均完成 8-step 和终态资源归零 | 无；本文 M2 的身份、故障和模型/拓扑矩阵已满足。M4 压力/收益与 M5 tokenless replay 继续独立验收 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
-| M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成；A16 的 2/3/8-node 每节点 home 与三轮冷启动、A18 独立包跨机复现仍待验收 |
+| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零 | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成；A16 的 2/3/8-node 每节点 home、8-node 全部有向节点对与三轮冷启动、A18 独立包跨机复现仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
 2026-09-17 M2 补记：Qwen 8-node/8-step 的首次 r83 在 32 个历史
@@ -1734,6 +1734,32 @@ r93 关闭 Qwen 4-node 定点回归。M2 的模型/拓扑运行矩阵已经完�
 引用成功，并覆盖远端 holder retire 的成功与失败边界。M2“真实代际与 W5 客户端
 集成”据此通过。该结论不关闭 M4 的混合压力、重复性能样本、三轮冷启动和独立包
 复现，也不关闭 M5 的 tokenless replay 联合失效。
+
+2026-09-18 M4 补记：先复核 r121 已保存的真实双 guest 证据。三个独立客户端
+分别申请 1、2097153、4194305 bytes，alignment 为 2、4、8 MiB；中间对象释放后
+申请 3 MiB/4 MiB-aligned replacement，池占用依次为 8/20/16/20/8 MiB，持续
+持有的原对象仍能读回相同 checksum。该证据关闭尺寸、对齐、交错释放和原引用
+保持子项；prefix、decode KV、hidden、TTL/版本失效和容量驱逐的语义组合仍需
+单独验收。
+
+同日新增的重复运行报告器在每个输入报告先通过单轮验收后，强制 2 个预热样本、
+至少 5 个正式样本、互异 run ID，以及相同节点数、步数、token 和文本输出。
+n4-910c1 使用锁定的 mem_service `3592080c`、QEMU `02d214fe`、Qwen3-0.6B、
+4-node/4-step 配置完成 r93 功能核对及后续 6 轮，前 2 轮作为预热，后 5 轮作为
+正式样本。正式样本统计为：
+
+| 指标 | median | min | max | mean | population stdev |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TTFT (ms) | 12103.0 | 12010.0 | 12145.0 | 12090.6 | 44.554 |
+| TPOT (ms) | 11760.7 | 11460.0 | 13099.3 | 12074.92 | 609.191 |
+| E2E (ms) | 47369.0 | 46390.0 | 51406.0 | 48315.4 | 1843.978 |
+| compute/publish (ms) | 41506.0 | 40242.0 | 44427.0 | 41972.8 | 1562.374 |
+
+7 轮均为 4/4 节点、4/4 step，token 固定为 `264,3644,7653,304`；共 28 条
+cleanup 均核对 16 个 allocation 且所有资源计数归零，终态无 QEMU。该组没有
+启用 prefix cache，`gsva_lookup_ms` 和 `gsva_map_read_ms` 均为 0，因此只关闭
+冷 cache/无 prefix 基线的重复性门槛。热 prefix 和不同 suffix 必须分别取样，
+不得与本组混算。完整 run ID、summary SHA-256 和统计输出见实施进度记录。
 
 ## 9. Review 意见处置
 

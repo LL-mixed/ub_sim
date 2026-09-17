@@ -7119,3 +7119,54 @@ DeepSeek 模型运行矩阵全部完成；M2 只剩计划列明的完整身份/�
 新引用写读，以及远端 holder retire 成功/失败边界。M2“真实代际与 W5 客户端
 集成”阶段通过。M4 的混合尺寸/对齐/交错释放、重复性能样本、三轮冷启动和独立包
 复现，以及 M5 的 tokenless replay 联合失效仍按原计划继续。
+
+## 2026-09-18：M4 冷 cache 基线重复测量
+
+本轮先复核 r121 的原始运行记录。该用例已经在同一服务生命周期内以三个独立
+客户端申请 1、2097153、4194305 bytes，alignment 分别为 2、4、8 MiB；释放
+中间对象后申请 3 MiB/4 MiB-aligned replacement。五个检查点的池占用为
+8/20/16/20/8 MiB，持续持有的原对象保持映射并读回相同 checksum。由此关闭
+M4 的尺寸、对齐、交错释放和原引用保持子项，无需重跑 guest。prefix、decode KV、
+hidden、TTL/版本失效和容量驱逐的语义化组合仍保持未完成。
+
+提交 `4b7b5109` 为 `w5_inference_run_report.py` 增加
+`--summarize-repetitions`：逐份执行现有单轮验收，要求 2 个预热样本、至少 5 个
+正式样本、互异 run ID，以及完全相同的节点数、步数、token 和文本输出；输出
+TTFT、TPOT、E2E、compute、publish 和 GSVA lookup/map-read 的 median、min/max、
+mean 与 population stdev。22 项定向测试和 `git diff --check` 通过。
+
+n4-910c1 复用 mem_service `3592080ca7173940e378ea35be223d8c7d653a51`、
+QEMU `02d214fe84b6b7402d428dbadb5f2a6e90498463`、Qwen3-0.6B 和相同
+4-node/4-step 配置。r93 是功能核对及第一个预热样本；报告器改动只涉及运行后
+汇总，没有改变该次运行的源码、模型或配置。其后执行 6 轮，第二轮作为预热，
+余下 5 轮作为正式样本：
+
+| phase | run ID | summary SHA-256 |
+| --- | --- | --- |
+| warmup 1 | `2026-09-18_03-43-16_w5_qwen3_0_6b_decode_7804` | `521e70b8a1f7859a07134f6fb269352f3c9c51985ab4611d13043899372b3a3c` |
+| warmup 2 | `2026-09-18_03-52-01_w5_qwen3_0_6b_decode_7147` | `9266351b501ab874a2357bc954626114afd27e31e85b3cc90d7aefd2c88eeeae` |
+| measured 1 | `2026-09-18_03-53-21_w5_qwen3_0_6b_decode_28241` | `551ddb8ed1bf0a0b6fba45fb2963145109d23cf53b503392ad053b8a17e69543` |
+| measured 2 | `2026-09-18_03-54-39_w5_qwen3_0_6b_decode_26575` | `b62affae5c95d31b37c97d2a55752d42e032a4c42c8799220e8af1be84d2e1dd` |
+| measured 3 | `2026-09-18_03-55-56_w5_qwen3_0_6b_decode_22263` | `1693f992d722308c6828bdaeef9232371108798d2096330424ada45cf48cb05b` |
+| measured 4 | `2026-09-18_03-57-13_w5_qwen3_0_6b_decode_28766` | `94367877a4eb1fd26e9817b01bb2e1491e968fcfad76bc5064d4bd26f96df920` |
+| measured 5 | `2026-09-18_03-58-30_w5_qwen3_0_6b_decode_24511` | `b816ca13ccd417d521b079f212d852b45beed5929f4ccf61303dfbef1e14e895` |
+
+汇总器返回 `status=pass`。5 个正式样本的统计结果为：
+
+| metric | median | min | max | mean | population stdev |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| TTFT (ms) | 12103.0 | 12010.0 | 12145.0 | 12090.6 | 44.554 |
+| TPOT (ms) | 11760.7 | 11460.0 | 13099.3 | 12074.92 | 609.191 |
+| E2E (ms) | 47369.0 | 46390.0 | 51406.0 | 48315.4 | 1843.978 |
+| compute (ms) | 41506.0 | 40242.0 | 44427.0 | 41972.8 | 1562.374 |
+| publish (ms) | 41506.0 | 40242.0 | 44427.0 | 41972.8 | 1562.374 |
+| GSVA lookup (ms) | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| GSVA map/read (ms) | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+
+7 轮均为 4/4 节点、4/4 step，输出 token 固定为
+`264,3644,7653,304`，文本固定为 `" a global leader in"`。共 28 条 cleanup
+记录均核对 `allocations=16`，没有非零 live object、backing/address bytes 或
+quarantine，远端终态无 QEMU。该配置未启用 prefix cache，GSVA 两项时间为 0
+只说明此组未走 cache mapping；本组关闭冷 cache/无 prefix 基线的重复测量门槛。
+热 prefix、不同 suffix、A16 多 home 全矩阵/三轮冷启动和 A18 独立包跨机复现
+继续按计划单独验收。
