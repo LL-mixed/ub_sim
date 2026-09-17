@@ -20,25 +20,36 @@ def require_pattern(text: str, pattern: str, message: str) -> re.Match[str]:
 
 
 def require_home_retire(node_a: str, qemu_a: str) -> dict:
-    retired = re.findall(
-        r"OBMM: GSVA segment retired: segment_id=(0x[0-9a-fA-F]+) "
-        r"epoch=([1-9][0-9]*) status=COMMITTED",
+    recovery = require_pattern(
         node_a,
+        r"mem_service holder-recovery: node=0 status=recovered "
+        r"key=holder-recovery-object generation=([1-9][0-9]*) state=retired",
+        "home recovery completion identity is missing",
     )
+    generation = int(recovery.group(1))
+    releases = re.findall(
+        rf"^obmm-worker generation={generation} phase=release-intent "
+        rf"segment=([1-9][0-9]*) export=([1-9][0-9]*)$",
+        node_a,
+        re.MULTILINE,
+    )
+    require(len(releases) == 1,
+            "home worker release intent is missing or ambiguous")
+    segment = int(releases[0][0])
+    export_mem_id = int(releases[0][1])
+    retired = [
+        (segment_text, epoch_text)
+        for segment_text, epoch_text in re.findall(
+            r"OBMM: GSVA segment retired: segment_id=(0x[0-9a-fA-F]+) "
+            r"epoch=([1-9][0-9]*) status=COMMITTED",
+            node_a,
+        )
+        if int(segment_text, 16) == segment
+    ]
     require(len(retired) == 1,
-            "home guest retirement marker is missing or ambiguous")
+            "home guest retirement marker does not match the recovered allocation")
     segment_text, epoch_text = retired[0]
-    segment = int(segment_text, 16)
     epoch = int(epoch_text)
-
-    release = require_pattern(
-        node_a,
-        rf"^obmm-worker generation=([1-9][0-9]*) phase=release-intent "
-        rf"segment={segment} export=([1-9][0-9]*)$",
-        "home worker release intent does not match the retired segment",
-    )
-    generation = int(release.group(1))
-    export_mem_id = int(release.group(2))
     for phase, export_id in (("unexported", export_mem_id),
                              ("retired", 0),
                              ("reclaimed", 0)):
@@ -106,7 +117,8 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     )
     require_pattern(
         node_a,
-        r"mem_service holder-recovery: node=0 status=recovered .*state=retired",
+        r"mem_service holder-recovery: node=0 status=recovered "
+        r"key=holder-recovery-object generation=[1-9][0-9]* state=retired",
         "home recovery completion is missing",
     )
     require_pattern(

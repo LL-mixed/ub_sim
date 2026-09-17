@@ -31,7 +31,7 @@ def fixture():
         "mem_service object-session: action=wait_state key=holder-recovery-object status=ok state=retired",
         "MANAGED_PTO_HOLDER_RECOVERY node=0 state=peer-retired generation=1",
         "MANAGED_PTO_RESULT node=0 status=pass key=holder-recovery-object generation=1 holder_recovery_probe=1 role=peer old_cpu_access=not-applicable old_pto_access=not-applicable cpu_signal=0 cleanup=provider-close",
-        "mem_service holder-recovery: node=0 status=recovered key=holder-recovery-object state=retired",
+        "mem_service holder-recovery: node=0 status=recovered key=holder-recovery-object generation=1 state=retired",
         "mem_service object-session: session=holder-recovery-rejoin-reader peer_canary=ok peers=1",
         "mem_service object-session: session=holder-recovery-rejoin-reader op=2 action=acquire key=holder-recovery-rejoin-object status=ok state=active generation=2",
         "mem_service object-session: session=holder-recovery-rejoin-reader op=5 action=read key=holder-recovery-rejoin-object status=ok offset=0 len=65536 checksum=0xed87efe0aa520383",
@@ -265,6 +265,20 @@ class HolderRecoveryGuestTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,
                                              "authoritative revoke"):
                     validator.validate(*logs)
+
+    def test_home_retire_selects_recovered_generation_among_cleanup_records(self):
+        logs = fixture()
+        logs[0] += "\n" + "\n".join((
+            "obmm-worker generation=7 phase=release-intent segment=14177894576915742726 export=4",
+            "obmm-worker generation=7 phase=unexported segment=14177894576915742726 export=4",
+            "OBMM: GSVA segment retired: segment_id=0xc4c2000000000006 epoch=1 status=COMMITTED",
+            "obmm-worker generation=7 phase=retired segment=14177894576915742726 export=0",
+            "obmm-worker generation=7 phase=reclaimed segment=14177894576915742726 export=0",
+        ))
+        result = validator.validate(*logs)
+        self.assertEqual(result["home_retire"]["worker_generation"], 1)
+        self.assertEqual(result["home_retire"]["segment_id"],
+                         "0xc4c2000000000001")
 
     def test_cli_writes_machine_readable_report(self):
         with tempfile.TemporaryDirectory() as folder:
