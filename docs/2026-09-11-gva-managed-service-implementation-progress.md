@@ -6334,3 +6334,80 @@ host receipt 3d04bb5b74ba88e4799ad5e71dbf7977691f979fbdaf96ecc6851a5f1f625b7e
 精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭跨 guest RETIRE ACK
 缺失的物理 fail-closed 子项。ACK 缺失后的服务层对账/重新加入、重复事务故障、
 重复 guest 故障和完整重复故障矩阵继续待验收；M3 与总目标保持进行中。
+
+### n4 双 guest holder-receipt r39-r41：缺失 receipt 的恢复门禁
+
+父仓库 `f725ee8c4b47d6c40d88fe93123f6e9feab8b7df` 在既有
+`cpu-holder-recovery` 流程中加入跨 guest receipt gate。node A 等待 replacement
+provider directory ready 后，必须先取得
+`reason=holder_fence_receipt_required` 和正数 `remaining_holders`；node B 只有
+观察到 gate 后才允许调用 provider `fence-holder-state`。验证器要求该拒绝发生在
+目标 recovery 接受之前，并把 generation 与最终 home retire 绑定。
+
+r39 的实际运行先成功观察到 generation 1、`remaining_holders=1`，随后在 gate
+发布处失败。原因是实现尝试在已有 QUARANTINED allocation 时新建 gate allocation；
+服务按 `managed_reconciliation_required` 正确拒绝新的 managed data operation。
+该失败日志保留。父仓库 `2bda887b0bf029c9dd6d3473c8be68591aff6532` 将 gate
+移到故障前预创建；node A 确认 receipt 缺失后只执行允许的 `RETIRE_OBJECT`，node B
+等待 gate 进入 RETIRED。修订后的 shell/Python 语法、holder-recovery 6 项验证器
+测试、guest 布局契约及 diff 检查通过。
+
+r40 已完成 receipt 缺失拒绝、gate 退役、真实 `LOCAL_REVOKE`、fencing receipt、
+旧 PTO/CPU 拒绝、home recovery 和退役。该轮误用 `nd/262144` 算子配置，rejoin
+reader 用时 84.8 秒，超过 writer 的 60 秒同步等待；node B 先停止 replacement
+worker，新对象随后进入隔离。该轮 0/1，保留为配置失败证据，不计入通过结果。
+
+r41 改回 r15 已实际成功的 `cross-page/65536` 配置，复用 r40 生成且源码未变化的
+initramfs，通过 `--skip-guest-artifact-preparation` 避免重复构建。实际运行组合为：
+
+```text
+parent business 2bda887b0bf029c9dd6d3473c8be68591aff6532
+validator        d1f0c7baa8fb5945be683cbbd43d476b70053543
+mem_service      48a542e20b6ab6f81f5c072d2d743c4922e6eac1
+qemu             5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel           dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs        78d5b79ba1c8c56f7532fbf95bd81ba639da9458d295955159b3ac3bf3df6db2
+```
+
+node A 先报告 generation 1、`remaining_holders=1`，随后将 gate 退役；node B
+观察同一 gate 后才执行物理撤销并提交唯一 holder receipt。旧 PTO op 8 得到
+`pto_ub_gm_bad_memref`，旧 CPU pin 得到 signal 7。node A 随后接受 generation 1
+recovery，完成 unexport、kernel segment retire 和 service reclaim。incarnation 8
+replacement 发布 generation 7，旧 incarnation 7 acquire 以
+`holder_provider_mismatch` 拒绝；writer/publish/reader 对 65536 bytes 得到相同
+checksum `0xed87efe0aa520383`，最终两端业务均输出 `object-share: status=ok`。
+
+原 runner 最终 exit 1，原因是本批初版验证器把真实 CLI 的 `status=ok` 与
+`state=retiring` 假设为相邻行；实际输出在二者之间包含 key。`d1f0c7ba` 将匹配
+改为连续核对 status、精确 key、state 和 generation，本地 6/6 通过。修复后的
+验证器直接复核同一组 r41 原始日志，未重跑 guest，结果为：
+
+```text
+status             pass
+physical_revoke    1
+old_pto_rejected   1
+home_retire        1
+rejoin             1
+receipt generation 1
+remaining_holders  1
+old/current inc    7 / 8
+rejoin generation  7
+old CPU signal     7
+old PTO error      pto_ub_gm_bad_memref
+```
+
+原始文件及报告 SHA-256：
+
+```text
+nodeA guest cce93606c479cfd4ea497061ad80ff79eedcfa1619e15ea6dcedd15ad21bd66b
+nodeB guest 9325de8c04d03a9780579d04258c425c664569992a782f740cb1151fff88bdc7
+nodeA qemu  2dbff680f959fb153102a4ff68bd60f0b781bf3665a231e28d9727b6aa384e8f
+nodeB qemu  2c3f632af87b51c116cbbc6586849b2d07b6f4d61aa2eb74558f6405295722da
+validation  8e0e1a43767f940e9a63216af9fe3296411619ac9320a2b0fa5210475fad66f6
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭服务层“holder receipt
+缺失时拒绝 recovery、receipt 到达后恢复并允许 replacement rejoin”子项。它没有
+覆盖整个 holder guest 在 RETIRE ACK 前消失后的 service-managed 对账/rejoin，也
+没有覆盖重复事务故障、重复 guest 故障或完整重复故障矩阵；M3 与总目标继续保持
+进行中。

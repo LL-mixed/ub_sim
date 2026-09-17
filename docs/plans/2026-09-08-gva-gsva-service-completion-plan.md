@@ -694,6 +694,29 @@ finalize 或 retire 完成；终态无遗留 QEMU。实际运行 initramfs SHA-2
 对账/重新加入、重复事务故障、重复 guest 故障及完整重复矩阵继续待验收，M3 与
 总目标保持进行中。
 
+同日 M3 holder receipt 缺失与重新加入续作：父仓库 `f725ee8c` 为既有
+holder-recovery 增加明确的 receipt gate，要求 node A 在 replacement 在线后先取得
+`holder_fence_receipt_required` 和正数 `remaining_holders`，node B 只有观察到该
+gate 才能执行真实 `LOCAL_REVOKE`。r39 暴露 quarantined allocation 存在时禁止新
+allocation 的正确 fail-closed 行为；`2bda887b` 将 gate 改为故障前预创建、拒绝后
+退役。r40 已越过 receipt、旧 CPU/PTO 拒绝和 home retire，最终因误用
+`nd/262144` 配置使 rejoin reader 用时 84.8 秒、超过 writer 的 60 秒等待而失败；
+该配置不作为验收结果。`d1f0c7ba` 将验证器接受条件绑定到真实
+`recover-allocation` 的 key、state 和 generation，避免混淆 gate 自身退役。
+
+n4-910c1 r41 复用历史已通过的 `cross-page/65536` 工件执行一次实际双 guest。
+node A 先确认 generation 1 尚有 1 个 holder、退役 receipt gate；node B 观察 gate
+后完成物理撤销和 fencing receipt，旧 PTO op 8 返回 `pto_ub_gm_bad_memref`，旧 CPU
+pin 触发 signal 7。node A 随后接受同一 generation 的 recovery 并完成 home retire；
+incarnation 8 replacement 发布 generation 7，新 writer/reader 对 65536 bytes 得到
+相同 checksum，旧 incarnation 7 被拒绝，最终 rejoin 成功。业务路径完成后原 runner
+仅因验证器把 CLI 字段错误假设为相邻行而 exit 1；修复后的验证器直接复核同一组
+原始日志通过，报告 `physical_revoke=1 old_pto_rejected=1 home_retire=1 rejoin=1`，
+没有重跑 guest，终态没有遗留 QEMU。该结果关闭“缺少 holder fencing receipt 时服务
+拒绝恢复、receipt 到达后恢复并允许 replacement 重新加入”子项。整个 holder guest
+在 RETIRE ACK 前消失后的 service-managed 对账/rejoin、重复事务故障、重复 guest
+故障及完整重复矩阵继续待验收，M3 与总目标保持进行中。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1480,7 +1503,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 进行中 | 跨 guest 服务与 SDK 访问已运行；r306 百轮及 r297 实际耗尽/复用通过 | 完整故障、节点与独立冷启动验收仍需逐项关闭 |
 | M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 688db48；callable 4 主循环、请求级退役及精确 holder 身份已完成构建/契约门禁，r608 实际 guest 证明 object-session holder 身份可驱动 lost-home recovery | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
-| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序；4ba90ac 要求持久化的精确 holder fencing receipt；dd07fe43c50d/854a8d8449/6d3ebe3 接通本地强制撤销、holder-scoped 枚举、物理优先 receipt 和 lost-home HOME holder 消失证明；688db48/n4 原生 r2 补齐可验证配置绑定并通过完整 worker golden；5809bc8/9abca2c 与 n4-910c1 remote-retire-r8 证明真实跨 guest 脏回写、成功 fence/ACK、TLB/VMA 撤销、两端 route tombstone 和协调端完成；b0d5a8a/c8155a5 与 n4-910c1 holder-recovery-r7 证明 replacement provider 真实 LOCAL_REVOKE、fencing receipt、旧 CPU VMA 拒绝及 home 物理退役；c0f0c09 与 n4-910c1 holder-recovery-pto-r12 进一步证明同一 owner 的旧 PTO op 和旧 CPU pin 均在撤销后被拒绝；2c0e897/607998e 与 n4-910c1 holder-recovery-pto-rejoin-r15 证明实际 worker kill、replacement incarnation 重新加入、旧身份拒绝及新对象跨 guest 写读/退役；0313f1f/1f62b42 与 n4-910c1 recovery-fault r19-r20 证明完整 reserve intent 和 torn ledger 均触发精确 provider 隔离，且零 backing/address 泄漏；285321f 与 n4-910c1 manager-crash-r30 证明 daemon 双次 SIGKILL 后对象身份保留、活跃容量归零、物理义务隔离及 data plane 持续关闭；8a4061d5/e6f91ecb 与 n4-910c1 guest-crash r36 证明单次整个 guest 杀死、replacement 重启和故障对象隔离；48a542e/01cda3aa 与 n4-910c1 worker-transaction r37 证明七个可续作事务边界均可在实际 worker 退出后完成恢复、退役和资源归零；384d99d9 与 n4-910c1 remote-retire-timeout r38 证明实际 holder 消失及 RETIRE ACK 缺失会进入 terminal timeout，且禁止 home finalize | ACK 缺失后的服务层对账/重新加入、重复 guest 故障、重复事务故障及完整重复故障矩阵仍未完成 |
+| M3 回收与恢复 | 进行中 | e6f261e 补齐 checkpoint；e4bc52a/r435 完成出生身份与实际只读核对；69082dd/f2bf359 持久化 holder/provider 归属；f402b13/0cb0401 增加受 fencing 约束的恢复回收与完整义务枚举；ed80575 实现 kernel 已替换的 lost-home worker 对账、服务退役和 ledger 归档；3cffb43/69097b0 补齐实际 guest holder 身份；n4-910c1 r608 双 QEMU/kernel replacement recovery 通过；5ad3ad0/r610 完成同 kernel published reservation 续作；b84b8e6/r612 接通可证明的部分事务续作；3e21a04 增加无法续作 ledger 的精确 provider 隔离入口；044b759e4b 接通 RETIRE 接收端 quarantine、writeback/fence、TLB flush、unmap 与成功 ACK 顺序；4ba90ac 要求持久化的精确 holder fencing receipt；dd07fe43c50d/854a8d8449/6d3ebe3 接通本地强制撤销、holder-scoped 枚举、物理优先 receipt 和 lost-home HOME holder 消失证明；688db48/n4 原生 r2 补齐可验证配置绑定并通过完整 worker golden；5809bc8/9abca2c 与 n4-910c1 remote-retire-r8 证明真实跨 guest 脏回写、成功 fence/ACK、TLB/VMA 撤销、两端 route tombstone 和协调端完成；b0d5a8a/c8155a5 与 n4-910c1 holder-recovery-r7 证明 replacement provider 真实 LOCAL_REVOKE、fencing receipt、旧 CPU VMA 拒绝及 home 物理退役；c0f0c09 与 n4-910c1 holder-recovery-pto-r12 进一步证明同一 owner 的旧 PTO op 和旧 CPU pin 均在撤销后被拒绝；2c0e897/607998e 与 n4-910c1 holder-recovery-pto-rejoin-r15 证明实际 worker kill、replacement incarnation 重新加入、旧身份拒绝及新对象跨 guest 写读/退役；0313f1f/1f62b42 与 n4-910c1 recovery-fault r19-r20 证明完整 reserve intent 和 torn ledger 均触发精确 provider 隔离，且零 backing/address 泄漏；285321f 与 n4-910c1 manager-crash-r30 证明 daemon 双次 SIGKILL 后对象身份保留、活跃容量归零、物理义务隔离及 data plane 持续关闭；8a4061d5/e6f91ecb 与 n4-910c1 guest-crash r36 证明单次整个 guest 杀死、replacement 重启和故障对象隔离；48a542e/01cda3aa 与 n4-910c1 worker-transaction r37 证明七个可续作事务边界均可在实际 worker 退出后完成恢复、退役和资源归零；384d99d9 与 n4-910c1 remote-retire-timeout r38 证明实际 holder 消失及 RETIRE ACK 缺失会进入 terminal timeout，且禁止 home finalize；d1f0c7ba 与 n4-910c1 holder-receipt-r41 证明 holder receipt 缺失时服务拒绝 recovery，receipt 到达后完成 physical revoke、旧 CPU/PTO 拒绝、home retire 和 incarnation 7→8 rejoin | 整个 holder guest 在 RETIRE ACK 前消失后的 service-managed 对账/rejoin、重复 guest 故障、重复事务故障及完整重复故障矩阵仍未完成 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
