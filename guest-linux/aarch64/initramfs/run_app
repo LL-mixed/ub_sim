@@ -1976,16 +1976,18 @@ mem_service_object_share_holder_rejoin() {
   return 0
 }
 
-mem_service_object_share_recovery_fault() (
-  node="$1"
-  size="$2"
-  incarnation="$3"
-  connect="$4"
-  worker="$5"
-  fault="$6"
-  key="recovery-fault-$fault"
-  expected_mode=""
-  expected_integrity=""
+mem_service_object_share_recovery_fault() {
+  local node="$1"
+  local size="$2"
+  local incarnation="$3"
+  local connect="$4"
+  local worker="$5"
+  local fault="$6"
+  local key="recovery-fault-$fault"
+  local expected_mode=""
+  local expected_integrity=""
+  local uptime="" ignored="" deadline=0 result=0 generation=""
+  local attempt=0 worker_status=0
 
   case "$fault" in
     reserve_intent_crash)
@@ -2096,7 +2098,7 @@ mem_service_object_share_recovery_fault() (
   /bin/busybox grep -qx 'data_plane_ready=0' \
     /tmp/recovery-fault-directory-isolated.log || return 1
   echo "mem_service recovery-fault: node=$node phase=observation status=pass fault=$fault mode=$expected_mode ledger_integrity=$expected_integrity key=$key"
-)
+}
 
 mem_service_object_share_managed() (
   node="$1"

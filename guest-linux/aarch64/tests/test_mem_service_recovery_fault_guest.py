@@ -130,13 +130,14 @@ class RecoveryFaultGuestTests(unittest.TestCase):
     def test_guest_and_runner_wire_only_the_dedicated_profile(self):
         run_app = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
         runner = (SCRIPTS / "run_ub_dual_node_apps.sh").read_text()
-        function = run_app.split("mem_service_object_share_recovery_fault() (", 1)[1].split(
+        function = run_app.split("mem_service_object_share_recovery_fault() {", 1)[1].split(
             "\nmem_service_object_share_managed() (", 1)[0]
         self.assertIn("quarantine-allocation-state", function)
         self.assertIn("resource_reconciliation_required=1", function)
         self.assertIn("state=quarantined", function)
         self.assertIn("in_flight=1 quarantined_objects=1", function)
         self.assertIn('worker_status" -eq 86', function)
+        self.assertNotIn("mem_service_object_share_recovery_fault() (", run_app)
         self.assertIn('MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault"', runner)
         self.assertIn("validate_mem_service_recovery_fault_guest.py", runner)
         self.assertIn("managed-recovery-fault-validation.json", runner)
