@@ -1620,7 +1620,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `3592080c`、QEMU `02d214fe`；n4-910c1 r81/r82/r93 完成 Qwen 2/3/4-node 4-step；r84 完成 Qwen 8-node/8-step callable 4 连续 decode、64 条 worker completion、每节点滚动退役 6 个历史 allocation 和终态资源归零；r87/r88 完成 DeepSeek 2/3-node 4-step；r92 完成 DeepSeek 8-node/8-step、64 条 worker/handoff completion、48 次滚动退役和终态资源归零 | 完整身份/故障矩阵未完成 |
+| M2 动态身份与 W5 | 通过 | r123/r124 覆盖 home 与 consumer 的 token/epoch/owner/descriptor 身份拒绝；r274/r38/r41 覆盖错误、重复、迟到和缺失 ACK、恢复回执及旧 CPU/PTO 拒绝；r286/r384 覆盖正常 PTO drain；r322 百轮拒绝旧 key/V2 并读取新代；r381 拒绝退役 descriptor 的 CPU 访问并验证新映射；当前锁定服务 `3592080c`、QEMU `02d214fe`；r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node，两个核心配置均完成 8-step 和终态资源归零 | 无；本文 M2 的身份、故障和模型/拓扑矩阵已满足。M4 压力/收益与 M5 tokenless replay 继续独立验收 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成；A16 的 2/3/8-node 每节点 home 与三轮冷启动、A18 独立包跨机复现仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
@@ -1717,6 +1717,23 @@ mapping、reference、in-flight 与 quarantine 归零；fatal marker 和 QEMU �
 
 r93 关闭 Qwen 4-node 定点回归。M2 的模型/拓扑运行矩阵已经完成，只剩计划列明
 的完整身份/故障矩阵；M4、M5 和总目标状态不变。
+
+2026-09-18 M2 阶段出口复核复用了已经保存的运行与底层生产函数证据，没有再
+启动 guest：
+
+| M2 出口 | 已有证据 | 结论 |
+| --- | --- | --- |
+| 旧 key / 旧 V2 | r322 在百轮同址复用中对 99 轮旧引用执行 resolve/acquire/map-begin，共 594 次返回 `stale_ref` 或 `not_found`；每轮新引用随后读取新数据 | 通过 |
+| 旧 token、错 epoch、错误 owner | r123 对实际 home kernel export 身份逐字段变更，17 组均拒绝且原身份不变；r124 把真实 acquired descriptor 的 token、segment、epoch、owner、access 等字段变更后直接送入生产 map callback，两端均拒绝且原映射继续可读 | 通过 |
+| 旧映射与新代访问 | r381 的旧 descriptor CPU 访问得到 signal 7，同址新 generation 重新映射、数据核对和最终清理通过；r347 还覆盖 backing export token 与 mem ID 重用时的相同结论 | 通过 |
+| retire ACK 与 drain 故障 | r274 生产 coherence 源码测试覆盖 16 种错误 ACK、重复、迟到、发送失败、禁用传输和缺失；实际 r38 在缺少精确 ACK 时进入 terminal timeout 且没有 retire/finalize；r41 在 receipt 后恢复并拒绝旧 CPU/PTO | 通过 |
+| 正常严格 CPU/PTO drain | r286/r384 完成双请求严格 V2 PTO、完整分片、lease、fence 与资源回收；r363 的实际 reset 在活动绑定上 fail-closed 并进入 reconciliation | 通过 |
+| W5 多 home 与模型矩阵 | r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node；两个核心配置均完成 8-step，range、terminal token、滚动退役和终态资源均核对 | 通过 |
+
+以上证据覆盖 M2 验收所列旧 key、旧 token、旧映射、错误 owner、错 epoch 和新
+引用成功，并覆盖远端 holder retire 的成功与失败边界。M2“真实代际与 W5 客户端
+集成”据此通过。该结论不关闭 M4 的混合压力、重复性能样本、三轮冷启动和独立包
+复现，也不关闭 M5 的 tokenless replay 联合失效。
 
 ## 9. Review 意见处置
 

@@ -7098,3 +7098,24 @@ summary SHA-256 为
 r93 关闭 Qwen 4-node 定点回归。M2 的 2/3/4/8-node Qwen 与 2/3/8-node
 DeepSeek 模型运行矩阵全部完成；M2 只剩计划列明的完整身份/故障矩阵。M4、M5
 和总目标继续进行。
+
+## 2026-09-18：M2 阶段出口证据复核
+
+本次复核没有启动新的 guest。计划中剩余的“完整身份/故障矩阵”已由同一代码
+主线的既有实际运行和生产函数测试覆盖，先前进度表没有在这些子项完成后重新
+收敛阶段出口：
+
+| 出口 | 已有证据 | 结论 |
+| --- | --- | --- |
+| 旧 key / 旧 V2 | r322 的百轮同址复用中，99 轮旧引用分别执行 resolve、acquire、map-begin，共 594 次明确返回 `stale_ref` 或 `not_found`；新引用继续读到新代数据 | 通过 |
+| 旧 token、错 epoch、错误 owner | r123 对真实 home kernel export 的 17 个身份/外层字段逐项变更，均拒绝且原身份不变；r124 将实际 acquired descriptor 的 token、segment、epoch、owner、access 等字段变更后直接调用生产 map callback，两端均拒绝并保留原映射 | 通过 |
+| 退役映射 / 新映射 | r381 的旧 descriptor CPU 探针得到 signal 7，同址新 generation 重新映射、checksum 和清理通过；r347 还覆盖 backing export token 与 mem ID 重用 | 通过 |
+| ACK 错误矩阵 | r274 直接链接生产 coherence 源码，覆盖 16 种错误 ACK、重复、迟到、发送失败、传输禁用和缺失；实际 r38 在精确 ACK 缺失时 terminal timeout，没有 apply/finalize/retire | 通过 |
+| ACK 恢复和旧 owner | r41 在精确 receipt 后完成恢复，旧 CPU/PTO 访问拒绝，replacement incarnation 重新加入；r46 再次证明旧 incarnation 7 拒绝、新 incarnation 8/9 写读成功 | 通过 |
+| 正常 CPU/PTO drain | r286/r384 的严格 V2 双请求完成全部分片、lease、fence 和资源回收；r363 的活动绑定 reset 实际 fail-closed 并要求 reconciliation | 通过 |
+| W5 生产消费 | r81/r82/r93/r84 完成 Qwen 2/3/4/8-node；r87/r88/r92 完成 DeepSeek 2/3/8-node；两个核心配置均完成 8-step、滚动退役和终态资源归零 | 通过 |
+
+这些证据逐项满足 M2 验收中的旧 key、旧 token、旧映射、错误 owner、错 epoch、
+新引用写读，以及远端 holder retire 成功/失败边界。M2“真实代际与 W5 客户端
+集成”阶段通过。M4 的混合尺寸/对齐/交错释放、重复性能样本、三轮冷启动和独立包
+复现，以及 M5 的 tokenless replay 联合失效仍按原计划继续。
