@@ -436,7 +436,8 @@ static int obmm_map_region_at_offset_flags(uint64_t mem_id, void *addr,
                 mem_id, strerror(errno));
         return -1;
     }
-    if (addr) {
+    if (addr &&
+        !(extra_mmap_flags & (MAP_FIXED | MAP_FIXED_NOREPLACE))) {
         flags |= MAP_FIXED_NOREPLACE;
     }
     mapped = mmap(addr, len, PROT_READ | PROT_WRITE, flags, region->fd,

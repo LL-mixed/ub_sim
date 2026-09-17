@@ -551,6 +551,7 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
     launcher = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
     app = (APP_DIR / "obmm_async_coroutine.c").read_text()
+    common = (ROOT / "common" / "obmm_common.h").read_text()
     run_app = (ROOT / "initramfs" / "run_app").read_text()
     runner = (ROOT / "scripts" / "run_ub_obmm_eval.sh").read_text()
 
@@ -615,7 +616,9 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     assert "--source-void-response-policy" in launcher
     assert "ubc.source-void-response-policy=" in launcher
     assert "--mapping-reuse-adversarial" in app
-    assert "MAP_FIXED_NOREPLACE" in app
+    assert "MAP_FIXED, &replacement_region" in app
+    assert "(MAP_FIXED | MAP_FIXED_NOREPLACE)" in common
+    assert "obmm_do_unimport(obmm_fd, import_mem_id)" in app
     assert "OBMM_ASYNC_LOAD_MAPPING_REUSE_SUMMARY" in app
     assert "obmm_async_mapping_reuse_adversarial=1" in run_app
     assert "OBMM_ASYNC_LOAD_MAPPING_REUSE_EVIDENCE" in runner

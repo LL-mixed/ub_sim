@@ -2924,21 +2924,27 @@ static int async_run_kernel_task_consumer(struct async_app *app, int obmm_fd,
             goto cleanup;
         }
         map_registered = false;
-        obmm_unmap_region(&import_region);
-        if (obmm_do_unimport(obmm_fd, import_mem_id) != 0) {
-            ret = -errno;
-            goto cleanup;
-        }
-        import_mem_id = 0;
 
         failure_stage = "reuse-address";
         if (obmm_map_region_at_offset_flags(
                 replacement_import_mem_id, reuse_address,
                 replacement_meta.size, import_osync[1], 0,
-                MAP_FIXED_NOREPLACE, &replacement_region) != 0) {
+                MAP_FIXED, &replacement_region) != 0) {
             ret = -errno;
             goto cleanup;
         }
+        if (import_region.fd >= 0) {
+            close(import_region.fd);
+            import_region.fd = -1;
+        }
+        import_region.addr = NULL;
+        import_region.len = 0;
+        import_region.mem_id = 0;
+        if (obmm_do_unimport(obmm_fd, import_mem_id) != 0) {
+            ret = -errno;
+            goto cleanup;
+        }
+        import_mem_id = 0;
         map = (struct obmm_async_load_map_register_v1) {
             .mem_id = replacement_import_mem_id,
             .gsva_base = (uintptr_t)reuse_address,
