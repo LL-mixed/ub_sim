@@ -109,6 +109,79 @@ def write_summary(
 
 
 class W5InferenceRunReportTest(unittest.TestCase):
+    def repetition_summaries(self, root, count):
+        out_dir = root / "out"
+        out_dir.mkdir()
+        summaries = []
+        for index in range(count):
+            run_id = f"repeat-{index}"
+            logs_dir = root / "logs" / f"{run_id}_headless8"
+            logs_dir.mkdir(parents=True)
+            (logs_dir / "nodeA_guest.log").write_text("log\n", encoding="utf-8")
+            write_artifacts(out_dir, run_id)
+            summary = out_dir / f"eight_node_w5_inference_cluster_summary.{run_id}.txt"
+            write_summary(summary, logs_dir)
+            text = summary.read_text(encoding="utf-8")
+            text = text.replace("step=0 round_ms=100", f"step=0 round_ms={100 + index}")
+            text = text.replace("step=1 round_ms=40", f"step=1 round_ms={40 + index}")
+            summary.write_text(text, encoding="utf-8")
+            summaries.append(summary)
+        return summaries
+
+    def test_summarizes_two_warmups_and_five_formal_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summaries = self.repetition_summaries(Path(tmp), 7)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--summarize-repetitions",
+                    *(str(path) for path in summaries),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn(
+            "w5_repetition_report: status=pass warmup_runs=2 measured_runs=5",
+            result.stdout,
+        )
+        self.assertIn(
+            "repetition_metric: name=ttft_ms samples=5 median=104.000 "
+            "min=102.000 max=106.000 mean=104.000 stdev=1.414",
+            result.stdout,
+        )
+        self.assertIn(
+            "repetition_metric: name=tpot_ms samples=5 median=44.000",
+            result.stdout,
+        )
+        self.assertIn(
+            "repetition_metric: name=e2e_ms samples=5 median=148.000",
+            result.stdout,
+        )
+        self.assertNotIn("issue:", result.stdout)
+
+    def test_repetition_report_rejects_too_few_formal_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            summaries = self.repetition_summaries(Path(tmp), 6)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--summarize-repetitions",
+                    *(str(path) for path in summaries),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "issue: insufficient measured runs required=5 actual=4",
+            result.stdout,
+        )
+
     def test_reports_passed_shortpath_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             out_dir = Path(tmp) / "out"

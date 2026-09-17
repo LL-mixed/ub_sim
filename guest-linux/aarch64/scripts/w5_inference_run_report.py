@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import statistics
 import sys
 from pathlib import Path
 
@@ -841,6 +842,8 @@ def timing_report(parsed):
     engram_sum = sum(parse_int(step.get("engram_total_ms")) for step in engram_steps)
     return {
         "steps": len(steps),
+        "ttft_ms": parse_int(steps[0].get("round_ms")) if steps else 0,
+        "tpot_ms": round(sum(post_step0) / len(post_step0), 1) if post_step0 else 0.0,
         "round_sum_ms": round_sum,
         "avg_round_ms": round(round_sum / len(steps), 1) if steps else 0.0,
         "post_step0_avg_round_ms": round(sum(post_step0) / len(post_step0), 1)
@@ -851,6 +854,119 @@ def timing_report(parsed):
         "engram_total_ms": engram_sum,
         "engram_avg_ms": round(engram_sum / len(engram_steps), 1) if engram_steps else 0.0,
     }
+
+
+def repetition_metric(values):
+    return {
+        "samples": len(values),
+        "median": round(statistics.median(values), 3),
+        "min": round(min(values), 3),
+        "max": round(max(values), 3),
+        "mean": round(statistics.fmean(values), 3),
+        "stdev": round(statistics.pstdev(values), 3),
+    }
+
+
+def build_repetition_report(summary_paths, warmup_count, minimum_measured, args):
+    reports = [
+        build_report(
+            path,
+            output_guard_from_args(args),
+            context_guard_from_args(args),
+            args.require_device_gsva,
+            prefix_cache_guard_from_args(args),
+            args.expect_prefix_cache_matched_tokens,
+            args.expect_prefix_cache_suffix_replay_tokens,
+        )
+        for path in summary_paths
+    ]
+    measured = reports[warmup_count:]
+    issues = []
+    if warmup_count < 2:
+        issues.append(f"requires at least 2 warmup runs actual={warmup_count}")
+    if len(measured) < minimum_measured:
+        issues.append(
+            "insufficient measured runs "
+            f"required={minimum_measured} actual={len(measured)}"
+        )
+    run_ids = [report["run_id"] for report in reports]
+    if len(set(run_ids)) != len(run_ids):
+        issues.append("run IDs are not unique")
+    for report in reports:
+        for issue in report["issues"]:
+            issues.append(f"run {report['run_id']}: {issue}")
+    if reports:
+        expected = reports[0]
+        expected_identity = (
+            expected["decode"]["steps_expected"],
+            expected["decode"]["steps_observed"],
+            expected["decode"]["passed_nodes"],
+            tuple(expected["decode"]["output"]),
+        )
+        for report in reports[1:]:
+            identity = (
+                report["decode"]["steps_expected"],
+                report["decode"]["steps_observed"],
+                report["decode"]["passed_nodes"],
+                tuple(report["decode"]["output"]),
+            )
+            if identity != expected_identity:
+                issues.append(
+                    "run identity mismatch "
+                    f"expected={expected['run_id']} actual={report['run_id']}"
+                )
+    metrics = {}
+    if measured:
+        metric_values = {
+            "ttft_ms": [report["timing"]["ttft_ms"] for report in measured],
+            "tpot_ms": [report["timing"]["tpot_ms"] for report in measured],
+            "e2e_ms": [report["timing"]["round_sum_ms"] for report in measured],
+            "compute_ms": [report["timing"]["compute_sum_ms"] for report in measured],
+            "publish_ms": [report["timing"]["publish_sum_ms"] for report in measured],
+            "gsva_lookup_ms": [
+                report["gsva"]["timing"]["lookup_ms"] for report in measured
+            ],
+            "gsva_map_read_ms": [
+                report["gsva"]["timing"]["map_read_ms"] for report in measured
+            ],
+        }
+        metrics = {
+            name: repetition_metric(values) for name, values in metric_values.items()
+        }
+    return {
+        "status": "pass" if not issues else "fail",
+        "issues": issues,
+        "warmup_count": warmup_count,
+        "measured_count": len(measured),
+        "minimum_measured": minimum_measured,
+        "warmup_run_ids": run_ids[:warmup_count],
+        "measured_run_ids": run_ids[warmup_count:],
+        "metrics": metrics,
+    }
+
+
+def print_repetition_report(report):
+    print(
+        "w5_repetition_report: "
+        f"status={report['status']} warmup_runs={report['warmup_count']} "
+        f"measured_runs={report['measured_count']} "
+        f"minimum_measured={report['minimum_measured']}"
+    )
+    for phase, run_ids in (
+        ("warmup", report["warmup_run_ids"]),
+        ("measured", report["measured_run_ids"]),
+    ):
+        for index, run_id in enumerate(run_ids, 1):
+            print(f"repetition_run: phase={phase} index={index} run_id={run_id}")
+    for name, metric in report["metrics"].items():
+        print(
+            "repetition_metric: "
+            f"name={name} samples={metric['samples']} median={metric['median']:.3f} "
+            f"min={metric['min']:.3f} max={metric['max']:.3f} "
+            f"mean={metric['mean']:.3f} stdev={metric['stdev']:.3f}"
+        )
+    for issue in report["issues"]:
+        print(f"issue: {issue}")
 
 
 def context_report(parsed):
@@ -1497,6 +1613,28 @@ def main(argv):
         help="Compare baseline and GSVA-backed prefix-cache reuse summaries for benefit attribution.",
     )
     parser.add_argument(
+        "--summarize-repetitions",
+        nargs="+",
+        metavar="SUMMARY",
+        type=Path,
+        help=(
+            "Summarize ordered W5 runs. The first --warmup-count summaries are "
+            "excluded from formal statistics."
+        ),
+    )
+    parser.add_argument(
+        "--warmup-count",
+        type=int,
+        default=2,
+        help="Number of leading repetition summaries treated as warmups (default: 2).",
+    )
+    parser.add_argument(
+        "--minimum-measured",
+        type=int,
+        default=5,
+        help="Minimum formal repetition count required for a passing report (default: 5).",
+    )
+    parser.add_argument(
         "--allow-prefix-cache-output-mismatch",
         action="store_true",
         help=(
@@ -1554,6 +1692,26 @@ def main(argv):
     )
     args = parser.parse_args(argv)
 
+    if args.warmup_count < 0 or args.minimum_measured < 1:
+        parser.error("--warmup-count must be non-negative and --minimum-measured positive")
+
+    if args.summarize_repetitions:
+        for summary in args.summarize_repetitions:
+            if not summary.is_file():
+                print(f"summary file is missing: {summary}", file=sys.stderr)
+                return 2
+        report = build_repetition_report(
+            args.summarize_repetitions,
+            args.warmup_count,
+            args.minimum_measured,
+            args,
+        )
+        if args.json_output:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print_repetition_report(report)
+        return 0 if report["status"] == "pass" else 1
+
     if args.compare_prefix_cache_benefit:
         for summary in args.compare_prefix_cache_benefit:
             if not summary.is_file():
@@ -1589,8 +1747,7 @@ def main(argv):
 
     if args.summary is None:
         parser.error(
-            "summary is required unless --compare-prefix-cache or "
-            "--compare-prefix-cache-benefit is used"
+            "summary is required unless a comparison or repetition mode is used"
         )
     if not args.summary.is_file():
         print(f"summary file is missing: {args.summary}", file=sys.stderr)
