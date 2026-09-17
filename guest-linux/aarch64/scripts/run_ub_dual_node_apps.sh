@@ -60,6 +60,7 @@ MEM_SERVICE_OBJECT_SHARE_SEED="${MEM_SERVICE_OBJECT_SHARE_SEED:-41}"
 MEM_SERVICE_OBJECT_SHARE_ADDRESS="${MEM_SERVICE_OBJECT_SHARE_ADDRESS:-}"
 MEM_SERVICE_OBJECT_SHARE_PORT="${MEM_SERVICE_OBJECT_SHARE_PORT:-12347}"
 MEM_SERVICE_OBJECT_SHARE_INCARNATION="${MEM_SERVICE_OBJECT_SHARE_INCARNATION:-7}"
+MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES="${MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES:-1}"
 MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE="${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE:-auto}"
 MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX="${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX:-}"
 if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then
@@ -1197,6 +1198,15 @@ if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" ]]; then
   fi
 elif mem_service_recovery_fault_selected; then
   echo "recovery faults require cpu-recovery-fault access" >&2
+  exit 2
+fi
+if [[ ! "$MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES" =~ ^[1-8]$ ]]; then
+  echo "Memory Service guest crash cycles must be in 1..8" >&2
+  exit 2
+fi
+if [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "guest_crash" &&
+      "$MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES" != "1" ]]; then
+  echo "multiple guest crash cycles require the guest_crash fault" >&2
   exit 2
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
@@ -3018,6 +3028,12 @@ run_iteration() {
   local guest_pid=""
   local guest_exit_status=0
   local terminated_kernel_instance=""
+  local guest_crash_cycle=0
+  local nodeb_cycle_before_guest_log=""
+  local nodeb_cycle_before_qemu_log=""
+  local -a nodeb_before_guest_logs=()
+  local -a nodeb_before_qemu_logs=()
+  local -a guest_crash_validator_args=()
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -3132,6 +3148,8 @@ run_iteration() {
     append_cmdline_if_missing \
       "mem_service.object_share_incarnation=${MEM_SERVICE_OBJECT_SHARE_INCARNATION}"
     append_cmdline_if_missing \
+      "mem_service.object_share_guest_crash_cycles=${MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES}"
+    append_cmdline_if_missing \
       "mem_service.object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}"
     if [[ -n "$MEM_SERVICE_OBJECT_SHARE_ADDRESS" ]]; then
       append_cmdline_if_missing \
@@ -3203,7 +3221,8 @@ run_iteration() {
   fi
   rm -f "$nodea_guest_log" "$nodeb_guest_log" "$nodea_qemu_log" \
     "$nodeb_qemu_log" "$nodeb_before_guest_log" "$nodeb_before_qemu_log" \
-    "$guest_crash_host_log"
+    "$guest_crash_host_log" "$iter_log_dir"/nodeB_before_cycle*_guest.log \
+    "$iter_log_dir"/nodeB_before_cycle*_qemu.log
   ln -sfn "$nodea_guest_log" "$nodea_log_link"
   ln -sfn "$nodeb_guest_log" "$nodeb_log_link"
   ln -sfn "$nodea_qemu_log" "$nodea_qemu_log_link"
@@ -3287,70 +3306,86 @@ run_iteration() {
 
   if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" &&
         "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "guest_crash" ]]; then
-    if ! wait_for_log_pattern "$nodeb_guest_log" \
-         'mem_service guest-recovery: node=1 phase=crash-ready status=ready' \
-         "$RUN_SECS"; then
-      echo "iteration ${iter}: nodeB did not reach the guest crash barrier" >&2
-      return 31
-    fi
-    terminated_kernel_instance="$(sed -n \
-      's/.*phase=crash-ready.* kernel_instance=\([0-9a-f]\{32\}\).*/\1/p' \
-      "$nodeb_guest_log" | tail -n 1)"
-    if [[ "${#terminated_kernel_instance}" -ne 32 ||
-          "$terminated_kernel_instance" == *[^0-9a-f]* ]]; then
-      echo "iteration ${iter}: nodeB did not report its kernel identity" >&2
-      return 31
-    fi
-    guest_pid="$(cat "$nodeb_pid_file")"
-    printf 'mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 pid=%s terminated_kernel_instance=%s\n' \
-      "$guest_pid" "$terminated_kernel_instance" >"$guest_crash_host_log"
-    kill -9 "$guest_pid" 2>/dev/null || return 31
-    guest_exit_status=0
-    wait "$guest_pid" 2>/dev/null || guest_exit_status=$?
-    if [[ "$guest_exit_status" -ne 137 ]]; then
-      printf 'mem_service guest-recovery-host: phase=guest-exit node=1 status=unexpected exit_code=%s\n' \
-        "$guest_exit_status" >>"$guest_crash_host_log"
-      return 31
-    fi
-    printf 'mem_service guest-recovery-host: phase=guest-exit node=1 status=expected signal=9 exit_code=137\n' \
-      >>"$guest_crash_host_log"
-    rm -f "$nodeb_pid_file"
-    mv "$nodeb_guest_log" "$nodeb_before_guest_log"
-    mv "$nodeb_qemu_log" "$nodeb_before_qemu_log"
+    guest_crash_cycle=1
+    while (( guest_crash_cycle <= MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES )); do
+      if ! wait_for_log_pattern "$nodeb_guest_log" \
+           "mem_service guest-recovery: node=1 phase=crash-ready status=ready fault=guest_crash cycle=$guest_crash_cycle " \
+           "$RUN_SECS"; then
+        echo "iteration ${iter}: nodeB did not reach guest crash barrier $guest_crash_cycle" >&2
+        return 31
+      fi
+      terminated_kernel_instance="$(sed -n \
+        "/phase=crash-ready.* cycle=$guest_crash_cycle /s/.* kernel_instance=\([0-9a-f]\{32\}\).*/\1/p" \
+        "$nodeb_guest_log" | tail -n 1)"
+      if [[ "${#terminated_kernel_instance}" -ne 32 ||
+            "$terminated_kernel_instance" == *[^0-9a-f]* ]]; then
+        echo "iteration ${iter}: nodeB did not report kernel identity for cycle $guest_crash_cycle" >&2
+        return 31
+      fi
+      guest_pid="$(cat "$nodeb_pid_file")"
+      printf 'mem_service guest-recovery-host: phase=guest-kill cycle=%s node=1 signal=9 pid=%s terminated_kernel_instance=%s\n' \
+        "$guest_crash_cycle" "$guest_pid" "$terminated_kernel_instance" \
+        >>"$guest_crash_host_log"
+      kill -9 "$guest_pid" 2>/dev/null || return 31
+      guest_exit_status=0
+      wait "$guest_pid" 2>/dev/null || guest_exit_status=$?
+      if [[ "$guest_exit_status" -ne 137 ]]; then
+        printf 'mem_service guest-recovery-host: phase=guest-exit cycle=%s node=1 status=unexpected exit_code=%s\n' \
+          "$guest_crash_cycle" "$guest_exit_status" >>"$guest_crash_host_log"
+        return 31
+      fi
+      printf 'mem_service guest-recovery-host: phase=guest-exit cycle=%s node=1 status=expected signal=9 exit_code=137\n' \
+        "$guest_crash_cycle" >>"$guest_crash_host_log"
+      rm -f "$nodeb_pid_file"
+      if (( MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES == 1 )); then
+        nodeb_cycle_before_guest_log="$nodeb_before_guest_log"
+        nodeb_cycle_before_qemu_log="$nodeb_before_qemu_log"
+      else
+        nodeb_cycle_before_guest_log="$iter_log_dir/nodeB_before_cycle${guest_crash_cycle}_guest.log"
+        nodeb_cycle_before_qemu_log="$iter_log_dir/nodeB_before_cycle${guest_crash_cycle}_qemu.log"
+      fi
+      mv "$nodeb_guest_log" "$nodeb_cycle_before_guest_log"
+      mv "$nodeb_qemu_log" "$nodeb_cycle_before_qemu_log"
+      nodeb_before_guest_logs+=("$nodeb_cycle_before_guest_log")
+      nodeb_before_qemu_logs+=("$nodeb_cycle_before_qemu_log")
 
-    if ! wait_for_log_pattern "$nodea_guest_log" \
-         'mem_service guest-recovery: node=0 phase=guest-down status=isolated' \
-         30; then
-      echo "iteration ${iter}: nodeA did not isolate the lost guest" >&2
-      return 31
-    fi
-    rm -f "$SHARED_DIR/nodeB_ubcdev0__1.status"
-    printf 'mem_service guest-recovery-host: phase=guest-restart node=1 old_incarnation=%s new_incarnation=%s\n' \
-      "$MEM_SERVICE_OBJECT_SHARE_INCARNATION" \
-      "$((MEM_SERVICE_OBJECT_SHARE_INCARNATION + 1))" \
-      >>"$guest_crash_host_log"
-    start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
-      "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_serial" \
-      "$nodeb_app_append mem_service.object_share_guest_restart=1 mem_service.object_share_terminated_kernel_instance=$terminated_kernel_instance"
-    sleep 1
-    if ! kill -0 "$(cat "$nodeb_pid_file" 2>/dev/null)" 2>/dev/null; then
-      echo "iteration ${iter}: replacement nodeB died after restart" >&2
-      return 31
-    fi
-    if ! wait_for_log_pattern "$nodeb_qemu_log" \
-         'ub_link: apply nodeA\.ubcdev0:1 <-> ubcdev0:1 \(shmem=1 sock=1 guid=1 snap=1' \
-         30; then
-      echo "iteration ${iter}: replacement nodeB did not reconcile UB link" >&2
-      return 31
-    fi
-    if ! wait_for_fm_links_ready "$nodea_qemu_log" "$nodeb_qemu_log" 30; then
-      echo "iteration ${iter}: replacement nodeB links did not become ready" >&2
-      return 31
-    fi
-    if ! check_entity_ready "nodeB-replacement" "$nodeb_qemu_log" 30 "$ENTITY_COUNT"; then
-      echo "iteration ${iter}: replacement nodeB entities not ready" >&2
-      return 31
-    fi
+      if ! wait_for_log_pattern "$nodea_guest_log" \
+           "mem_service guest-recovery: node=0 phase=guest-down status=isolated fault=guest_crash cycle=$guest_crash_cycle " \
+           30; then
+        echo "iteration ${iter}: nodeA did not isolate lost guest cycle $guest_crash_cycle" >&2
+        return 31
+      fi
+      rm -f "$SHARED_DIR/nodeB_ubcdev0__1.status"
+      printf 'mem_service guest-recovery-host: phase=guest-restart cycle=%s node=1 old_incarnation=%s new_incarnation=%s\n' \
+        "$guest_crash_cycle" \
+        "$((MEM_SERVICE_OBJECT_SHARE_INCARNATION + guest_crash_cycle - 1))" \
+        "$((MEM_SERVICE_OBJECT_SHARE_INCARNATION + guest_crash_cycle))" \
+        >>"$guest_crash_host_log"
+      start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
+        "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_serial" \
+        "$nodeb_app_append mem_service.object_share_guest_restart=1 mem_service.object_share_guest_restart_index=$guest_crash_cycle mem_service.object_share_terminated_kernel_instance=$terminated_kernel_instance"
+      sleep 1
+      if ! kill -0 "$(cat "$nodeb_pid_file" 2>/dev/null)" 2>/dev/null; then
+        echo "iteration ${iter}: replacement nodeB died after restart cycle $guest_crash_cycle" >&2
+        return 31
+      fi
+      if ! wait_for_log_pattern "$nodeb_qemu_log" \
+           'ub_link: apply nodeA\.ubcdev0:1 <-> ubcdev0:1 \(shmem=1 sock=1 guid=1 snap=1' \
+           30; then
+        echo "iteration ${iter}: replacement nodeB did not reconcile UB link cycle $guest_crash_cycle" >&2
+        return 31
+      fi
+      if ! wait_for_fm_links_ready "$nodea_qemu_log" "$nodeb_qemu_log" 30; then
+        echo "iteration ${iter}: replacement nodeB links not ready in cycle $guest_crash_cycle" >&2
+        return 31
+      fi
+      if ! check_entity_ready "nodeB-replacement-$guest_crash_cycle" \
+           "$nodeb_qemu_log" 30 "$ENTITY_COUNT"; then
+        echo "iteration ${iter}: replacement nodeB entities not ready in cycle $guest_crash_cycle" >&2
+        return 31
+      fi
+      guest_crash_cycle=$((guest_crash_cycle + 1))
+    done
   fi
 
   if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]]; then
@@ -4130,12 +4165,24 @@ run_iteration() {
           --output "${nodea_guest_log:h}/managed-manager-crash-validation.json" \
           || return 1
       elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "guest_crash" ]]; then
+        guest_crash_validator_args=()
+        for nodeb_cycle_before_guest_log in "${nodeb_before_guest_logs[@]}"; do
+          guest_crash_validator_args+=(
+            --node-b-before "$nodeb_cycle_before_guest_log"
+          )
+        done
+        for nodeb_cycle_before_qemu_log in "${nodeb_before_qemu_logs[@]}"; do
+          guest_crash_validator_args+=(
+            --qemu-b-before "$nodeb_cycle_before_qemu_log"
+          )
+        done
         python3 "${SCRIPT_DIR}/validate_mem_service_guest_crash_guest.py" \
           --node-a "$nodea_guest_log" \
-          --node-b-before "$nodeb_before_guest_log" \
           --node-b-after "$nodeb_guest_log" \
-          --qemu-b-before "$nodeb_before_qemu_log" \
           --host-log "$guest_crash_host_log" \
+          --cycles "$MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES" \
+          --base-incarnation "$MEM_SERVICE_OBJECT_SHARE_INCARNATION" \
+          "${guest_crash_validator_args[@]}" \
           --output "${nodea_guest_log:h}/managed-guest-crash-validation.json" \
           || return 1
       else
