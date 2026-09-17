@@ -20,6 +20,7 @@ static bool drive_worker_recovery;
 static bool drive_worker_resume;
 static bool drive_worker_quarantine;
 static bool drive_worker_holder_fence;
+static bool drive_worker_terminated_holder_fence;
 static bool drive_worker_holder_rejoin;
 static bool holder_rejoin_home_pending;
 static bool holder_rejoin_holder_pending;
@@ -57,7 +58,7 @@ int __wrap_open(const char *path, int flags, ...)
 {
     mode_t create_mode = 0;
     if ((drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
-         drive_worker_holder_fence) &&
+         drive_worker_holder_fence || drive_worker_terminated_holder_fence) &&
         !strcmp(path, "/dev/obmm")) return 42;
     if (flags & O_CREAT) {
         va_list args;
@@ -71,7 +72,8 @@ int __wrap_open(const char *path, int flags, ...)
 int __wrap_close(int fd)
 {
     return (drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
-            drive_worker_holder_fence) && fd == 42
+            drive_worker_holder_fence ||
+            drive_worker_terminated_holder_fence) && fd == 42
                ? 0
                : __real_close(fd);
 }
@@ -81,7 +83,8 @@ int __wrap_ioctl(int fd, unsigned long op, ...)
     va_list args;
     void *argument;
     assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
-            drive_worker_holder_fence) && fd == 42);
+            drive_worker_holder_fence ||
+            drive_worker_terminated_holder_fence) && fd == 42);
     va_start(args, op);
     argument = va_arg(args, void *);
     va_end(args);
@@ -112,7 +115,8 @@ int __wrap_ioctl(int fd, unsigned long op, ...)
     if (op == OBMM_CMD_GSVA_EVENT_V1) {
         struct obmm_cmd_gsva_event_v1 *event = argument;
 
-        assert(drive_worker_holder_fence);
+        assert(drive_worker_holder_fence ||
+               drive_worker_terminated_holder_fence);
         assert(event->version == OBMM_GSVA_ABI_VERSION &&
                event->sub_op == OBMM_GSVA_EVENT_LOCAL_REVOKE &&
                !event->requester_cna);
@@ -123,7 +127,10 @@ int __wrap_ioctl(int fd, unsigned long op, ...)
                event->token_id == kernel_record.desc.token_id &&
                event->token_value == kernel_record.desc.token_value);
         holder_physical_revokes++;
-        event->error = holder_physical_fail ? GSVA_ERR_COH_PENDING : GSVA_OK;
+        event->error = drive_worker_terminated_holder_fence
+                           ? GSVA_ERR_ROUTE_MISSING
+                           : holder_physical_fail ? GSVA_ERR_COH_PENDING
+                                                  : GSVA_OK;
         return 0;
     }
     assert(op == OBMM_CMD_GSVA_APERTURE_QUERY);
@@ -138,13 +145,16 @@ int __wrap_mem_service_client_provider_refresh(const struct mem_service_client *
 {
     (void)client;
     assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
-            drive_worker_holder_fence || drive_worker_holder_rejoin) &&
+            drive_worker_holder_fence || drive_worker_terminated_holder_fence ||
+            drive_worker_holder_rejoin) &&
            !strcmp(node, "nodeA"));
     assert(incarnation ==
            ((drive_worker_recovery || drive_worker_holder_fence ||
+             drive_worker_terminated_holder_fence ||
              drive_worker_holder_rejoin) ? 8 : 7));
     assert(readiness_generation ==
            ((drive_worker_recovery || drive_worker_holder_fence ||
+             drive_worker_terminated_holder_fence ||
              drive_worker_holder_rejoin) ? 2 : 1));
     memset(directory, 0, sizeof(*directory));
     /* The real refresh reply omits data_plane_ready; it stays false. */
@@ -233,7 +243,8 @@ int __wrap_mem_service_client_poll_holder_recovery_allocation(
     struct mem_service_provider_descriptor descriptor;
 
     (void)client;
-    assert((drive_worker_holder_fence || drive_worker_holder_rejoin) &&
+    assert((drive_worker_holder_fence || drive_worker_terminated_holder_fence ||
+            drive_worker_holder_rejoin) &&
            !strcmp(node, "nodeA") &&
            current_incarnation == 8 && fenced_incarnation == 7);
     if (drive_worker_holder_rejoin) {
@@ -295,14 +306,16 @@ int __wrap_mem_service_client_fence_allocation_holder(
     enum mem_service_wire_status *status)
 {
     (void)client;
-    if (drive_worker_holder_fence) {
+    if (drive_worker_holder_fence || drive_worker_terminated_holder_fence) {
         assert(holder_physical_revokes && !holder_physical_fail &&
                !strcmp(key, "remote-object") &&
                !strcmp(holder_node_id, "nodeA") &&
                current_incarnation == 8 && generation == 99 &&
                fenced_incarnation == 7 &&
                !strcmp(idempotency_key,
-                       "obmm-holder-fence-0000000000000007-0000000000000063"));
+                       drive_worker_terminated_holder_fence
+                           ? "obmm-holder-reboot-0000000000000007-0000000000000063"
+                           : "obmm-holder-fence-0000000000000007-0000000000000063"));
         holder_receipts++;
     } else {
         assert(drive_worker_recovery && !strcmp(key, "object") &&
@@ -1264,6 +1277,32 @@ int main(void)
         drive_worker_holder_fence = false;
         puts("gva_worker_holder_fence=pass physical_first=1 "
              "failed_physical_receipt=0 exact_identity=1");
+        drive_worker_terminated_holder_fence = true;
+        inventory_mode = 9;
+        holder_recovery_polls = holder_physical_revokes = holder_receipts = 0;
+        assert(mem_service_provider_obmm_fence_terminated_holder_state(
+                   config_path, replacement_path,
+                   "00000000000000000000000000000000") == 2);
+        assert(mem_service_provider_obmm_fence_terminated_holder_state(
+                   config_path, replacement_path,
+                   "02000000000000000000000000000000") == 1);
+        assert(!holder_physical_revokes && !holder_receipts);
+        inventory_mode = 2;
+        assert(mem_service_provider_obmm_fence_terminated_holder_state(
+                   config_path, replacement_path,
+                   "01000000000000000000000000000000") == 1);
+        assert(!holder_physical_revokes && !holder_receipts);
+        inventory_mode = 9;
+        holder_recovery_polls = 0;
+        assert(!mem_service_provider_obmm_fence_terminated_holder_state(
+            config_path, replacement_path,
+            "01000000000000000000000000000000"));
+        assert(holder_physical_revokes == 1 && holder_receipts == 1);
+        drive_worker_terminated_holder_fence = false;
+        inventory_mode = 0;
+        puts("gva_worker_terminated_holder_fence=pass old_kernel=required "
+             "same_kernel=reject nonempty_inventory=reject route_missing=proof "
+             "receipt=1");
         drive_worker_holder_rejoin = true;
         holder_rejoin_home_pending = holder_rejoin_holder_pending = false;
         assert(mem_service_provider_obmm_prepare_holder_rejoin(

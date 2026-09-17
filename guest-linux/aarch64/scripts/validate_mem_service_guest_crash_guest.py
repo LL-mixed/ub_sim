@@ -94,7 +94,12 @@ def validate(node_a, node_b_before, node_b_after, qemu_b_before, host_log):
         "mapping": "active",
     })
     address = int(crash_ready["address"])
-    require(len(crash_ready) == 11 and address > 0,
+    terminated_kernel_instance = crash_ready.get("kernel_instance", "")
+    require(len(crash_ready) == 12 and address > 0 and
+            len(terminated_kernel_instance) == 32 and
+            all(ch in "0123456789abcdef"
+                for ch in terminated_kernel_instance) and
+            int(terminated_kernel_instance, 16) != 0,
             "invalid guest crash barrier")
     matching_routes = [row for row in
                        managed_mapping_records(qemu_b_before, "GSVA_MAP:")
@@ -112,8 +117,9 @@ def validate(node_a, node_b_before, node_b_after, qemu_b_before, host_log):
 
     guest_kill = one_record(host_log, "mem_service guest-recovery-host:", {
         "phase": "guest-kill", "node": "1", "signal": "9",
+        "terminated_kernel_instance": terminated_kernel_instance,
     })
-    require(len(guest_kill) == 4 and int(guest_kill["pid"]) > 0,
+    require(len(guest_kill) == 5 and int(guest_kill["pid"]) > 0,
             "unexpected guest kill receipt")
     guest_exit = one_record(host_log, "mem_service guest-recovery-host:", {
         "phase": "guest-exit", "node": "1", "status": "expected",
@@ -152,52 +158,97 @@ def validate(node_a, node_b_before, node_b_after, qemu_b_before, host_log):
     })
     require(len(peer) == 10, "replacement guest observed unsafe state")
 
-    for phase in ("old-replay", "new-allocation"):
-        rejected = one_record(node_a, "mem_service guest-recovery:", {
-            "node": "0", "phase": phase, "status": "rejected",
-            "reason": "managed_reconciliation_required",
-        })
-        require((phase == "old-replay" and rejected.get("key") == KEY and
-                 int(rejected.get("generation", "0")) == generation and
-                 rejected.get("old_incarnation") == "7") or
-                (phase == "new-allocation" and len(rejected) == 4),
-                "unsafe work was not rejected after guest replacement")
+    deferred = one_record(node_b_after, "mem_service guest-recovery:", {
+        "node": "1", "phase": "replacement-worker", "status": "deferred",
+        "incarnation": "8", "reason": "holder-reconciliation-required",
+    })
+    require(len(deferred) == 5,
+            "replacement worker started before holder reconciliation")
+    fenced = one_record(node_b_after, "mem_service guest-recovery:", {
+        "node": "1", "phase": "holder-fenced", "status": "complete",
+        "fault": FAULT, "key": KEY, "generation": str(generation),
+        "old_incarnation": "7", "new_incarnation": "8",
+        "old_kernel_instance": terminated_kernel_instance,
+        "route_state": "absent-after-kernel-replacement",
+        "receipt": "complete",
+    })
+    replacement_kernel_instance = fenced.get("new_kernel_instance", "")
+    require(len(fenced) == 12 and len(replacement_kernel_instance) == 32 and
+            replacement_kernel_instance != terminated_kernel_instance and
+            all(ch in "0123456789abcdef"
+                for ch in replacement_kernel_instance) and
+            int(replacement_kernel_instance, 16) != 0,
+            "terminated holder lacked replacement-kernel absence proof")
+    require("obmm-terminated-holder-fence: status=fenced "
+            f"key={KEY} generation={generation} old_incarnation=7 "
+            "current_incarnation=8 "
+            "route_state=absent-after-kernel-replacement" in node_b_after,
+            "provider did not bind receipt to route absence")
+    require("obmm-terminated-holder-fence: status=complete "
+            "node=guest-node-1 old_incarnation=7 current_incarnation=8 "
+            "allocations=1 inventory_records=0" in node_b_after,
+            "provider did not prove an empty stable replacement inventory")
+
+    reconciled = one_record(node_a, "mem_service guest-recovery:", {
+        "node": "0", "phase": "reconciled", "status": "retired",
+        "fault": FAULT, "key": KEY, "generation": str(generation),
+        "old_incarnation": "7", "new_incarnation": "8",
+        "holder_receipt": "complete", "home_reclaim": "complete",
+    })
+    require(len(reconciled) == 10,
+            "surviving home did not reclaim after the holder receipt")
+
+    rejoin_write = one_record(node_b_after, "mem_service guest-recovery:", {
+        "node": "1", "phase": "rejoin-write", "status": "pass",
+        "fault": FAULT, "key": "guest-recovery-rejoin-object",
+        "old_incarnation": "7", "new_incarnation": "8", "seed": "91",
+    })
+    rejoin_generation = int(rejoin_write["generation"])
+    require(len(rejoin_write) == 9 and rejoin_generation > generation,
+            "replacement worker did not publish a new generation")
+    rejoin_read = one_record(node_a, "mem_service guest-recovery:", {
+        "node": "0", "phase": "rejoin-read", "status": "pass",
+        "fault": FAULT, "key": "guest-recovery-rejoin-object",
+        "generation": str(rejoin_generation), "old_incarnation": "7",
+        "new_incarnation": "8", "seed": "91",
+    })
+    require(len(rejoin_read) == 9,
+            "surviving guest did not read the replacement payload")
 
     observed = one_record(node_a, "mem_service guest-recovery:", {
         "node": "0", "phase": "observation", "status": "pass",
         "fault": FAULT, "key": KEY, "generation": str(generation),
         "old_incarnation": "7", "new_incarnation": "8",
-        "state": "quarantined", "live_refs": "1", "import_mappings": "1",
+        "state": "retired", "live_refs": "0", "import_mappings": "0",
         "backing_allocated_bytes": "0", "address_reserved_bytes": "0",
-        "managed_recovery_required": "1", "data_plane_ready": "0",
+        "quarantined_bytes": "0", "managed_recovery_required": "0",
+        "data_plane_ready": "0", "rejoin": "pass",
     })
-    quarantined_bytes = int(observed["quarantined_bytes"])
-    require(quarantined_bytes > 0 and len(observed) == 16,
-            "isolated guest-loss obligation was not reported")
+    require(len(observed) == 17,
+            "guest-loss recovery did not return all resources to baseline")
 
     home_baseline, home_isolated = kernel_snapshots(node_a)
     peer_baseline, peer_isolated = kernel_snapshots(node_b_after)
-    require(not home_baseline and not peer_baseline and not peer_isolated,
-            "unexpected baseline or replacement kernel resources")
-    exports = [size for kind, size in home_isolated.values() if kind == "export"]
-    imports = [size for kind, size in home_isolated.values() if kind == "import"]
-    require(len(exports) == 1 and not imports and
-            sum(exports) == quarantined_bytes,
-            "surviving guest did not preserve the exact home export obligation")
+    require(not home_baseline and not home_isolated and
+            not peer_baseline and not peer_isolated,
+            "guest-loss recovery left kernel export or import resources")
 
     return {
         "status": "pass",
-        "scope": "actual-guest-sigkill-restart-isolation",
+        "scope": "actual-guest-sigkill-reconcile-rejoin",
         "fault": FAULT,
         "generation": generation,
         "guest_exit_code": 137,
         "old_incarnation": 7,
         "new_incarnation": 8,
-        "provider_state": "isolated",
-        "managed_recovery_required": True,
-        "live_refs": 1,
-        "import_mappings": 1,
-        "quarantined_bytes": quarantined_bytes,
+        "provider_state": "rejoined",
+        "managed_recovery_required": False,
+        "live_refs": 0,
+        "import_mappings": 0,
+        "quarantined_bytes": 0,
+        "terminated_kernel_instance": terminated_kernel_instance,
+        "replacement_kernel_instance": replacement_kernel_instance,
+        "rejoin_generation": rejoin_generation,
         "node_a_sha256": hashlib.sha256(node_a.encode()).hexdigest(),
         "node_b_before_sha256": hashlib.sha256(node_b_before.encode()).hexdigest(),
         "node_b_after_sha256": hashlib.sha256(node_b_after.encode()).hexdigest(),
@@ -224,7 +275,8 @@ def main():
     except (OSError, KeyError, ValueError, IndexError) as error:
         parser.exit(1, f"managed guest crash validation failed: {error}\n")
     print("managed_guest_recovery=pass fault=%s generation=%d "
-          "old_incarnation=7 new_incarnation=8 provider_state=isolated" %
+          "old_incarnation=7 new_incarnation=8 provider_state=rejoined "
+          "holder_fence=1 home_reclaim=1 rejoin=1" %
           (FAULT, result["generation"]))
 
 

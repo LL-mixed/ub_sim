@@ -2395,8 +2395,16 @@ mem_service_object_share_guest_recovery() {
   local after=""
   local field=""
   local address=""
-  local quarantined_bytes=""
+  local result=0
   local replacement_incarnation=0
+  local terminated_kernel_instance=""
+  local replacement_kernel_instance=""
+  local rejoin_key="guest-recovery-rejoin-object"
+  local rejoin_ready_key="guest-recovery-rejoin-ready"
+  local rejoin_consumed_key="guest-recovery-rejoin-consumed"
+  local rejoin_generation=""
+  local rejoin_seed=91
+  local bootstrap_generation=0
 
   attempt=0
   while [ "$attempt" -lt 1200 ]; do
@@ -2478,9 +2486,19 @@ mem_service_object_share_guest_recovery() {
     address="$(/bin/busybox sed -n 's/^address=//p' \
       /tmp/guest-recovery-holder-active.log | /bin/busybox head -n 1)"
     case "$address" in ''|0|*[!0-9]*) return 1 ;; esac
+    /bin/linqu_gva_manager --dump-segments \
+      >/tmp/guest-recovery-terminated-kernel.log 2>&1 || return 1
+    terminated_kernel_instance="$(/bin/busybox sed -n \
+      's/.* kernel_instance=\([0-9a-f][0-9a-f]*\) .*/\1/p' \
+      /tmp/guest-recovery-terminated-kernel.log | /bin/busybox head -n 1)"
+    case "$terminated_kernel_instance" in
+      ''|*[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#terminated_kernel_instance}" -eq 32 ] || return 1
     /bin/busybox cat /tmp/guest-recovery-holder-active.log
     /bin/busybox cat /tmp/guest-recovery-holder-stats.log
-    echo "mem_service guest-recovery: node=1 phase=crash-ready status=ready fault=guest_crash key=$key generation=$generation incarnation=$incarnation address=$address live_refs=1 import_mappings=1 mapping=active"
+    /bin/busybox cat /tmp/guest-recovery-terminated-kernel.log
+    echo "mem_service guest-recovery: node=1 phase=crash-ready status=ready fault=guest_crash key=$key generation=$generation incarnation=$incarnation address=$address live_refs=1 import_mappings=1 mapping=active kernel_instance=$terminated_kernel_instance"
     while kill -0 "$session_pid" 2>/dev/null; do
       /bin/busybox sleep 1
     done
@@ -2489,6 +2507,14 @@ mem_service_object_share_guest_recovery() {
   fi
 
   if [ "$node" = "1" ] && [ "$guest_restart" = "1" ]; then
+    terminated_kernel_instance="$(cmdline_value \
+      mem_service.object_share_terminated_kernel_instance '')"
+    case "$terminated_kernel_instance" in
+      ''|*[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#terminated_kernel_instance}" -eq 32 ] || return 1
+    replacement_incarnation="$incarnation"
+    bootstrap_generation=$((replacement_incarnation + 1048576))
     attempt=0
     while [ "$attempt" -lt 1200 ]; do
       if /bin/linqu_mem_service inspect-allocation --connect "$connect" \
@@ -2523,6 +2549,144 @@ mem_service_object_share_guest_recovery() {
     /bin/busybox cat /tmp/guest-recovery-replacement-stats.log
     /bin/busybox cat /tmp/guest-recovery-replacement-directory.log
     echo "mem_service guest-recovery: node=1 phase=replacement status=isolated fault=guest_crash key=$key generation=$generation incarnation=$incarnation state=quarantined managed_recovery_required=1 data_plane_ready=0"
+
+    {
+      echo "connect=$connect"
+      echo "node_id=guest-node-1"
+      echo "incarnation=$((replacement_incarnation - 1))"
+      echo "readiness_generation=$((replacement_incarnation - 1))"
+      echo "state_file=/tmp/managed-share.worker.state"
+      echo "allocation_granularity_bytes=2097152"
+    } >/tmp/guest-recovery-terminated-holder.conf
+    if ! /bin/linqu_mem_service_provider_obmm \
+        fence-terminated-holder-state \
+        --config /tmp/guest-recovery-terminated-holder.conf \
+        --replacement-config /tmp/managed-share.worker.resume.conf \
+        --terminated-kernel-instance "$terminated_kernel_instance" \
+        >/tmp/guest-recovery-terminated-fence.log 2>&1; then
+      /bin/busybox cat /tmp/guest-recovery-terminated-fence.log
+      return 1
+    fi
+    /bin/busybox cat /tmp/guest-recovery-terminated-fence.log
+    /bin/busybox grep -q \
+      "obmm-terminated-holder-fence: status=fenced key=$key generation=$generation old_incarnation=$((replacement_incarnation - 1)) current_incarnation=$replacement_incarnation route_state=absent-after-kernel-replacement" \
+      /tmp/guest-recovery-terminated-fence.log || return 1
+    /bin/busybox grep -q \
+      "obmm-terminated-holder-fence: status=complete node=guest-node-1 old_incarnation=$((replacement_incarnation - 1)) current_incarnation=$replacement_incarnation allocations=1 inventory_records=0" \
+      /tmp/guest-recovery-terminated-fence.log || return 1
+    replacement_kernel_instance="$(/bin/busybox sed -n \
+      's/.* current_kernel_instance=\([0-9a-f][0-9a-f]*\)$/\1/p' \
+      /tmp/guest-recovery-terminated-fence.log | /bin/busybox head -n 1)"
+    case "$replacement_kernel_instance" in
+      ''|*[!0-9a-f]*) return 1 ;;
+    esac
+    [ "${#replacement_kernel_instance}" -eq 32 ] || return 1
+    [ "$replacement_kernel_instance" != "$terminated_kernel_instance" ] || return 1
+    echo "mem_service guest-recovery: node=1 phase=holder-fenced status=complete fault=guest_crash key=$key generation=$generation old_incarnation=$((replacement_incarnation - 1)) new_incarnation=$replacement_incarnation old_kernel_instance=$terminated_kernel_instance new_kernel_instance=$replacement_kernel_instance route_state=absent-after-kernel-replacement receipt=complete"
+
+    {
+      echo "session_id=guest-recovery-retired-observer"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
+    } >/tmp/guest-recovery-retired-observer.conf
+    /bin/linqu_mem_service object-session \
+      --config /tmp/guest-recovery-retired-observer.conf \
+      >/tmp/guest-recovery-retired-observer.log 2>&1 || {
+        /bin/busybox cat /tmp/guest-recovery-retired-observer.log
+        return 1
+      }
+    /bin/busybox cat /tmp/guest-recovery-retired-observer.log
+
+    /bin/linqu_mem_service_provider_obmm serve-allocations \
+      --config /tmp/managed-share.worker.resume.conf \
+      >/tmp/guest-recovery-rejoin-worker.log 2>&1 &
+    worker_pid=$!
+    /bin/linqu_mem_service allocate-object --connect "$connect" \
+      --key "$rejoin_key" --idempotency-key guest-recovery-rejoin-allocate \
+      --session-id guest-recovery-rejoin-controller \
+      --home-node guest-node-1 --size-bytes "$size" --capabilities 1 \
+      >/tmp/guest-recovery-rejoin-allocate.log 2>&1 || {
+        /bin/busybox cat /tmp/guest-recovery-rejoin-worker.log
+        /bin/busybox cat /tmp/guest-recovery-rejoin-allocate.log
+        return 1
+      }
+    /bin/busybox cat /tmp/guest-recovery-rejoin-allocate.log
+    rejoin_generation="$(/bin/busybox sed -n 's/^generation=//p' \
+      /tmp/guest-recovery-rejoin-allocate.log | /bin/busybox head -n 1)"
+    case "$rejoin_generation" in ''|0*|*[!0-9]*) return 1 ;; esac
+    /bin/busybox grep -qx 'home_node=guest-node-1' \
+      /tmp/guest-recovery-rejoin-allocate.log || return 1
+    /bin/busybox grep -qx "provider_incarnation=$replacement_incarnation" \
+      /tmp/guest-recovery-rejoin-allocate.log || return 1
+    {
+      echo "session_id=guest-recovery-rejoin-active"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "op=wait_state key=$rejoin_key state=active timeout_ms=60000 poll_ms=50"
+    } >/tmp/guest-recovery-rejoin-active.conf
+    /bin/linqu_mem_service object-session \
+      --config /tmp/guest-recovery-rejoin-active.conf \
+      >/tmp/guest-recovery-rejoin-active.log 2>&1 || {
+        /bin/busybox cat /tmp/guest-recovery-rejoin-worker.log
+        /bin/busybox cat /tmp/guest-recovery-rejoin-active.log
+        return 1
+      }
+    /bin/busybox cat /tmp/guest-recovery-rejoin-active.log
+    if /bin/linqu_mem_service acquire-object --connect "$connect" \
+        --key "$rejoin_key" --session-id guest-recovery-rejoin-stale \
+        --idempotency-key guest-recovery-rejoin-stale-acquire \
+        --expected-generation "$rejoin_generation" \
+        --holder-node-id guest-node-1 \
+        --holder-provider-incarnation "$((replacement_incarnation - 1))" \
+        >/tmp/guest-recovery-rejoin-stale.log 2>&1; then
+      return 1
+    fi
+    /bin/busybox cat /tmp/guest-recovery-rejoin-stale.log
+    /bin/busybox grep -qx 'reason=holder_provider_mismatch' \
+      /tmp/guest-recovery-rejoin-stale.log || return 1
+    {
+      echo "session_id=guest-recovery-rejoin-writer"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "holder_node_id=guest-node-1"
+      echo "holder_provider_incarnation=$replacement_incarnation"
+      echo "provider=obmm"
+      echo "provider_node_id=1"
+      echo "provider_node_count=2"
+      echo "provider_generation=$bootstrap_generation"
+      echo "provider_import_region_bytes=2097152"
+      echo "op=acquire key=$rejoin_key idempotency_key=guest-recovery-rejoin-writer-acquire expected_generation=$rejoin_generation"
+      echo "op=map key=$rejoin_key flags=readwrite"
+      echo "op=write key=$rejoin_key offset=0 len=$size seed=$rejoin_seed"
+      echo "op=publish_data key=$rejoin_key offset=0 len=$size seed=$rejoin_seed"
+      echo "op=allocate key=$rejoin_ready_key idempotency_key=guest-recovery-rejoin-ready size_bytes=65536 capabilities=map"
+      echo "op=wait_state key=$rejoin_consumed_key state=active timeout_ms=60000 poll_ms=50"
+      echo "op=unmap key=$rejoin_key probe_unmapped=1"
+      echo "op=release key=$rejoin_key idempotency_key=guest-recovery-rejoin-writer-release"
+      echo "op=retire key=$rejoin_key idempotency_key=guest-recovery-rejoin-retire"
+      echo "op=wait_state key=$rejoin_key state=retired timeout_ms=60000 poll_ms=50"
+      echo "op=retire key=$rejoin_ready_key idempotency_key=guest-recovery-rejoin-ready-retire"
+      echo "op=wait_state key=$rejoin_ready_key state=retired timeout_ms=60000 poll_ms=50"
+      echo "op=retire key=$rejoin_consumed_key idempotency_key=guest-recovery-rejoin-consumed-retire"
+      echo "op=wait_state key=$rejoin_consumed_key state=retired timeout_ms=60000 poll_ms=50"
+    } >/tmp/guest-recovery-rejoin-writer.conf
+    /bin/linqu_mem_service object-session \
+      --config /tmp/guest-recovery-rejoin-writer.conf \
+      >/tmp/guest-recovery-rejoin-writer.log 2>&1 || {
+        /bin/busybox cat /tmp/guest-recovery-rejoin-worker.log
+        /bin/busybox cat /tmp/guest-recovery-rejoin-writer.log
+        return 1
+      }
+    /bin/busybox cat /tmp/guest-recovery-rejoin-writer.log
+    /bin/busybox cat /tmp/guest-recovery-rejoin-worker.log
+    /bin/busybox grep -q \
+      "obmm-worker generation=$rejoin_generation phase=published " \
+      /tmp/guest-recovery-rejoin-worker.log || return 1
+    /bin/busybox grep -q \
+      "obmm-worker generation=$rejoin_generation phase=reclaimed " \
+      /tmp/guest-recovery-rejoin-worker.log || return 1
+    echo "mem_service guest-recovery: node=1 phase=rejoin-write status=pass fault=guest_crash key=$rejoin_key generation=$rejoin_generation old_incarnation=$((replacement_incarnation - 1)) new_incarnation=$replacement_incarnation seed=$rejoin_seed"
     return 0
   fi
 
@@ -2686,46 +2850,96 @@ mem_service_object_share_guest_recovery() {
   /bin/busybox cat /tmp/guest-recovery-final.log
   echo "mem_service guest-recovery: node=0 phase=replacement status=isolated fault=guest_crash key=$key generation=$generation old_incarnation=$incarnation new_incarnation=$replacement_incarnation state=quarantined provider_active_count=2 provider_directory_ready=1 data_plane_ready=0 identity_preserved=1"
 
-  if /bin/linqu_mem_service acquire-object --connect "$connect" \
-      --key "$key" --session-id guest-recovery-holder \
-      --idempotency-key guest-recovery-holder-acquire \
-      --expected-generation "$generation" --holder-node-id guest-node-1 \
-      --holder-provider-incarnation "$incarnation" \
-      >/tmp/guest-recovery-old-replay.log 2>&1; then
-    return 1
-  fi
-  /bin/busybox cat /tmp/guest-recovery-old-replay.log
-  /bin/busybox grep -qx 'reason=managed_reconciliation_required' \
-    /tmp/guest-recovery-old-replay.log || return 1
-  echo "mem_service guest-recovery: node=0 phase=old-replay status=rejected reason=managed_reconciliation_required key=$key generation=$generation old_incarnation=$incarnation"
-  if /bin/linqu_mem_service allocate-object --connect "$connect" \
-      --key guest-recovery-new --idempotency-key guest-recovery-new-allocate \
-      --session-id guest-recovery-controller --home-node guest-node-0 \
-      --size-bytes "$size" --capabilities 1 \
-      >/tmp/guest-recovery-new.log 2>&1; then
-    return 1
-  fi
-  /bin/busybox cat /tmp/guest-recovery-new.log
-  /bin/busybox grep -qx 'reason=managed_reconciliation_required' \
-    /tmp/guest-recovery-new.log || return 1
-  echo "mem_service guest-recovery: node=0 phase=new-allocation status=rejected reason=managed_reconciliation_required"
+  attempt=0
+  while [ "$attempt" -lt 1200 ]; do
+    result=0
+    /bin/linqu_mem_service recover-allocation --connect "$connect" \
+      --timeout-ms 1000 --max-attempts 1 \
+      --key "$key" --node-id guest-node-0 --incarnation "$incarnation" \
+      --generation "$generation" --fenced-incarnation "$incarnation" \
+      --backing-gone 0 >/tmp/guest-recovery-reconcile.log 2>&1 || result=$?
+    if [ "$result" -eq 0 ]; then
+      /bin/busybox grep -q '^status=ok$' \
+        /tmp/guest-recovery-reconcile.log || return 1
+      /bin/busybox grep -q '^state=retiring$' \
+        /tmp/guest-recovery-reconcile.log || return 1
+      break
+    fi
+    /bin/busybox grep -Eq \
+      'reason=(holder_fence_receipt_required|state_conflict|recovery_providers_not_ready|managed_reconciliation_required)' \
+      /tmp/guest-recovery-reconcile.log || {
+        /bin/busybox cat /tmp/guest-recovery-reconcile.log
+        return 1
+      }
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.05
+  done
+  [ "$attempt" -lt 1200 ] || return 1
+  /bin/busybox cat /tmp/guest-recovery-reconcile.log
+  {
+    echo "session_id=guest-recovery-reconciled"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=$key state=retired timeout_ms=60000 poll_ms=50"
+  } >/tmp/guest-recovery-reconciled.conf
+  /bin/linqu_mem_service object-session \
+    --config /tmp/guest-recovery-reconciled.conf \
+    >/tmp/guest-recovery-reconciled.log 2>&1 || {
+      /bin/busybox cat /tmp/managed-share.worker.log
+      /bin/busybox cat /tmp/guest-recovery-reconciled.log
+      return 1
+    }
+  /bin/busybox cat /tmp/guest-recovery-reconciled.log
+  echo "mem_service guest-recovery: node=0 phase=reconciled status=retired fault=guest_crash key=$key generation=$generation old_incarnation=$incarnation new_incarnation=$replacement_incarnation holder_receipt=complete home_reclaim=complete"
+
+  {
+    echo "session_id=guest-recovery-rejoin-reader"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "holder_node_id=guest-node-0"
+    echo "holder_provider_incarnation=$incarnation"
+    echo "provider=obmm"
+    echo "provider_node_id=0"
+    echo "provider_node_count=2"
+    echo "provider_generation=$((incarnation + 2097152))"
+    echo "provider_import_region_bytes=2097152"
+    echo "op=wait_state key=$rejoin_ready_key state=active timeout_ms=60000 poll_ms=50"
+    echo "op=acquire key=$rejoin_key idempotency_key=guest-recovery-rejoin-reader-acquire"
+    echo "op=map key=$rejoin_key flags=read"
+    echo "op=wait_visible key=$rejoin_key offset=0 len=$size seed=$rejoin_seed"
+    echo "op=read key=$rejoin_key offset=0 len=$size seed=$rejoin_seed"
+    echo "op=unmap key=$rejoin_key probe_unmapped=1"
+    echo "op=release key=$rejoin_key idempotency_key=guest-recovery-rejoin-reader-release"
+    echo "op=allocate key=$rejoin_consumed_key idempotency_key=guest-recovery-rejoin-consumed size_bytes=65536 capabilities=map"
+    echo "op=wait_state key=$rejoin_key state=retired timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=$rejoin_ready_key state=retired timeout_ms=60000 poll_ms=50"
+    echo "op=wait_state key=$rejoin_consumed_key state=retired timeout_ms=60000 poll_ms=50"
+  } >/tmp/guest-recovery-rejoin-reader.conf
+  /bin/linqu_mem_service object-session \
+    --config /tmp/guest-recovery-rejoin-reader.conf \
+    >/tmp/guest-recovery-rejoin-reader.log 2>&1 || {
+      /bin/busybox cat /tmp/guest-recovery-rejoin-reader.log
+      return 1
+    }
+  /bin/busybox cat /tmp/guest-recovery-rejoin-reader.log
+  rejoin_generation="$(/bin/busybox sed -n \
+    "s/.*action=acquire key=$rejoin_key status=ok state=active generation=\([0-9][0-9]*\).*/\1/p" \
+    /tmp/guest-recovery-rejoin-reader.log | /bin/busybox head -n 1)"
+  case "$rejoin_generation" in ''|0*|*[!0-9]*) return 1 ;; esac
 
   /bin/linqu_mem_service allocation-stats --connect "$connect" \
     >/tmp/guest-recovery-final-stats.log 2>&1 || return 1
-  /bin/busybox grep -qx 'backing_allocated_bytes=0' \
+  for field in backing_allocated_bytes address_reserved_bytes live_refs \
+      import_mappings quarantined_objects quarantined_bytes; do
+    /bin/busybox grep -qx "$field=0" \
+      /tmp/guest-recovery-final-stats.log || return 1
+  done
+  /bin/busybox grep -qx 'managed_recovery_required=0' \
     /tmp/guest-recovery-final-stats.log || return 1
-  /bin/busybox grep -qx 'address_reserved_bytes=0' \
-    /tmp/guest-recovery-final-stats.log || return 1
-  /bin/busybox grep -qx 'import_mappings=1' \
-    /tmp/guest-recovery-final-stats.log || return 1
-  /bin/busybox grep -qx 'managed_recovery_required=1' \
-    /tmp/guest-recovery-final-stats.log || return 1
-  quarantined_bytes="$(/bin/busybox sed -n 's/^quarantined_bytes=//p' \
-    /tmp/guest-recovery-final-stats.log | /bin/busybox head -n 1)"
-  case "$quarantined_bytes" in ''|0|*[!0-9]*) return 1 ;; esac
   kill "$peer_pid" 2>/dev/null || true
   wait "$peer_pid" 2>/dev/null || true
-  echo "mem_service guest-recovery: node=0 phase=observation status=pass fault=guest_crash key=$key generation=$generation old_incarnation=$incarnation new_incarnation=$replacement_incarnation state=quarantined live_refs=1 import_mappings=1 backing_allocated_bytes=0 address_reserved_bytes=0 quarantined_bytes=$quarantined_bytes managed_recovery_required=1 data_plane_ready=0"
+  echo "mem_service guest-recovery: node=0 phase=rejoin-read status=pass fault=guest_crash key=$rejoin_key generation=$rejoin_generation old_incarnation=$incarnation new_incarnation=$replacement_incarnation seed=$rejoin_seed"
+  echo "mem_service guest-recovery: node=0 phase=observation status=pass fault=guest_crash key=$key generation=$generation old_incarnation=$incarnation new_incarnation=$replacement_incarnation state=retired live_refs=0 import_mappings=0 backing_allocated_bytes=0 address_reserved_bytes=0 quarantined_bytes=0 managed_recovery_required=0 data_plane_ready=0 rejoin=pass"
   return 0
 }
 
@@ -3141,15 +3355,20 @@ mem_service_object_share_managed() (
            >>/tmp/managed-share.worker.conf ;;
     esac
   fi
-  if [ "$node" = "0" ] && [ "$access" = "cpu-recovery-fault" ]; then
+  if [ "$fault" = "guest_crash" ] && [ "$guest_restart" = "1" ] &&
+      [ "$node" = "1" ]; then
+    worker_pid=""
+    echo "mem_service guest-recovery: node=1 phase=replacement-worker status=deferred incarnation=$incarnation reason=holder-reconciliation-required"
+  elif [ "$node" = "0" ] && [ "$access" = "cpu-recovery-fault" ]; then
     /bin/linqu_mem_service_provider_obmm serve-allocations \
       --config /tmp/managed-share.worker.conf \
       >/tmp/managed-share.worker.log 2>&1 &
+    worker_pid=$!
   else
     /bin/linqu_mem_service_provider_obmm serve-allocations \
       --config /tmp/managed-share.worker.conf &
+    worker_pid=$!
   fi
-  worker_pid=$!
   if [ "$access" = "cpu-recovery-fault" ]; then
     if [ "$fault" = "manager_crash" ]; then
       mem_service_object_share_manager_recovery "$node" "$size" "$incarnation" \

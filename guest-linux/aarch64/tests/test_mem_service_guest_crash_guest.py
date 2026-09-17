@@ -21,6 +21,9 @@ SPEC.loader.exec_module(validator)
 def fixture():
     key = validator.KEY
     generation = 5
+    old_kernel = "01" * 16
+    new_kernel = "02" * 16
+    rejoin_generation = 6
     node_a = "\n".join((
         "mem_service kernel-regions: phase=baseline",
         "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
@@ -36,34 +39,54 @@ def fixture():
         f"fault=guest_crash key={key} generation={generation} old_incarnation=7 "
         "new_incarnation=8 state=quarantined provider_active_count=2 "
         "provider_directory_ready=1 data_plane_ready=0 identity_preserved=1",
-        f"mem_service guest-recovery: node=0 phase=old-replay status=rejected "
-        f"reason=managed_reconciliation_required key={key} generation={generation} "
-        "old_incarnation=7",
-        "mem_service guest-recovery: node=0 phase=new-allocation status=rejected "
-        "reason=managed_reconciliation_required",
+        f"mem_service guest-recovery: node=0 phase=reconciled status=retired "
+        f"fault=guest_crash key={key} generation={generation} old_incarnation=7 "
+        "new_incarnation=8 holder_receipt=complete home_reclaim=complete",
+        "mem_service guest-recovery: node=0 phase=rejoin-read status=pass "
+        f"fault=guest_crash key=guest-recovery-rejoin-object generation={rejoin_generation} "
+        "old_incarnation=7 new_incarnation=8 seed=91",
         f"mem_service guest-recovery: node=0 phase=observation status=pass "
         f"fault=guest_crash key={key} generation={generation} old_incarnation=7 "
-        "new_incarnation=8 state=quarantined live_refs=1 import_mappings=1 "
+        "new_incarnation=8 state=retired live_refs=0 import_mappings=0 "
         "backing_allocated_bytes=0 address_reserved_bytes=0 "
-        "quarantined_bytes=2097152 managed_recovery_required=1 data_plane_ready=0",
+        "quarantined_bytes=0 managed_recovery_required=0 data_plane_ready=0 "
+        "rejoin=pass",
         "mem_service kernel-regions: phase=isolated",
-        "obmm-kernel-region: id=9 type=export bytes=2097152",
         "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
-        "export_handles=1 export_bytes=2097152 import_handles=0 import_bytes=0",
+        "export_handles=0 export_bytes=0 import_handles=0 import_bytes=0",
         "mem_service object-share: status=ok node=0 role=provider backend=obmm",
     ))
     node_b_before = "\n".join((
         f"mem_service guest-recovery: node=1 phase=crash-ready status=ready "
         f"fault=guest_crash key={key} generation={generation} incarnation=7 "
-        "address=123145302310912 live_refs=1 import_mappings=1 mapping=active",
+        "address=123145302310912 live_refs=1 import_mappings=1 mapping=active "
+        f"kernel_instance={old_kernel}",
     ))
     node_b_after = "\n".join((
         "mem_service kernel-regions: phase=baseline",
         "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
         "export_handles=0 export_bytes=0 import_handles=0 import_bytes=0",
+        "mem_service guest-recovery: node=1 phase=replacement-worker "
+        "status=deferred incarnation=8 reason=holder-reconciliation-required",
         f"mem_service guest-recovery: node=1 phase=replacement status=isolated "
         f"fault=guest_crash key={key} generation={generation} incarnation=8 "
         "state=quarantined managed_recovery_required=1 data_plane_ready=0",
+        f"obmm-terminated-holder-fence: status=fenced key={key} "
+        f"generation={generation} old_incarnation=7 current_incarnation=8 "
+        "route_state=absent-after-kernel-replacement",
+        "obmm-terminated-holder-fence: status=complete node=guest-node-1 "
+        "old_incarnation=7 current_incarnation=8 allocations=1 "
+        "inventory_records=0 revision=1 "
+        f"terminated_kernel_instance={old_kernel} "
+        f"current_kernel_instance={new_kernel}",
+        f"mem_service guest-recovery: node=1 phase=holder-fenced status=complete "
+        f"fault=guest_crash key={key} generation={generation} old_incarnation=7 "
+        f"new_incarnation=8 old_kernel_instance={old_kernel} "
+        f"new_kernel_instance={new_kernel} "
+        "route_state=absent-after-kernel-replacement receipt=complete",
+        "mem_service guest-recovery: node=1 phase=rejoin-write status=pass "
+        f"fault=guest_crash key=guest-recovery-rejoin-object generation={rejoin_generation} "
+        "old_incarnation=7 new_incarnation=8 seed=91",
         "mem_service kernel-regions: phase=isolated",
         "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
         "export_handles=0 export_bytes=0 import_handles=0 import_bytes=0",
@@ -76,7 +99,8 @@ def fixture():
         "GSVA_UNMAP: cpu_window remains registered\n"
     )
     host_log = "\n".join((
-        "mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 pid=123",
+        "mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 "
+        f"pid=123 terminated_kernel_instance={old_kernel}",
         "mem_service guest-recovery-host: phase=guest-exit node=1 status=expected "
         "signal=9 exit_code=137",
         "mem_service guest-recovery-host: phase=guest-restart node=1 "
@@ -86,23 +110,30 @@ def fixture():
 
 
 class GuestCrashGuestTests(unittest.TestCase):
-    def test_guest_kill_restart_isolation_is_accepted(self):
+    def test_guest_kill_reconcile_rejoin_is_accepted(self):
         result = validator.validate(*fixture())
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["guest_exit_code"], 137)
         self.assertEqual(result["old_incarnation"], 7)
         self.assertEqual(result["new_incarnation"], 8)
-        self.assertEqual(result["import_mappings"], 1)
-        self.assertEqual(result["quarantined_bytes"], 2097152)
+        self.assertEqual(result["provider_state"], "rejoined")
+        self.assertFalse(result["managed_recovery_required"])
+        self.assertEqual(result["import_mappings"], 0)
+        self.assertEqual(result["quarantined_bytes"], 0)
+        self.assertEqual(result["rejoin_generation"], 6)
 
     def test_missing_or_unsafe_guest_recovery_evidence_is_rejected(self):
         cases = (
             (0, "identity_preserved=1", "identity_preserved=0"),
             (0, "data_plane_ready=0", "data_plane_ready=1"),
             (0, "expired_count=1", "expired_count=0"),
-            (0, "quarantined_bytes=2097152", "quarantined_bytes=0"),
+            (0, "quarantined_bytes=0", "quarantined_bytes=1"),
             (1, "mapping=active", "mapping=missing"),
+            (1, "kernel_instance=0101", "kernel_instance=0000"),
             (2, "incarnation=8", "incarnation=7"),
+            (2, "receipt=complete", "receipt=missing"),
+            (2, "route_state=absent-after-kernel-replacement",
+             "route_state=unknown"),
             (3, "home_va=0x700000000000", "home_va=0x700000200000"),
             (3, "source=2", "source=1"),
             (4, "phase=guest-kill", "phase=guest-skip"),
@@ -141,9 +172,9 @@ class GuestCrashGuestTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             self.assertIn("managed_guest_recovery=pass", run.stdout)
             report = json.loads(output.read_text())
-            self.assertTrue(report["managed_recovery_required"])
+            self.assertFalse(report["managed_recovery_required"])
             self.assertEqual(report["scope"],
-                             "actual-guest-sigkill-restart-isolation")
+                             "actual-guest-sigkill-reconcile-rejoin")
 
     def test_guest_and_runner_wire_guest_crash_profile(self):
         run_app = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
@@ -166,6 +197,12 @@ class GuestCrashGuestTests(unittest.TestCase):
         self.assertIn("expired_count=1", function)
         self.assertIn("new_incarnation=$replacement_incarnation", function)
         self.assertIn("managed_reconciliation_required", function)
+        self.assertIn("fence-terminated-holder-state", function)
+        self.assertIn("--terminated-kernel-instance", function)
+        self.assertIn("phase=holder-fenced status=complete", function)
+        self.assertIn("phase=reconciled status=retired", function)
+        self.assertIn("phase=rejoin-write status=pass", function)
+        self.assertIn("phase=rejoin-read status=pass", function)
         self.assertIn("phase=rejoin-bootstrap status=start", function)
         self.assertIn('--generation "$incarnation"', function)
         self.assertIn(
@@ -187,6 +224,10 @@ class GuestCrashGuestTests(unittest.TestCase):
         self.assertIn("gva_manager_validate_aperture", manager_header)
         self.assertIn('kill -9 "$guest_pid"', runner)
         self.assertIn("mem_service.object_share_guest_restart=1", runner)
+        self.assertIn(
+            "mem_service.object_share_terminated_kernel_instance=",
+            runner,
+        )
         restart_block = runner.split(
             "phase=guest-restart", 1
         )[1].split("if ! wait_for_fm_links_ready", 1)[0]

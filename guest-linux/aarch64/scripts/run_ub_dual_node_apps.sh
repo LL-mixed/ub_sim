@@ -3017,6 +3017,7 @@ run_iteration() {
   local wait_status=0
   local guest_pid=""
   local guest_exit_status=0
+  local terminated_kernel_instance=""
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -3292,9 +3293,17 @@ run_iteration() {
       echo "iteration ${iter}: nodeB did not reach the guest crash barrier" >&2
       return 31
     fi
+    terminated_kernel_instance="$(sed -n \
+      's/.*phase=crash-ready.* kernel_instance=\([0-9a-f]\{32\}\).*/\1/p' \
+      "$nodeb_guest_log" | tail -n 1)"
+    if [[ "${#terminated_kernel_instance}" -ne 32 ||
+          "$terminated_kernel_instance" == *[^0-9a-f]* ]]; then
+      echo "iteration ${iter}: nodeB did not report its kernel identity" >&2
+      return 31
+    fi
     guest_pid="$(cat "$nodeb_pid_file")"
-    printf 'mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 pid=%s\n' \
-      "$guest_pid" >"$guest_crash_host_log"
+    printf 'mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 pid=%s terminated_kernel_instance=%s\n' \
+      "$guest_pid" "$terminated_kernel_instance" >"$guest_crash_host_log"
     kill -9 "$guest_pid" 2>/dev/null || return 31
     guest_exit_status=0
     wait "$guest_pid" 2>/dev/null || guest_exit_status=$?
@@ -3322,7 +3331,7 @@ run_iteration() {
       >>"$guest_crash_host_log"
     start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
       "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_serial" \
-      "$nodeb_app_append mem_service.object_share_guest_restart=1"
+      "$nodeb_app_append mem_service.object_share_guest_restart=1 mem_service.object_share_terminated_kernel_instance=$terminated_kernel_instance"
     sleep 1
     if ! kill -0 "$(cat "$nodeb_pid_file" 2>/dev/null)" 2>/dev/null; then
       echo "iteration ${iter}: replacement nodeB died after restart" >&2
