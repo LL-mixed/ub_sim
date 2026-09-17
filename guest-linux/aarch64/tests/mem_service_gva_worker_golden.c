@@ -20,6 +20,9 @@ static bool drive_worker_recovery;
 static bool drive_worker_resume;
 static bool drive_worker_quarantine;
 static bool drive_worker_holder_fence;
+static bool drive_worker_holder_rejoin;
+static bool holder_rejoin_home_pending;
+static bool holder_rejoin_holder_pending;
 static enum mem_service_wire_status quarantine_status = MEM_SERVICE_WIRE_STATUS_OK;
 static unsigned provider_deregistrations;
 static bool resume_service_mismatch;
@@ -135,12 +138,14 @@ int __wrap_mem_service_client_provider_refresh(const struct mem_service_client *
 {
     (void)client;
     assert((drive_worker_loop || drive_worker_recovery || drive_worker_resume ||
-            drive_worker_holder_fence) &&
+            drive_worker_holder_fence || drive_worker_holder_rejoin) &&
            !strcmp(node, "nodeA"));
     assert(incarnation ==
-           ((drive_worker_recovery || drive_worker_holder_fence) ? 8 : 7));
+           ((drive_worker_recovery || drive_worker_holder_fence ||
+             drive_worker_holder_rejoin) ? 8 : 7));
     assert(readiness_generation ==
-           ((drive_worker_recovery || drive_worker_holder_fence) ? 2 : 1));
+           ((drive_worker_recovery || drive_worker_holder_fence ||
+             drive_worker_holder_rejoin) ? 2 : 1));
     memset(directory, 0, sizeof(*directory));
     /* The real refresh reply omits data_plane_ready; it stays false. */
     directory->directory_ready = true;
@@ -179,8 +184,22 @@ int __wrap_mem_service_client_poll_recovery_allocation(
     enum mem_service_wire_status *status)
 {
     (void)client;
-    assert(drive_worker_recovery && !strcmp(node, "nodeA"));
+    assert((drive_worker_recovery || drive_worker_holder_rejoin) &&
+           !strcmp(node, "nodeA"));
     assert(current_incarnation == 8 && fenced_incarnation == 7);
+    if (drive_worker_holder_rejoin) {
+        assert(!after_generation);
+        if (holder_rejoin_home_pending) {
+            memset(work, 0, sizeof(*work));
+            strcpy(work->key, "unexpected-home");
+            strcpy(work->state, "quarantined");
+            work->generation = 101;
+            *status = MEM_SERVICE_WIRE_STATUS_OK;
+        } else {
+            *status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+        }
+        return 0;
+    }
     if (!recovery_reclaims && !recovery_polls++) {
         memset(work, 0, sizeof(*work));
         strcpy(work->key, "object");
@@ -214,8 +233,22 @@ int __wrap_mem_service_client_poll_holder_recovery_allocation(
     struct mem_service_provider_descriptor descriptor;
 
     (void)client;
-    assert(drive_worker_holder_fence && !strcmp(node, "nodeA") &&
+    assert((drive_worker_holder_fence || drive_worker_holder_rejoin) &&
+           !strcmp(node, "nodeA") &&
            current_incarnation == 8 && fenced_incarnation == 7);
+    if (drive_worker_holder_rejoin) {
+        assert(!after_generation);
+        if (holder_rejoin_holder_pending) {
+            memset(work, 0, sizeof(*work));
+            strcpy(work->key, "unexpected-holder");
+            strcpy(work->state, "quarantined");
+            work->generation = 102;
+            *status = MEM_SERVICE_WIRE_STATUS_OK;
+        } else {
+            *status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
+        }
+        return 0;
+    }
     if (holder_receipts || holder_recovery_polls++) {
         assert(after_generation == 99);
         *status = MEM_SERVICE_WIRE_STATUS_NOT_FOUND;
@@ -984,6 +1017,8 @@ int main(void)
         char directory[] = "/tmp/gva-worker-loop-XXXXXX";
         char config_path[256], replacement_path[256], state_path[256];
         char archive_path[320];
+        char rejoin_config_path[256], rejoin_replacement_path[256];
+        char rejoin_state_path[256], rejoin_archive_path[320];
         unsigned before = allocated;
         assert(mkdtemp(directory));
         snprintf(config_path, sizeof(config_path), "%s/worker.conf", directory);
@@ -1167,6 +1202,59 @@ int main(void)
         drive_worker_holder_fence = false;
         puts("gva_worker_holder_fence=pass physical_first=1 "
              "failed_physical_receipt=0 exact_identity=1");
+        drive_worker_holder_rejoin = true;
+        holder_rejoin_home_pending = holder_rejoin_holder_pending = false;
+        assert(mem_service_provider_obmm_prepare_holder_rejoin(
+                   config_path, replacement_path) == 1);
+        snprintf(rejoin_config_path, sizeof(rejoin_config_path),
+                 "%s/rejoin-old.conf", directory);
+        snprintf(rejoin_replacement_path, sizeof(rejoin_replacement_path),
+                 "%s/rejoin-new.conf", directory);
+        snprintf(rejoin_state_path, sizeof(rejoin_state_path),
+                 "%s/rejoin.state", directory);
+        snprintf(rejoin_archive_path, sizeof(rejoin_archive_path),
+                 "%s.holder-fenced-7-by-8", rejoin_state_path);
+        file = fopen(rejoin_config_path, "w");
+        assert(file);
+        fprintf(file, "connect=unix:/unused\nnode_id=nodeA\nincarnation=7\n"
+                "readiness_generation=1\nallocation_granularity_bytes=2097152\n"
+                "state_file=%s\n", rejoin_state_path);
+        assert(!fclose(file));
+        file = fopen(rejoin_replacement_path, "w");
+        assert(file);
+        fprintf(file, "connect=unix:/unused\nnode_id=nodeA\nincarnation=8\n"
+                "readiness_generation=2\nallocation_granularity_bytes=2097152\n"
+                "state_file=%s\n", rejoin_state_path);
+        assert(!fclose(file));
+        {
+            struct worker_config empty_config;
+            int empty_ledger;
+
+            assert(!read_config(rejoin_config_path, &empty_config));
+            empty_config.kernel_instance[0] = 1;
+            empty_ledger = create_state(&empty_config);
+            assert(empty_ledger >= 0 && !close(empty_ledger));
+        }
+        holder_rejoin_home_pending = true;
+        assert(mem_service_provider_obmm_prepare_holder_rejoin(
+                   rejoin_config_path, rejoin_replacement_path) == 1);
+        holder_rejoin_home_pending = false;
+        holder_rejoin_holder_pending = true;
+        assert(mem_service_provider_obmm_prepare_holder_rejoin(
+                   rejoin_config_path, rejoin_replacement_path) == 1);
+        holder_rejoin_holder_pending = false;
+        assert(!mem_service_provider_obmm_prepare_holder_rejoin(
+            rejoin_config_path, rejoin_replacement_path));
+        assert(access(rejoin_state_path, F_OK) < 0 &&
+               !access(rejoin_archive_path, F_OK));
+        assert(!mem_service_provider_obmm_prepare_holder_rejoin(
+            rejoin_config_path, rejoin_replacement_path));
+        drive_worker_holder_rejoin = false;
+        puts("gva_worker_holder_rejoin=pass nonempty=reject home_pending=reject "
+             "holder_pending=reject archive=1 retry=1");
+        assert(!unlink(rejoin_archive_path) &&
+               !unlink(rejoin_replacement_path) &&
+               !unlink(rejoin_config_path));
         drive_worker_recovery = true;
         inventory_mode = 3;
         assert(mem_service_provider_obmm_recover_allocation_state(

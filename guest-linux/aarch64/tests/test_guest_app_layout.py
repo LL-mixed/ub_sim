@@ -1530,7 +1530,7 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "provider=obmm" not in holder_barrier
     holder_recovery = run_app.split(
         "mem_service_object_share_holder_recovery() {", 1
-    )[1].split("\nmem_service_object_share_managed() (", 1)[0]
+    )[1].split("\nmem_service_object_share_holder_rejoin() {", 1)[0]
     assert "fence-holder-state" in holder_recovery
     assert "recover-allocation" in holder_recovery
     assert "old_cpu_access=rejected" in holder_recovery
@@ -1565,6 +1565,23 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     ) == 2
     assert "timeout_ms=90000" not in holder_recovery
     assert "/bin/busybox cat /tmp/holder-recovery-fence.log" in holder_recovery
+    holder_rejoin = run_app.split(
+        "mem_service_object_share_holder_rejoin() {", 1
+    )[1].split("\nmem_service_object_share_managed() (", 1)[0]
+    assert "prepare-holder-rejoin" in holder_rejoin
+    assert "--replacement-config /tmp/managed-share.worker.replacement.conf" in holder_rejoin
+    assert "serve-allocations" in holder_rejoin
+    assert "state_file=/tmp/managed-share.worker.state" in holder_rejoin
+    assert "holder-recovery-rejoin-object" in holder_rejoin
+    assert "--home-node guest-node-1" in holder_rejoin
+    assert "reason=holder_provider_mismatch" in holder_rejoin
+    assert "holder_provider_incarnation=$replacement" in holder_rejoin
+    assert "op=write key=$key" in holder_rejoin
+    assert "op=publish_data key=$key" in holder_rejoin
+    assert "op=read key=$key" in holder_rejoin
+    assert "status=rejoined" in holder_rejoin
+    assert "phase=rejoin-read status=pass" in holder_rejoin
+    assert "phase=rejoin-write status=pass" in holder_rejoin
     assert "holder_recovery_pto_selected()" in apps_runner
     assert "pto_device_selected()" in apps_runner
     assert "cpu-holder-recovery requires a matching PTO geometry" in apps_runner
@@ -1572,6 +1589,9 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
         "\nrun_mem_service_object_share()", 1)[0]
     assert managed.index("mem_service_object_share_holder_barrier") < managed.index(
         "mem_service_object_share_holder_recovery"
+    )
+    assert managed.index("mem_service_object_share_holder_recovery") < managed.index(
+        "mem_service_object_share_holder_rejoin"
     )
     reference = run_app.split("mem_service_object_share_reference_ops() (", 1)[1].split(
         "\nmem_service_object_share_reference()", 1)[0]

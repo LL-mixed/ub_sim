@@ -262,6 +262,123 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     require(signal == cpu_rejected.group(4),
             "controller CPU signal does not match the PTO owner probe")
 
+    rejoin_prepared = require_pattern(
+        node_b,
+        r"obmm-holder-rejoin: status=prepared node=guest-node-1 "
+        r"old_incarnation=([1-9][0-9]*) current_incarnation=([1-9][0-9]*) "
+        r"ledger_entries=1 home_obligations=0 holder_obligations=0 "
+        r"archive=\S+\.holder-fenced-[0-9]+-by-[0-9]+",
+        "empty holder ledger was not safely archived for rejoin",
+    )
+    rejoin_worker = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=rejoin-worker "
+        r"status=started incarnation=([1-9][0-9]*) "
+        r"state_file=/tmp/managed-share\.worker\.state",
+        "replacement worker was not started on the configured state path",
+    )
+    rejoin_allocation = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=rejoin-allocation "
+        r"status=active key=holder-recovery-rejoin-object "
+        r"generation=([1-9][0-9]*) home_incarnation=([1-9][0-9]*)",
+        "replacement worker did not publish a new home allocation",
+    )
+    stale_identity = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=rejoin-stale-identity "
+        r"status=rejected old_incarnation=([1-9][0-9]*) "
+        r"current_incarnation=([1-9][0-9]*) "
+        r"reason=holder_provider_mismatch",
+        "rejoin did not reject the old provider identity",
+    )
+    require_pattern(
+        node_b,
+        r"mem_service object-session: session=holder-recovery-rejoin-writer "
+        r"peer_canary=ok peers=1",
+        "replacement writer did not establish its peer mapping",
+    )
+    require_pattern(
+        node_b,
+        r"action=write key=holder-recovery-rejoin-object status=ok "
+        r"state=active generation=[1-9][0-9]*",
+        "replacement writer did not write the rejoined allocation",
+    )
+    require_pattern(
+        node_b,
+        r"action=publish_data key=holder-recovery-rejoin-object status=ok "
+        r"state=active generation=[1-9][0-9]*",
+        "replacement writer did not publish the rejoined allocation",
+    )
+    require_pattern(
+        node_b,
+        r"obmm-worker work key=holder-recovery-rejoin-object "
+        r"generation=[1-9][0-9]* state=allocating",
+        "replacement worker did not consume the new allocation",
+    )
+    rejoin_write = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=rejoin-write "
+        r"status=pass key=holder-recovery-rejoin-object "
+        r"generation=([1-9][0-9]*) home_incarnation=([1-9][0-9]*)",
+        "replacement writer did not complete the rejoin flow",
+    )
+    rejoin_done = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 status=rejoined "
+        r"old_incarnation=([1-9][0-9]*) "
+        r"current_incarnation=([1-9][0-9]*) "
+        r"key=holder-recovery-rejoin-object generation=([1-9][0-9]*)",
+        "replacement provider did not report complete rejoin",
+    )
+    require_pattern(
+        node_a,
+        r"mem_service object-session: session=holder-recovery-rejoin-reader "
+        r"peer_canary=ok peers=1",
+        "remote reader did not establish its peer mapping to the replacement",
+    )
+    require_pattern(
+        node_a,
+        r"action=read key=holder-recovery-rejoin-object status=ok "
+        r"state=active generation=[1-9][0-9]*",
+        "remote reader did not read the rejoined allocation",
+    )
+    rejoin_read = require_pattern(
+        node_a,
+        r"mem_service holder-recovery: node=0 phase=rejoin-read "
+        r"status=pass key=holder-recovery-rejoin-object "
+        r"generation=([1-9][0-9]*) holder_incarnation=([1-9][0-9]*) "
+        r"home_incarnation=([1-9][0-9]*)",
+        "remote reader did not complete the rejoined allocation flow",
+    )
+    old_incarnation = prepared.group(4)
+    current_incarnation = str(int(old_incarnation) + 1)
+    rejoin_generation = rejoin_allocation.group(1)
+    require(rejoin_prepared.groups() == (old_incarnation, current_incarnation),
+            "holder ledger archive used the wrong replacement identity")
+    require(rejoin_worker.group(1) == current_incarnation,
+            "replacement worker used the wrong incarnation")
+    require(rejoin_allocation.group(2) == current_incarnation,
+            "new allocation was not bound to the replacement incarnation")
+    require(stale_identity.groups() == (old_incarnation, current_incarnation),
+            "stale-identity rejection did not match the provider replacement")
+    require(rejoin_write.groups() == (rejoin_generation, current_incarnation),
+            "replacement write identity does not match the new allocation")
+    require(rejoin_done.groups() ==
+            (old_incarnation, current_incarnation, rejoin_generation),
+            "rejoin completion identity does not match the new allocation")
+    require(rejoin_read.group(1) == rejoin_generation and
+            rejoin_read.group(3) == current_incarnation,
+            "remote read identity does not match the new allocation")
+    require(node_b.index(cpu_rejected_observed.group(0)) <
+            node_b.index(rejoin_prepared.group(0)) <
+            node_b.index(rejoin_worker.group(0)) <
+            node_b.index(rejoin_allocation.group(0)) <
+            node_b.index(stale_identity.group(0)) <
+            node_b.index(rejoin_write.group(0)) <
+            node_b.index(rejoin_done.group(0)),
+            "replacement rejoin did not follow completed old-access fencing")
+
     require_pattern(qemu_b, r"GSVA_TLB: flush reason=remote_retire_quarantine",
                     "holder TLB quarantine is missing")
     require_pattern(qemu_b, r"GSVA_TLB: flush reason=remote_retire_drained",
@@ -278,13 +395,20 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
 
     return {
         "status": "pass",
-        "scope": "replacement-holder-cpu-pto-revoke-and-home-retire",
+        "scope": "replacement-holder-revoke-home-retire-and-rejoin",
         "old_cpu_signal": int(signal),
         "old_pto_error": rejected.group(3),
         "old_pto_operation_id": int(rejected.group(1)),
         "old_pto_mapping_id": int(prepared.group(3)),
         "pto_bootstrap_generation": int(home_canary.group(1)),
         "home_retire": home_retire,
+        "rejoin": {
+            "key": "holder-recovery-rejoin-object",
+            "generation": int(rejoin_generation),
+            "old_incarnation": int(old_incarnation),
+            "current_incarnation": int(current_incarnation),
+            "reader_incarnation": int(rejoin_read.group(2)),
+        },
         "node_a_sha256": hashlib.sha256(node_a.encode()).hexdigest(),
         "node_b_sha256": hashlib.sha256(node_b.encode()).hexdigest(),
         "qemu_a_sha256": hashlib.sha256(qemu_a.encode()).hexdigest(),
@@ -307,7 +431,8 @@ def main() -> None:
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     except (OSError, ValueError) as error:
         parser.exit(1, f"managed holder recovery validation failed: {error}\n")
-    print("managed_holder_recovery=pass physical_revoke=1 old_pto_rejected=1 home_retire=1")
+    print("managed_holder_recovery=pass physical_revoke=1 old_pto_rejected=1 "
+          "home_retire=1 rejoin=1")
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
                 self.assertEqual("serve-allocations" in usage.stderr, enabled)
                 self.assertEqual("resume-allocations" in usage.stderr, enabled)
                 self.assertEqual("quarantine-allocation-state" in usage.stderr, enabled)
+                self.assertEqual("prepare-holder-rejoin" in usage.stderr, enabled)
 
     def test_worker_build_and_startup_guards(self):
         native = platform.system() == "Linux" and platform.machine() == "aarch64"
@@ -124,6 +125,11 @@ class MemServiceGvaWorkerTest(unittest.TestCase):
             self.assertIn(
                 "gva_worker_holder_fence=pass physical_first=1 "
                 "failed_physical_receipt=0 exact_identity=1",
+                result.stdout,
+            )
+            self.assertIn(
+                "gva_worker_holder_rejoin=pass nonempty=reject "
+                "home_pending=reject holder_pending=reject archive=1 retry=1",
                 result.stdout,
             )
             self.assertIn(

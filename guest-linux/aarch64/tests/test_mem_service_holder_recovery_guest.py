@@ -32,6 +32,10 @@ def fixture():
         "MANAGED_PTO_HOLDER_RECOVERY node=0 state=peer-retired generation=1",
         "MANAGED_PTO_RESULT node=0 status=pass key=holder-recovery-object generation=1 holder_recovery_probe=1 role=peer old_cpu_access=not-applicable old_pto_access=not-applicable cpu_signal=0 cleanup=provider-close",
         "mem_service holder-recovery: node=0 status=recovered key=holder-recovery-object state=retired",
+        "mem_service object-session: session=holder-recovery-rejoin-reader peer_canary=ok peers=1",
+        "mem_service object-session: session=holder-recovery-rejoin-reader op=4 action=read key=holder-recovery-rejoin-object status=ok state=active generation=2",
+        "mem_service object-session: session=holder-recovery-rejoin-reader op=9 action=wait_state key=holder-recovery-rejoin-object status=ok state=retired generation=2",
+        "mem_service holder-recovery: node=0 phase=rejoin-read status=pass key=holder-recovery-rejoin-object generation=2 holder_incarnation=7 home_incarnation=8",
     ))
     node_b = "\n".join((
         "mem_service provider-register: status=ok",
@@ -56,6 +60,20 @@ def fixture():
         "MANAGED_PTO_HOLDER_RECOVERY node=1 state=cpu-rejected op_id=8 generation=1 mapping_id=2 signal=7 code=2 address=0x700000000000 retained_cpu_pins=1 retained_leases=3",
         "MANAGED_PTO_RESULT node=1 status=pass key=holder-recovery-object generation=1 holder_recovery_probe=1 role=stale-holder old_cpu_access=rejected old_pto_access=rejected cpu_signal=7 cleanup=process-exit",
         "mem_service holder-recovery: node=1 status=fenced old_cpu_access=rejected old_pto_access=rejected old_cpu_signal=7",
+        "obmm-holder-rejoin: status=prepared node=guest-node-1 old_incarnation=7 current_incarnation=8 ledger_entries=1 home_obligations=0 holder_obligations=0 archive=/tmp/managed-share.worker.state.holder-fenced-7-by-8",
+        "mem_service holder-recovery: node=1 phase=rejoin-worker status=started incarnation=8 state_file=/tmp/managed-share.worker.state",
+        "mem_service holder-recovery: node=1 phase=rejoin-allocation status=active key=holder-recovery-rejoin-object generation=2 home_incarnation=8",
+        "mem_service acquire-object: status=version_conflict",
+        "reason=holder_provider_mismatch",
+        "mem_service holder-recovery: node=1 phase=rejoin-stale-identity status=rejected old_incarnation=7 current_incarnation=8 reason=holder_provider_mismatch",
+        "mem_service object-session: session=holder-recovery-rejoin-writer peer_canary=ok peers=1",
+        "mem_service object-session: session=holder-recovery-rejoin-writer op=3 action=write key=holder-recovery-rejoin-object status=ok state=active generation=2",
+        "mem_service object-session: session=holder-recovery-rejoin-writer op=4 action=publish_data key=holder-recovery-rejoin-object status=ok state=active generation=2",
+        "obmm-worker work key=holder-recovery-rejoin-object generation=2 state=allocating",
+        "obmm-worker generation=2 phase=published segment=14177894576915742722 export=2",
+        "obmm-worker generation=2 phase=reclaimed segment=14177894576915742722 export=0",
+        "mem_service holder-recovery: node=1 phase=rejoin-write status=pass key=holder-recovery-rejoin-object generation=2 home_incarnation=8",
+        "mem_service holder-recovery: node=1 status=rejoined old_incarnation=7 current_incarnation=8 key=holder-recovery-rejoin-object generation=2",
     ))
     qemu_a = "\n".join((
         "OBMM_COH_FENCE req_id=1 from=0xc4d2 range=0x700000000000+2097152",
@@ -81,6 +99,13 @@ class HolderRecoveryGuestTests(unittest.TestCase):
         self.assertEqual(result["old_pto_operation_id"], 8)
         self.assertEqual(result["old_pto_mapping_id"], 2)
         self.assertEqual(result["pto_bootstrap_generation"], 9001)
+        self.assertEqual(result["rejoin"], {
+            "key": "holder-recovery-rejoin-object",
+            "generation": 2,
+            "old_incarnation": 7,
+            "current_incarnation": 8,
+            "reader_incarnation": 7,
+        })
         self.assertEqual(result["home_retire"], {
             "segment_id": "0xc4c2000000000001",
             "epoch": 1,
@@ -113,6 +138,13 @@ class HolderRecoveryGuestTests(unittest.TestCase):
             (1, "state=cpu-probe-start"),
             (1, "old_pto_access=rejected"),
             (1, "bootstrap_generation=9001"),
+            (1, "obmm-holder-rejoin: status=prepared"),
+            (1, "phase=rejoin-worker"),
+            (1, "phase=rejoin-stale-identity"),
+            (1, "action=write key=holder-recovery-rejoin-object"),
+            (1, "phase=rejoin-write"),
+            (0, "action=read key=holder-recovery-rejoin-object"),
+            (0, "phase=rejoin-read"),
             (0, "status=COMMITTED"),
             (2, "operation=2"),
             (3, "remote_retire_drained"),
@@ -167,6 +199,22 @@ class HolderRecoveryGuestTests(unittest.TestCase):
         logs[1] = logs[1].replace(rejected + "\n", "")
         logs[1] = logs[1].replace(cpu_probe + "\n", cpu_probe + "\n" + rejected + "\n")
         with self.assertRaisesRegex(ValueError, "bounded post-revoke order"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        logs[1] = logs[1].replace(
+            "phase=rejoin-allocation status=active key=holder-recovery-rejoin-object generation=2",
+            "phase=rejoin-allocation status=active key=holder-recovery-rejoin-object generation=3",
+        )
+        with self.assertRaisesRegex(ValueError, "write identity"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        logs[0] = logs[0].replace(
+            "phase=rejoin-read status=pass key=holder-recovery-rejoin-object generation=2",
+            "phase=rejoin-read status=pass key=holder-recovery-rejoin-object generation=3",
+        )
+        with self.assertRaisesRegex(ValueError, "remote read identity"):
             validator.validate(*logs)
 
     def test_home_revoke_must_match_retired_identity_and_success(self):
