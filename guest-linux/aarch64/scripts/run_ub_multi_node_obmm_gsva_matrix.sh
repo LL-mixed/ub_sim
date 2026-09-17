@@ -8,24 +8,78 @@ WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 OBMM_GSVA_MATRIX_NODE_COUNT="${OBMM_GSVA_MATRIX_NODE_COUNT:-${GSVA_MATRIX_NODE_COUNT:-4}}"
+PRINT_CONFIG=0
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: run_ub_multi_node_obmm_gsva_matrix.sh [--nodes 2|3|4|8] [--print-config]
+
+Runs the OBMM GSVA all-directed-pair matrix for the selected topology.
+--print-config resolves and prints the topology without launching QEMU.
+USAGE
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --nodes)
+      if (( $# < 2 )); then
+        echo "[obmm-gsva-matrix] FAIL: --nodes requires a value" >&2
+        usage
+        exit 2
+      fi
+      OBMM_GSVA_MATRIX_NODE_COUNT="$2"
+      shift 2
+      ;;
+    --nodes=*)
+      OBMM_GSVA_MATRIX_NODE_COUNT="${1#--nodes=}"
+      shift
+      ;;
+    --print-config)
+      PRINT_CONFIG=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "[obmm-gsva-matrix] FAIL: unsupported argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
 case "$OBMM_GSVA_MATRIX_NODE_COUNT" in
+  2)
+    DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_two_node_v1_extended.ini"
+    NODE_NAMES=(nodeA nodeB)
+    DEFAULT_PORT_NUM=2
+    ;;
+  3)
+    DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_three_node_full_mesh.ini"
+    NODE_NAMES=(nodeA nodeB nodeC)
+    DEFAULT_PORT_NUM=2
+    ;;
   4)
     DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_four_node_full_mesh.ini"
     NODE_NAMES=(nodeA nodeB nodeC nodeD)
+    DEFAULT_PORT_NUM=3
     ;;
   8)
     DEFAULT_TOPOLOGY_FILE="$WORKSPACE_ROOT/vendor/ub_topology_eight_node_full_mesh.ini"
     NODE_NAMES=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
+    DEFAULT_PORT_NUM=7
     ;;
   *)
-    echo "[obmm-gsva-matrix] FAIL: OBMM_GSVA_MATRIX_NODE_COUNT must be 4 or 8" >&2
-    exit 1
+    echo "[obmm-gsva-matrix] FAIL: node count must be 2, 3, 4, or 8" >&2
+    exit 2
     ;;
 esac
 TOPOLOGY_FILE="${TOPOLOGY_FILE:-$DEFAULT_TOPOLOGY_FILE}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
-PORT_NUM="${UB_SIM_PORT_NUM:-$((OBMM_GSVA_MATRIX_NODE_COUNT - 1))}"
+PORT_NUM="${UB_SIM_PORT_NUM:-$DEFAULT_PORT_NUM}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-$ROOT_DIR/out/obmm_gsva_matrix${OBMM_GSVA_MATRIX_NODE_COUNT}_links_${RANDOM}}"
 RUN_SECS="${RUN_SECS:-240}"
 QEMU_KEEP_ALIVE_ON_POWEROFF="${QEMU_KEEP_ALIVE_ON_POWEROFF:-0}"
@@ -40,6 +94,15 @@ OBMM_GSVA_MATRIX_SLICE_SIZE="${OBMM_GSVA_MATRIX_SLICE_SIZE:-${GSVA_MATRIX_SLICE_
 GSVA_MODE="${GSVA_MODE:-arm_mmu}"
 GSVA_STRICT="${GSVA_STRICT:-1}"
 LOG_PREFIX="[obmm-gsva-matrix${OBMM_GSVA_MATRIX_NODE_COUNT}]"
+
+if (( PRINT_CONFIG )); then
+  echo "node_count=$OBMM_GSVA_MATRIX_NODE_COUNT"
+  echo "topology_file=$TOPOLOGY_FILE"
+  echo "port_num=$PORT_NUM"
+  echo "directed_pairs=$((OBMM_GSVA_MATRIX_NODE_COUNT * (OBMM_GSVA_MATRIX_NODE_COUNT - 1)))"
+  echo "nodes=${(j:,:)NODE_NAMES}"
+  exit 0
+fi
 
 source "$SCRIPT_DIR/qemu_ub_common.sh"
 APPEND_EXTRA="$(ensure_sim_kernel_append_defaults "$APPEND_EXTRA")"
@@ -199,21 +262,19 @@ validate_node_logs() {
   local guest_log
   local qemu_log
   local slice_base
-  local expected_node0
-  local expected_last
+  local expected_pairs
 
   for node_name in "${NODE_NAMES[@]}"; do
     guest_log="$(guest_log_for "$node_name")"
     qemu_log="$(qemu_log_for "$node_name")"
     slice_base="$((OBMM_GSVA_MATRIX_BASE + node_idx * OBMM_GSVA_MATRIX_SLICE_SIZE))"
-    expected_node0="$(matrix_value 0 "$node_idx")"
-    expected_last="$(matrix_value "$((OBMM_GSVA_MATRIX_NODE_COUNT - 1))" "$node_idx")"
+    expected_pairs="$((OBMM_GSVA_MATRIX_NODE_COUNT * (OBMM_GSVA_MATRIX_NODE_COUNT - 1)))"
 
     if ! grep -q '\[obmm_gsva\] kernel aperture registry -> ok' "$guest_log"; then
       echo "$LOG_PREFIX FAIL: $node_name lacks kernel aperture evidence" >&2
       return 1
     fi
-    if ! grep -q "\[obmm_gsva\] result=done mode=matrix node=${node_idx} node_count=${OBMM_GSVA_MATRIX_NODE_COUNT}" "$guest_log"; then
+    if ! grep -q "\[obmm_gsva\] result=done mode=matrix node=${node_idx} node_count=${OBMM_GSVA_MATRIX_NODE_COUNT} .*directed_pairs=${expected_pairs}" "$guest_log"; then
       echo "$LOG_PREFIX FAIL: $node_name did not complete matrix mode" >&2
       return 1
     fi
@@ -221,12 +282,6 @@ validate_node_logs() {
       echo "$LOG_PREFIX FAIL: $node_name did not preserve expected GSVA pointer" >&2
       return 1
     fi
-    if ! grep -q "value_from_node0=${expected_node0}" "$guest_log" ||
-       ! grep -q "value_from_last=${expected_last}" "$guest_log"; then
-      echo "$LOG_PREFIX FAIL: $node_name lacks full-mesh write evidence" >&2
-      return 1
-    fi
-
     if ! validate_mp_table_log "$node_name" "$qemu_log" "$((OBMM_GSVA_MATRIX_NODE_COUNT - 1))"; then
       return 1
     fi

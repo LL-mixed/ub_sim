@@ -417,10 +417,12 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
             goto out_cleanup;
     }
 
-    log_msg("result=done mode=matrix node=%d node_count=%d slice_base=%#"
-            PRIx64 " ptr=%#" PRIx64 " value_from_node0=%#" PRIx64
+    log_msg("result=done mode=matrix node=%d node_count=%d directed_pairs=%d"
+            " slice_base=%#" PRIx64 " ptr=%#" PRIx64
+            " value_from_node0=%#" PRIx64
             " value_from_last=%#" PRIx64,
-            local_idx, cfg->node_count, local_base, local_base,
+            local_idx, cfg->node_count,
+            cfg->node_count * (cfg->node_count - 1), local_base, local_base,
             (uint64_t)payloads[local_idx]->values[0],
             (uint64_t)payloads[local_idx]->values[cfg->node_count - 1]);
     ret = 0;
