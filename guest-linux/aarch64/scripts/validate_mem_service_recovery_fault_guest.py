@@ -58,9 +58,14 @@ FAULTS = {
 }
 
 
-def session_rows(text, node, spec):
+def cycle_suffix(cycle):
+    return "" if cycle == 1 else f"-{cycle}"
+
+
+def session_rows(text, node, spec, cycle):
+    session = f"recovery-fault-observer-{node}{cycle_suffix(cycle)}"
     rows = [row for row in records(text, "mem_service object-session:")
-            if row.get("session") == f"recovery-fault-observer-{node}"]
+            if row.get("session") == session]
     require(len(rows) == 4, "missing recovery observer operations or completion")
     expected = (("wait_state", spec["final_state"]),
                 ("inspect", spec["final_state"]),
@@ -91,16 +96,17 @@ def session_rows(text, node, spec):
                     "ambiguous allocation accounting differs")
     endings = [row for row in rows if row.get("result")]
     require(len(endings) == 1, "recovery observer did not complete exactly once")
-    require(endings == [{"session": f"recovery-fault-observer-{node}",
+    require(endings == [{"session": session,
                          "result": "ok", "ops": "3", "elapsed_ms": endings[0]["elapsed_ms"]}],
             "recovery observer did not complete exactly once")
     require(int(endings[0]["elapsed_ms"]) >= 0, "invalid observer elapsed time")
     return generation
 
 
-def validate_active_resume_controller(text, spec):
+def validate_active_resume_controller(text, spec, cycle):
+    session = f"recovery-fault-resume-controller{cycle_suffix(cycle)}"
     rows = [row for row in records(text, "mem_service object-session:")
-            if row.get("session") == "recovery-fault-resume-controller"]
+            if row.get("session") == session]
     if spec["resume_state"] != "active":
         require(not rows, "unexpected active resume controller")
         return
@@ -129,26 +135,33 @@ def one_record(text, prefix, required):
     return matches[0]
 
 
-def validate(node_a, node_b, fault):
+def validate(node_a, node_b, fault, cycles=1):
     require(fault in FAULTS, "unsupported recovery fault")
+    require(1 <= cycles <= 8, "recovery fault cycles must be in 1..8")
     spec = FAULTS[fault]
+    require(cycles == 1 or spec["recovery"] == "resumed",
+            "repeated cycles require a resumable transaction fault")
     mode, integrity = spec["mode"], spec["integrity"]
-    key = f"recovery-fault-{fault}"
-    generations = []
+    generations = [[], []]
     for node, text in enumerate((node_a, node_b)):
         require("mem_service object-share: status=fail" not in text,
                 "guest reported object-share failure")
         require(f"mem_service object-share: status=ok node={node} "
                 f"role={'provider' if node == 0 else 'consumer'} backend=obmm" in text,
                 "missing guest completion")
-        generations.append(session_rows(text, node, spec))
-        observation = one_record(text, "mem_service recovery-fault:", {
-            "node": str(node), "phase": "observation", "status": "pass",
-            "fault": fault, "injection_phase": spec["phase"], "mode": mode,
-            "ledger_integrity": integrity, "recovery": spec["recovery"],
-            "final_state": spec["final_state"], "key": key,
-        })
-        require(len(observation) == 10, "unexpected recovery observation fields")
+        for cycle in range(1, cycles + 1):
+            key = f"recovery-fault-{fault}{cycle_suffix(cycle)}"
+            generation = session_rows(text, node, spec, cycle)
+            generations[node].append(generation)
+            observation = one_record(text, "mem_service recovery-fault:", {
+                "node": str(node), "phase": "observation", "status": "pass",
+                "fault": fault, "cycle": str(cycle),
+                "injection_phase": spec["phase"], "mode": mode,
+                "ledger_integrity": integrity, "recovery": spec["recovery"],
+                "final_state": spec["final_state"], "key": key,
+            })
+            require(len(observation) == 11,
+                    "unexpected recovery observation fields")
         expected_active = "1" if spec["recovery"] == "quarantined" else "2"
         expected_ready = "0" if spec["recovery"] == "quarantined" else "1"
         require(text.count("data_plane_ready=0") >= 2 and
@@ -158,10 +171,15 @@ def validate(node_a, node_b, fault):
         validate_kernel_regions(text)
 
     require(generations[0] == generations[1],
-            "guests observed different quarantined generations")
+            "guests observed different recovery generations")
+    require(len(set(generations[0])) == cycles and
+            generations[0] == sorted(generations[0]),
+            "recovery generations were reused or reordered")
     triggers = records(node_a, "obmm-worker fault-injection=triggered")
-    require(len(triggers) == 1 and triggers[0].get("phase") == spec["phase"] and
-            triggers[0].get("mode") == mode and int(triggers[0]["ledger_bytes"]) > 0,
+    require(len(triggers) == cycles and
+            all(row.get("phase") == spec["phase"] and
+                row.get("mode") == mode and int(row["ledger_bytes"]) > 0
+                for row in triggers),
             "missing deterministic worker crash receipt")
     quarantine = records(node_a, "obmm-worker-quarantine:")
     resumes = records(node_a, "obmm-worker-resume:")
@@ -181,22 +199,27 @@ def validate(node_a, node_b, fault):
                 "invalid quarantine identity or extra fields")
     else:
         expected_reservations = 1 if spec["resume_state"] == "active" else 0
-        require(not quarantine and len(resumes) == 1 and
-                resumes[0].get("status") == "ready" and
-                int(resumes[0].get("reservations", "-1")) ==
-                expected_reservations and
-                resumes[0].get("scope") ==
-                "ledger-owned-segment-export-records",
+        require(not quarantine and len(resumes) == cycles and
+                all(row.get("status") == "ready" and
+                    int(row.get("reservations", "-1")) ==
+                    expected_reservations and
+                    row.get("scope") ==
+                    "ledger-owned-segment-export-records"
+                    for row in resumes),
                 "worker resume evidence differs")
-        validate_active_resume_controller(node_a, spec)
-    worker_exit = one_record(node_a, "mem_service recovery-fault:", {
-        "node": "0", "phase": "worker-exit", "status": "expected",
-        "fault": fault, "injection_phase": spec["phase"], "mode": mode,
-        "exit_code": "86", "key": key, "generation": str(generations[0]),
-    })
-    require(len(worker_exit) == 9, "unexpected worker exit fields")
-    require(len(records(node_a, "mem_service recovery-fault:")) == 2 and
-            len(records(node_b, "mem_service recovery-fault:")) == 1,
+        for cycle in range(1, cycles + 1):
+            validate_active_resume_controller(node_a, spec, cycle)
+    for cycle, generation in enumerate(generations[0], 1):
+        key = f"recovery-fault-{fault}{cycle_suffix(cycle)}"
+        worker_exit = one_record(node_a, "mem_service recovery-fault:", {
+            "node": "0", "phase": "worker-exit", "status": "expected",
+            "fault": fault, "cycle": str(cycle),
+            "injection_phase": spec["phase"], "mode": mode,
+            "exit_code": "86", "key": key, "generation": str(generation),
+        })
+        require(len(worker_exit) == 10, "unexpected worker exit fields")
+    require(len(records(node_a, "mem_service recovery-fault:")) == 2 * cycles and
+            len(records(node_b, "mem_service recovery-fault:")) == cycles,
             "missing or extra recovery fault lifecycle records")
     require("fault-injection=triggered" not in node_b and
             "obmm-worker-quarantine:" not in node_b and
@@ -211,7 +234,9 @@ def validate(node_a, node_b, fault):
         "ledger_integrity": integrity,
         "recovery": spec["recovery"],
         "final_state": spec["final_state"],
-        "generation": generations[0],
+        "cycles": cycles,
+        "generation": generations[0][0],
+        "generations": generations[0],
         "worker_exit_code": 86,
         "provider_state": (
             "isolated" if spec["recovery"] == "quarantined" else "ready"
@@ -227,15 +252,19 @@ def main():
     parser.add_argument("--node-a", type=Path, required=True)
     parser.add_argument("--node-b", type=Path, required=True)
     parser.add_argument("--fault", choices=sorted(FAULTS), required=True)
+    parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        result = validate(args.node_a.read_text(), args.node_b.read_text(), args.fault)
+        result = validate(args.node_a.read_text(), args.node_b.read_text(),
+                          args.fault, args.cycles)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     except (OSError, KeyError, ValueError, IndexError) as error:
         parser.exit(1, f"managed recovery fault validation failed: {error}\n")
-    print("managed_recovery_fault=pass fault=%s generation=%d provider_state=%s" %
-          (args.fault, result["generation"], result["provider_state"]))
+    print("managed_recovery_fault=pass fault=%s cycles=%d generation=%d "
+          "provider_state=%s" %
+          (args.fault, result["cycles"], result["generation"],
+           result["provider_state"]))
 
 
 if __name__ == "__main__":

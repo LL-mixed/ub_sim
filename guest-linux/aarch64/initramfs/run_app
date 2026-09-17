@@ -2981,6 +2981,16 @@ mem_service_recovery_fault_supported() {
   esac
 }
 
+mem_service_transaction_fault_supported() {
+  case "$1" in
+    address_reserved_crash|backing_exported_crash|published_crash|\
+    release_intent_crash|unexported_crash|retired_crash|reclaimed_crash)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 mem_service_object_share_recovery_fault() {
   local node="$1"
   local size="$2"
@@ -2988,7 +2998,9 @@ mem_service_object_share_recovery_fault() {
   local connect="$4"
   local worker="$5"
   local fault="$6"
-  local key="recovery-fault-$fault"
+  local cycle="${7:-1}"
+  local cycle_suffix=""
+  local key=""
   local injection_phase=""
   local expected_mode=""
   local expected_integrity=""
@@ -2997,6 +3009,11 @@ mem_service_object_share_recovery_fault() {
   local final_state=""
   local uptime="" ignored="" deadline=0 result=0 generation=""
   local attempt=0 worker_status=0 resumed_worker=""
+
+  case "$cycle" in ''|0|*[!0-9]*) return 2 ;; esac
+  [ "$cycle" -le 8 ] || return 2
+  [ "$cycle" = "1" ] || cycle_suffix="-$cycle"
+  key="recovery-fault-$fault$cycle_suffix"
 
   case "$fault" in
     reserve_intent_crash)
@@ -3071,6 +3088,9 @@ mem_service_object_share_recovery_fault() {
       ;;
     *) return 2 ;;
   esac
+  if [ "$cycle" != "1" ] && [ "$recovery" != "resumed" ]; then
+    return 2
+  fi
 
   # Do not consume the allocation until both provider registrations are
   # visible. The recovery case has no data-plane session whose peer canary
@@ -3100,7 +3120,8 @@ mem_service_object_share_recovery_fault() {
   if [ "$node" = "0" ]; then
     /bin/linqu_mem_service allocate-object --connect "$connect" \
       --key "$key" --idempotency-key "$key-allocate" \
-      --session-id recovery-fault-controller --home-node guest-node-0 \
+      --session-id "recovery-fault-controller$cycle_suffix" \
+      --home-node guest-node-0 \
       --size-bytes "$size" --capabilities 1 \
       >/tmp/recovery-fault-allocate.log 2>&1 || return 1
     /bin/busybox cat /tmp/recovery-fault-allocate.log
@@ -3111,7 +3132,7 @@ mem_service_object_share_recovery_fault() {
     case "$injection_phase" in
       release-intent|unexported|retired|reclaimed)
         {
-          echo "session_id=recovery-fault-trigger"
+          echo "session_id=recovery-fault-trigger$cycle_suffix"
           echo "connect=$connect"
           echo "request_timeout_ms=30000"
           echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
@@ -3145,7 +3166,7 @@ mem_service_object_share_recovery_fault() {
     /bin/busybox grep -q \
       "obmm-worker fault-injection=triggered phase=$injection_phase mode=$expected_mode ledger_bytes=[1-9][0-9]*" \
       /tmp/managed-share.worker.log || return 1
-    echo "mem_service recovery-fault: node=0 phase=worker-exit status=expected fault=$fault injection_phase=$injection_phase mode=$expected_mode exit_code=$worker_status key=$key generation=$generation"
+    echo "mem_service recovery-fault: node=0 phase=worker-exit status=expected fault=$fault cycle=$cycle injection_phase=$injection_phase mode=$expected_mode exit_code=$worker_status key=$key generation=$generation"
 
     if [ "$recovery" = "quarantined" ]; then
       /bin/linqu_mem_service_provider_obmm quarantine-allocation-state \
@@ -3182,7 +3203,7 @@ mem_service_object_share_recovery_fault() {
       worker_pid="$resumed_worker"
       if [ "$resume_state" = "active" ]; then
         {
-          echo "session_id=recovery-fault-resume-controller"
+          echo "session_id=recovery-fault-resume-controller$cycle_suffix"
           echo "connect=$connect"
           echo "request_timeout_ms=30000"
           echo "op=wait_state key=$key state=active timeout_ms=60000 poll_ms=50"
@@ -3202,7 +3223,7 @@ mem_service_object_share_recovery_fault() {
   fi
 
   {
-    echo "session_id=recovery-fault-observer-$node"
+    echo "session_id=recovery-fault-observer-$node$cycle_suffix"
     echo "connect=$connect"
     echo "request_timeout_ms=30000"
     echo "op=wait_state key=$key state=$final_state timeout_ms=60000 poll_ms=50"
@@ -3242,7 +3263,7 @@ mem_service_object_share_recovery_fault() {
   fi
   /bin/busybox grep -qx 'data_plane_ready=0' \
     /tmp/recovery-fault-directory-final.log || return 1
-  echo "mem_service recovery-fault: node=$node phase=observation status=pass fault=$fault injection_phase=$injection_phase mode=$expected_mode ledger_integrity=$expected_integrity recovery=$recovery final_state=$final_state key=$key"
+  echo "mem_service recovery-fault: node=$node phase=observation status=pass fault=$fault cycle=$cycle injection_phase=$injection_phase mode=$expected_mode ledger_integrity=$expected_integrity recovery=$recovery final_state=$final_state key=$key"
 }
 
 mem_service_object_share_managed() (
@@ -3262,6 +3283,8 @@ mem_service_object_share_managed() (
     mem_service.object_share_guest_restart_index 0)"
   guest_crash_cycles="$(cmdline_value \
     mem_service.object_share_guest_crash_cycles 1)"
+  transaction_crash_cycles="$(cmdline_value \
+    mem_service.object_share_transaction_crash_cycles 1)"
   home_node=0
   if [ "$access" = "cpu-pto" ]; then
     home_node="$(cmdline_value lingqu_shmem_pto.home_node 0)"
@@ -3282,6 +3305,11 @@ mem_service_object_share_managed() (
   case "$guest_restart_index" in ''|*[!0-9]*) exit 2 ;; esac
   case "$guest_crash_cycles" in ''|0|*[!0-9]*) exit 2 ;; esac
   [ "$guest_crash_cycles" -le 8 ] || exit 2
+  case "$transaction_crash_cycles" in ''|0|*[!0-9]*) exit 2 ;; esac
+  [ "$transaction_crash_cycles" -le 8 ] || exit 2
+  if [ "$transaction_crash_cycles" != "1" ]; then
+    mem_service_transaction_fault_supported "$fault" || exit 2
+  fi
   if [ "$guest_restart" = "1" ] && [ "$guest_restart_index" = "0" ]; then
     guest_restart_index=1
   fi
@@ -3435,8 +3463,20 @@ mem_service_object_share_managed() (
         fi
       fi
     else
-      mem_service_object_share_recovery_fault "$node" "$size" "$incarnation" \
-        "$connect" "$worker_pid" "$fault" || exit 1
+      cycle=1
+      while [ "$cycle" -le "$transaction_crash_cycles" ]; do
+        mem_service_object_share_recovery_fault "$node" "$size" "$incarnation" \
+          "$connect" "$worker_pid" "$fault" "$cycle" || exit 1
+        cycle=$((cycle + 1))
+        if [ "$node" = "0" ] && [ "$cycle" -le "$transaction_crash_cycles" ]; then
+          kill "$worker_pid" 2>/dev/null || true
+          wait "$worker_pid" 2>/dev/null || true
+          /bin/linqu_mem_service_provider_obmm serve-allocations \
+            --config /tmp/managed-share.worker.conf \
+            >/tmp/managed-share.worker.log 2>&1 &
+          worker_pid=$!
+        fi
+      done
     fi
   fi
   if [ "$access" = "cpu-holder-recovery" ]; then

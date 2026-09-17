@@ -19,80 +19,90 @@ validator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(validator)
 
 
-def fixture(fault):
+def fixture(fault, cycles=1):
     spec = validator.FAULTS[fault]
     mode, integrity = spec["mode"], spec["integrity"]
-    key = f"recovery-fault-{fault}"
     logs = []
     for node in (0, 1):
-        prefix = f"mem_service object-session: session=recovery-fault-observer-{node}"
         lines = [
             "mem_service kernel-regions: phase=baseline",
             "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
             "export_handles=0 export_bytes=0 import_handles=0 import_bytes=0",
         ]
-        if node == 0:
-            lines += [
-                "obmm-worker initial refresh provider_directory_ready=1",
-                f"obmm-worker fault-injection=triggered phase={spec['phase']} "
-                f"mode={mode} ledger_bytes=2048",
-                f"mem_service recovery-fault: node=0 phase=worker-exit status=expected "
-                f"fault={fault} injection_phase={spec['phase']} mode={mode} "
-                f"exit_code=86 key={key} generation=5",
-            ]
-            if spec["recovery"] == "quarantined":
+        for cycle in range(1, cycles + 1):
+            suffix = validator.cycle_suffix(cycle)
+            key = f"recovery-fault-{fault}{suffix}"
+            generation = 5 + (cycle - 1) * 4
+            prefix = (
+                "mem_service object-session: "
+                f"session=recovery-fault-observer-{node}{suffix}"
+            )
+            if node == 0:
                 lines += [
-                    "obmm-worker-quarantine: status=complete node=guest-node-0 "
-                    f"incarnation=7 provider_state=isolated ledger_integrity={integrity} "
-                    "scope=provider-control-plane backing_reconciled=0 "
-                    "resource_reconciliation_required=1",
+                    "obmm-worker initial refresh provider_directory_ready=1",
+                    f"obmm-worker fault-injection=triggered phase={spec['phase']} "
+                    f"mode={mode} ledger_bytes=2048",
+                    "mem_service recovery-fault: node=0 phase=worker-exit "
+                    f"status=expected fault={fault} cycle={cycle} "
+                    f"injection_phase={spec['phase']} mode={mode} exit_code=86 "
+                    f"key={key} generation={generation}",
                 ]
-            else:
-                reservations = int(spec["resume_state"] == "active")
-                lines += [
-                    f"obmm-worker-resume: status=ready reservations={reservations} "
-                    "kernel_records=1 unclaimed_records=0 revision=9 "
-                    "kernel_instance=0102030405060708090a0b0c0d0e0f10 "
-                    "scope=ledger-owned-segment-export-records",
-                ]
-                if spec["resume_state"] == "active":
-                    controller = (
-                        "mem_service object-session: "
-                        "session=recovery-fault-resume-controller"
-                    )
+                if spec["recovery"] == "quarantined":
                     lines += [
-                        f"{controller} op=1 action=wait_state key={key} status=ok "
-                        "state=active generation=5",
-                        f"{controller} op=2 action=inspect key={key} status=ok "
-                        "state=active generation=5",
-                        f"{controller} op=3 action=retire key={key} status=ok "
-                        "state=retiring generation=5",
-                        f"{controller} op=4 action=wait_state key={key} status=ok "
-                        "state=retired generation=5",
-                        f"{controller} result=ok ops=4 elapsed_ms=7",
+                        "obmm-worker-quarantine: status=complete node=guest-node-0 "
+                        f"incarnation=7 provider_state=isolated ledger_integrity={integrity} "
+                        "scope=provider-control-plane backing_reconciled=0 "
+                        "resource_reconciliation_required=1",
                     ]
-        in_flight = int(spec["recovery"] == "quarantined")
-        quarantined = int(spec["recovery"] == "quarantined")
-        active_providers = 1 if spec["recovery"] == "quarantined" else 2
-        directory_ready = 0 if spec["recovery"] == "quarantined" else 1
+                else:
+                    reservations = int(spec["resume_state"] == "active")
+                    lines += [
+                        f"obmm-worker-resume: status=ready reservations={reservations} "
+                        "kernel_records=1 unclaimed_records=0 revision=9 "
+                        "kernel_instance=0102030405060708090a0b0c0d0e0f10 "
+                        "scope=ledger-owned-segment-export-records",
+                    ]
+                    if spec["resume_state"] == "active":
+                        controller = (
+                            "mem_service object-session: "
+                            f"session=recovery-fault-resume-controller{suffix}"
+                        )
+                        lines += [
+                            f"{controller} op=1 action=wait_state key={key} status=ok "
+                            f"state=active generation={generation}",
+                            f"{controller} op=2 action=inspect key={key} status=ok "
+                            f"state=active generation={generation}",
+                            f"{controller} op=3 action=retire key={key} status=ok "
+                            f"state=retiring generation={generation}",
+                            f"{controller} op=4 action=wait_state key={key} status=ok "
+                            f"state=retired generation={generation}",
+                            f"{controller} result=ok ops=4 elapsed_ms=7",
+                        ]
+            in_flight = int(spec["recovery"] == "quarantined")
+            quarantined = int(spec["recovery"] == "quarantined")
+            active_providers = 1 if spec["recovery"] == "quarantined" else 2
+            directory_ready = 0 if spec["recovery"] == "quarantined" else 1
+            lines += [
+                f"{prefix} op=1 action=wait_state key={key} status=ok "
+                f"state={spec['final_state']} generation={generation}",
+                f"{prefix} op=2 action=inspect key={key} status=ok "
+                f"state={spec['final_state']} generation={generation}",
+                f"{prefix} op=3 action=stats status=ok live_objects=0 "
+                "backing_allocated_bytes=0 address_reserved_bytes=0 live_refs=0 "
+                f"in_flight={in_flight} quarantined_objects={quarantined} "
+                "quarantined_bytes=0 import_mappings=0",
+                f"{prefix} result=ok ops=3 elapsed_ms=4",
+                f"provider_active_count={active_providers}",
+                f"provider_directory_ready={directory_ready}",
+                "data_plane_ready=0",
+                "data_plane_ready=0",
+                f"mem_service recovery-fault: node={node} phase=observation "
+                f"status=pass fault={fault} cycle={cycle} "
+                f"injection_phase={spec['phase']} mode={mode} "
+                f"ledger_integrity={integrity} recovery={spec['recovery']} "
+                f"final_state={spec['final_state']} key={key}",
+            ]
         lines += [
-            f"{prefix} op=1 action=wait_state key={key} status=ok "
-            f"state={spec['final_state']} generation=5",
-            f"{prefix} op=2 action=inspect key={key} status=ok "
-            f"state={spec['final_state']} generation=5",
-            f"{prefix} op=3 action=stats status=ok live_objects=0 "
-            "backing_allocated_bytes=0 address_reserved_bytes=0 live_refs=0 "
-            f"in_flight={in_flight} quarantined_objects={quarantined} "
-            "quarantined_bytes=0 import_mappings=0",
-            f"{prefix} result=ok ops=3 elapsed_ms=4",
-            f"provider_active_count={active_providers}",
-            f"provider_directory_ready={directory_ready}",
-            "data_plane_ready=0",
-            "data_plane_ready=0",
-            f"mem_service recovery-fault: node={node} phase=observation status=pass "
-            f"fault={fault} injection_phase={spec['phase']} mode={mode} "
-            f"ledger_integrity={integrity} recovery={spec['recovery']} "
-            f"final_state={spec['final_state']} key={key}",
             "mem_service kernel-regions: phase=drained",
             "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
             "export_handles=0 export_bytes=0 import_handles=0 import_bytes=0",
@@ -114,6 +124,21 @@ class RecoveryFaultGuestTests(unittest.TestCase):
                 self.assertEqual(result["injection_phase"], spec["phase"])
                 self.assertEqual(result["recovery"], spec["recovery"])
                 self.assertEqual(result["generation"], 5)
+
+    def test_repeated_resumable_transaction_generations_are_unique(self):
+        fault = "published_crash"
+        logs = fixture(fault, cycles=2)
+        result = validator.validate(*logs, fault, cycles=2)
+        self.assertEqual(result["cycles"], 2)
+        self.assertEqual(result["generations"], [5, 9])
+
+        duplicate = [text.replace("generation=9", "generation=5")
+                     for text in logs]
+        with self.assertRaises(ValueError):
+            validator.validate(*duplicate, fault, cycles=2)
+        with self.assertRaises(ValueError):
+            validator.validate(*fixture("reserve_intent_crash"),
+                               "reserve_intent_crash", cycles=2)
 
     def test_missing_or_incorrect_isolation_evidence_is_rejected(self):
         fault = "reserve_intent_crash"
@@ -192,12 +217,23 @@ class RecoveryFaultGuestTests(unittest.TestCase):
         self.assertIn("recovery-fault-resume-controller", function)
         self.assertIn("injection_phase=$injection_phase", function)
         self.assertIn("resource_reconciliation_required=1", function)
+        self.assertIn("cycle=$cycle", function)
+        self.assertIn("recovery-fault-observer-$node$cycle_suffix", function)
         self.assertIn('final_state="quarantined"', function)
         self.assertIn('final_state="retired"', function)
         self.assertIn("in_flight=1 quarantined_objects=1", function)
         self.assertIn('worker_status" -eq 86', function)
         self.assertNotIn("mem_service_object_share_recovery_fault() (", run_app)
         self.assertIn('MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault"', runner)
+        self.assertIn("MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES", runner)
+        self.assertIn(
+            "mem_service.object_share_transaction_crash_cycles=",
+            runner,
+        )
+        self.assertIn(
+            '--cycles "$MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES"',
+            runner,
+        )
         self.assertIn("validate_mem_service_recovery_fault_guest.py", runner)
         self.assertIn("managed-recovery-fault-validation.json", runner)
 
@@ -208,9 +244,15 @@ class RecoveryFaultGuestTests(unittest.TestCase):
         host_helper = "mem_service_recovery_fault_selected() {" + runner.split(
             "mem_service_recovery_fault_selected() {", 1
         )[1].split("\n}\n", 1)[0] + "\n}\n"
+        transaction_helper = "mem_service_transaction_fault_selected() {" + runner.split(
+            "mem_service_transaction_fault_selected() {", 1
+        )[1].split("\n}\n", 1)[0] + "\n}\n"
         host_marker = 'if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" ]]; then'
-        host = host_helper + host_marker + runner.split(host_marker, 1)[1].split(
-            '\nif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then', 1
+        host = host_helper + transaction_helper + host_marker + runner.split(
+            host_marker, 1
+        )[1].split(
+            '\nif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then',
+            1,
         )[0]
         guest_helper = "mem_service_recovery_fault_supported() {" + run_app.split(
             "mem_service_recovery_fault_supported() {", 1
@@ -242,6 +284,8 @@ class RecoveryFaultGuestTests(unittest.TestCase):
                     f"MEM_SERVICE_OBJECT_SHARE_SIZE={size}\n"
                     f"MEM_SERVICE_OBJECT_SHARE_ITERATIONS={iterations}\n"
                     f"MEM_SERVICE_OBJECT_SHARE_FAULT={fault}\n"
+                    "MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES=1\n"
+                    "MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES=1\n"
                 )
                 guest_config = (
                     f"access={access}\nbackend={backend}\nsize={size}\n"
@@ -255,6 +299,30 @@ class RecoveryFaultGuestTests(unittest.TestCase):
                                          text=True, timeout=5)
                     self.assertEqual(run.returncode == 0, valid,
                                      f"{shell}: {run.stdout}{run.stderr}")
+
+        transaction_cycle_profiles = (
+            ("published_crash", "2", True),
+            ("reserve_intent_crash", "2", False),
+            ("published_crash", "0", False),
+            ("guest_crash", "2", False),
+        )
+        for fault, cycles, valid in transaction_cycle_profiles:
+            with self.subTest(fault=fault, transaction_cycles=cycles):
+                host_config = (
+                    "MEM_SERVICE_OBJECT_SHARE_ACCESS=cpu-recovery-fault\n"
+                    "MEM_SERVICE_OBJECT_SHARE_BACKEND=obmm\n"
+                    "MEM_SERVICE_OBJECT_SHARE_SIZE=65536\n"
+                    "MEM_SERVICE_OBJECT_SHARE_ITERATIONS=1\n"
+                    f"MEM_SERVICE_OBJECT_SHARE_FAULT={fault}\n"
+                    "MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES=1\n"
+                    f"MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES={cycles}\n"
+                )
+                run = subprocess.run(
+                    ["zsh", "-s"], input=host_config + host,
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(run.returncode == 0, valid,
+                                 run.stdout + run.stderr)
 
 
 if __name__ == "__main__":

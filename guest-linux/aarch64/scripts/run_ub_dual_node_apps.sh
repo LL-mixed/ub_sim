@@ -61,6 +61,7 @@ MEM_SERVICE_OBJECT_SHARE_ADDRESS="${MEM_SERVICE_OBJECT_SHARE_ADDRESS:-}"
 MEM_SERVICE_OBJECT_SHARE_PORT="${MEM_SERVICE_OBJECT_SHARE_PORT:-12347}"
 MEM_SERVICE_OBJECT_SHARE_INCARNATION="${MEM_SERVICE_OBJECT_SHARE_INCARNATION:-7}"
 MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES="${MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES:-1}"
+MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES="${MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES:-1}"
 MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE="${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE:-auto}"
 MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX="${MEM_SERVICE_OBJECT_SHARE_DESCRIPTOR_HEX:-}"
 if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then
@@ -481,6 +482,16 @@ mem_service_recovery_fault_selected() {
     reserve_intent_crash|torn_ledger_crash|address_reserved_crash|\
     backing_exported_crash|published_crash|release_intent_crash|\
     unexported_crash|retired_crash|reclaimed_crash|manager_crash|guest_crash)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+mem_service_transaction_fault_selected() {
+  case "$MEM_SERVICE_OBJECT_SHARE_FAULT" in
+    address_reserved_crash|backing_exported_crash|published_crash|\
+    release_intent_crash|unexported_crash|retired_crash|reclaimed_crash)
       return 0
       ;;
     *) return 1 ;;
@@ -1207,6 +1218,15 @@ fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "guest_crash" &&
       "$MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES" != "1" ]]; then
   echo "multiple guest crash cycles require the guest_crash fault" >&2
+  exit 2
+fi
+if [[ ! "$MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES" =~ ^[1-8]$ ]]; then
+  echo "Memory Service transaction crash cycles must be in 1..8" >&2
+  exit 2
+fi
+if [[ "$MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES" != "1" ]] &&
+    ! mem_service_transaction_fault_selected; then
+  echo "multiple transaction crash cycles require a resumable transaction fault" >&2
   exit 2
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
@@ -3150,6 +3170,8 @@ run_iteration() {
     append_cmdline_if_missing \
       "mem_service.object_share_guest_crash_cycles=${MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES}"
     append_cmdline_if_missing \
+      "mem_service.object_share_transaction_crash_cycles=${MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES}"
+    append_cmdline_if_missing \
       "mem_service.object_share_aperture_size=${MEM_SERVICE_OBJECT_SHARE_APERTURE_SIZE}"
     if [[ -n "$MEM_SERVICE_OBJECT_SHARE_ADDRESS" ]]; then
       append_cmdline_if_missing \
@@ -4189,6 +4211,7 @@ run_iteration() {
         python3 "${SCRIPT_DIR}/validate_mem_service_recovery_fault_guest.py" \
           --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
           --fault "$MEM_SERVICE_OBJECT_SHARE_FAULT" \
+          --cycles "$MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES" \
           --output "${nodea_guest_log:h}/managed-recovery-fault-validation.json" \
           || return 1
       fi
