@@ -17,8 +17,6 @@ typedef int (*w5_managed_request_object_key_fn)(
 
 struct w5_managed_request_cleanup_config {
     const struct mem_service_client *client;
-    const struct mem_service_provider_channel *channel;
-    struct mem_service_access_domain *domain;
     const char *holder_node_id;
     uint64_t holder_provider_incarnation;
     w5_managed_request_object_key_fn object_key;
@@ -29,7 +27,6 @@ struct w5_managed_request_cleanup_config {
     uint64_t timeout_ms;
     uint32_t local_node;
     uint32_t node_count;
-    uint32_t pin_limit;
 };
 
 struct w5_managed_request_cleanup_result {
@@ -56,10 +53,11 @@ int w5_managed_request_retire_local_step(
     struct mem_service_client_allocation *allocation_out);
 
 /* Create local cleanup state without issuing an RPC. The final token is used
- * as a request-scoped rendezvous: every node acquires it, the terminal node
- * verifies the exact participant holder set and retires it, then every node
- * releases its holder and retires the allocations produced by its home.
- * Execute is retryable on the same state. */
+ * as a request-scoped control-plane rendezvous: every node resolves its
+ * published reference and acquires a holder without creating a data mapping.
+ * The terminal node verifies the exact participant holder set and retires the
+ * allocation, then every node releases its holder and retires the allocations
+ * produced by its home. Execute is retryable on the same state. */
 int w5_managed_request_cleanup_create(
     const struct w5_managed_request_cleanup_config *config,
     struct w5_managed_request_cleanup **cleanup_out);

@@ -10,11 +10,14 @@
 #include <string.h>
 #include <time.h>
 
+#define W5_MANAGED_FINAL_DISCOVERY_ATTEMPT_MS 5000U
+#define W5_MANAGED_FINAL_DISCOVERY_MAX_BACKOFF_MS 1000U
+
 enum cleanup_phase {
     CLEANUP_CREATED = 0,
-    CLEANUP_FINAL_READER_OPEN = 1,
+    CLEANUP_FINAL_HOLDER_OPEN = 1,
     CLEANUP_FINAL_RETIRING = 2,
-    CLEANUP_FINAL_READER_CLOSED = 3,
+    CLEANUP_FINAL_HOLDER_CLOSED = 3,
     CLEANUP_LOCAL_RETIRE_REQUESTED = 4,
     CLEANUP_ALL_RETIRED = 5,
     CLEANUP_COMPLETE = 6,
@@ -22,11 +25,11 @@ enum cleanup_phase {
 
 struct w5_managed_request_cleanup {
     struct w5_managed_request_cleanup_config config;
-    struct w5_managed_object_guest *final_reader;
     struct mem_service_client_allocation final_allocation;
     struct w5_managed_request_cleanup_result result;
     char final_key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
     char final_reference_key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
+    bool final_holder_owned;
     enum cleanup_phase phase;
 };
 
@@ -45,6 +48,20 @@ static void wait_tick(void)
     const struct timespec delay = {.tv_nsec = 1000000};
 
     (void)nanosleep(&delay, NULL);
+}
+
+static void wait_discovery_tick(uint64_t *backoff_ms)
+{
+    uint64_t current = *backoff_ms ? *backoff_ms : 1U;
+    struct timespec delay;
+
+    if (current > W5_MANAGED_FINAL_DISCOVERY_MAX_BACKOFF_MS)
+        current = W5_MANAGED_FINAL_DISCOVERY_MAX_BACKOFF_MS;
+    delay.tv_sec = (time_t)(current / 1000U);
+    delay.tv_nsec = (long)((current % 1000U) * 1000000U);
+    (void)nanosleep(&delay, NULL);
+    *backoff_ms = current < W5_MANAGED_FINAL_DISCOVERY_MAX_BACKOFF_MS / 2U ?
+        current * 2U : W5_MANAGED_FINAL_DISCOVERY_MAX_BACKOFF_MS;
 }
 
 static uint64_t identity_hash(const char *text)
@@ -148,12 +165,16 @@ int w5_managed_request_retire_local_step(
     return -ETIMEDOUT;
 }
 
-static int open_final_reader(struct w5_managed_request_cleanup *cleanup)
+static int open_final_holder(struct w5_managed_request_cleanup *cleanup)
 {
-    struct w5_managed_reader_config reader_config;
+    struct mem_service_reference_request request = {0};
+    struct mem_service_client_reference_result result;
+    struct mem_service_client discovery_client;
     enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
     char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
     char operation[48];
+    uint64_t backoff_ms = 1U;
+    uint64_t start;
     uint64_t hash;
     int length;
     int rc;
@@ -162,32 +183,71 @@ static int open_final_reader(struct w5_managed_request_cleanup *cleanup)
     if (rc)
         return rc;
     hash = identity_hash(cleanup->final_key);
+    request.action = MEM_SERVICE_REFERENCE_RESOLVE;
+    length = snprintf(request.key, sizeof(request.key), "%s",
+                      cleanup->final_reference_key);
+    if (length < 0 || (size_t)length >= sizeof(request.key))
+        return -ENAMETOOLONG;
+    discovery_client = *cleanup->config.client;
+    discovery_client.wire_options.timeout_ms = cleanup->config.timeout_ms <
+        W5_MANAGED_FINAL_DISCOVERY_ATTEMPT_MS ? cleanup->config.timeout_ms :
+        W5_MANAGED_FINAL_DISCOVERY_ATTEMPT_MS;
+    discovery_client.wire_options.max_attempts = 1;
+    discovery_client.wire_options.retry_backoff_ms = 0;
+    discovery_client.wire_options.retry_on_timeout = 0;
+    start = now_ms();
+    do {
+        memset(&result, 0, sizeof(result));
+        rc = mem_service_client_reference_transition(&discovery_client,
+            &request, &result, &status);
+        if (!rc)
+            break;
+        if (status != MEM_SERVICE_WIRE_STATUS_NOT_FOUND &&
+            status != MEM_SERVICE_WIRE_STATUS_TIMEOUT &&
+            status != MEM_SERVICE_WIRE_STATUS_STALE_REF)
+            return rc;
+        wait_discovery_tick(&backoff_ms);
+    } while (now_ms() - start < cleanup->config.timeout_ms);
+    if (rc)
+        return -ETIMEDOUT;
+    if (lingqu_object_ref_v2_validate(&result.reference) ||
+        result.reference.access != LINGQU_OBJECT_REF_V2_READ ||
+        strcmp(result.reference.allocation_key, cleanup->final_key) != 0)
+        return -ESTALE;
+
+    memset(&request, 0, sizeof(request));
+    request.action = MEM_SERVICE_REFERENCE_ACQUIRE;
+    request.reference = result.reference;
+    request.access = LINGQU_OBJECT_REF_V2_READ;
+    length = snprintf(request.key, sizeof(request.key), "%s",
+                      cleanup->final_key);
+    if (length < 0 || (size_t)length >= sizeof(request.key))
+        return -ENAMETOOLONG;
+    length = snprintf(request.session_id, sizeof(request.session_id), "%s",
+                      session);
+    if (length < 0 || (size_t)length >= sizeof(request.session_id))
+        return -ENAMETOOLONG;
     length = snprintf(operation, sizeof(operation),
-                      "mf-%08" PRIx32 "-%016" PRIx64,
+                      "mfa-%08" PRIx32 "-%016" PRIx64,
                       cleanup->config.local_node, hash);
     if (length < 0 || (size_t)length >= sizeof(operation))
         return -ENAMETOOLONG;
-    reader_config = (struct w5_managed_reader_config) {
-        .reference_key = cleanup->final_reference_key,
-        .holder_node_id = cleanup->config.holder_node_id,
-        .holder_provider_incarnation =
-            cleanup->config.holder_provider_incarnation,
-        .session_id = session,
-        .operation_prefix = operation,
-        .timeout_ms = cleanup->config.timeout_ms,
-        .pin_limit = cleanup->config.pin_limit,
-    };
-    rc = w5_managed_reader_open(cleanup->config.client,
-        cleanup->config.channel, cleanup->config.domain, &reader_config,
-        &cleanup->final_reader, &status);
+    length = snprintf(request.idempotency_key,
+        sizeof(request.idempotency_key), "%s", operation);
+    if (length < 0 || (size_t)length >= sizeof(request.idempotency_key))
+        return -ENAMETOOLONG;
+    memset(&result, 0, sizeof(result));
+    rc = mem_service_client_reference_transition_at_node(
+        cleanup->config.client, &request, cleanup->config.holder_node_id,
+        cleanup->config.holder_provider_incarnation, &result, &status);
     if (rc)
         return rc;
-    cleanup->final_allocation =
-        *w5_managed_object_allocation(cleanup->final_reader);
+    cleanup->final_holder_owned = true;
+    cleanup->final_allocation = result.allocation;
     if (strcmp(cleanup->final_allocation.key, cleanup->final_key) != 0 ||
         cleanup->final_allocation.generation == 0)
         return -ESTALE;
-    cleanup->phase = CLEANUP_FINAL_READER_OPEN;
+    cleanup->phase = CLEANUP_FINAL_HOLDER_OPEN;
     return 0;
 }
 
@@ -287,19 +347,42 @@ static int wait_final_retiring(struct w5_managed_request_cleanup *cleanup)
     return -ETIMEDOUT;
 }
 
-static int close_final_reader(struct w5_managed_request_cleanup *cleanup)
+static int close_final_holder(struct w5_managed_request_cleanup *cleanup)
 {
+    struct mem_service_client_allocation released;
     enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
+    char operation[48];
+    int length;
     int rc;
 
-    if (!cleanup->final_reader) {
-        cleanup->phase = CLEANUP_FINAL_READER_CLOSED;
+    if (!cleanup->final_holder_owned) {
+        cleanup->phase = CLEANUP_FINAL_HOLDER_CLOSED;
         return 0;
     }
-    rc = w5_managed_object_close(&cleanup->final_reader, &status);
-    if (!rc)
-        cleanup->phase = CLEANUP_FINAL_READER_CLOSED;
-    return rc;
+    rc = final_session(session, sizeof(session), cleanup->config.local_node);
+    if (rc)
+        return rc;
+    length = snprintf(operation, sizeof(operation),
+                      "mfl-%08" PRIx32 "-%016" PRIx64,
+                      cleanup->config.local_node,
+                      identity_hash(cleanup->final_key));
+    if (length < 0 || (size_t)length >= sizeof(operation))
+        return -ENAMETOOLONG;
+    memset(&released, 0, sizeof(released));
+    rc = mem_service_client_release_object(cleanup->config.client,
+        cleanup->final_key, operation, session, true,
+        cleanup->final_allocation.generation, &released, &status);
+    if (rc)
+        return rc;
+    if (released.generation != cleanup->final_allocation.generation ||
+        (strcmp(released.state, "retiring") != 0 &&
+         strcmp(released.state, "retired") != 0))
+        return -ESTALE;
+    cleanup->final_allocation = released;
+    cleanup->final_holder_owned = false;
+    cleanup->phase = CLEANUP_FINAL_HOLDER_CLOSED;
+    return 0;
 }
 
 static int request_local_retire(struct w5_managed_request_cleanup *cleanup)
@@ -413,15 +496,13 @@ int w5_managed_request_cleanup_create(
     int rc;
 
     if (!config || !cleanup_out || *cleanup_out || !config->client ||
-        !config->channel || !config->domain || !config->object_key ||
+        !config->object_key ||
         !config->holder_node_id || !config->holder_node_id[0] ||
         !config->holder_provider_incarnation ||
         !config->run || !config->request || !config->step_count ||
         !config->timeout_ms || !config->node_count ||
         config->local_node >= config->node_count ||
         config->node_count > MEM_SERVICE_CLIENT_ALLOCATION_MAX_HOLDERS ||
-        !config->pin_limit ||
-        config->pin_limit > MEM_SERVICE_MAPPING_OWNER_MAX_PINS ||
         config->first_step > UINT64_MAX - config->step_count)
         return -EINVAL;
     final_step = config->first_step + config->step_count - 1U;
@@ -453,35 +534,53 @@ int w5_managed_request_cleanup_execute(
 
     if (!cleanup || !result_out)
         return -EINVAL;
-    if (cleanup->phase < CLEANUP_FINAL_READER_OPEN) {
-        rc = open_final_reader(cleanup);
-        if (rc)
+    if (cleanup->phase < CLEANUP_FINAL_HOLDER_OPEN) {
+        rc = open_final_holder(cleanup);
+        if (rc) {
+            fprintf(stderr, "[w5_managed_request]"
+                    " stage=final-holder-open rc=%d\n", rc);
             return rc;
+        }
     }
     if (cleanup->phase < CLEANUP_FINAL_RETIRING) {
         rc = wait_final_retiring(cleanup);
-        if (rc)
+        if (rc) {
+            fprintf(stderr, "[w5_managed_request]"
+                    " stage=final-retiring rc=%d\n", rc);
             return rc;
+        }
     }
-    if (cleanup->phase < CLEANUP_FINAL_READER_CLOSED) {
-        rc = close_final_reader(cleanup);
-        if (rc)
+    if (cleanup->phase < CLEANUP_FINAL_HOLDER_CLOSED) {
+        rc = close_final_holder(cleanup);
+        if (rc) {
+            fprintf(stderr, "[w5_managed_request]"
+                    " stage=final-holder-close rc=%d\n", rc);
             return rc;
+        }
     }
     if (cleanup->phase < CLEANUP_LOCAL_RETIRE_REQUESTED) {
         rc = request_local_retire(cleanup);
-        if (rc)
+        if (rc) {
+            fprintf(stderr, "[w5_managed_request]"
+                    " stage=local-retire rc=%d\n", rc);
             return rc;
+        }
     }
     if (cleanup->phase < CLEANUP_ALL_RETIRED) {
         rc = wait_all_retired(cleanup);
-        if (rc)
+        if (rc) {
+            fprintf(stderr, "[w5_managed_request]"
+                    " stage=all-retired rc=%d\n", rc);
             return rc;
+        }
     }
     if (cleanup->phase < CLEANUP_COMPLETE) {
         rc = verify_stats(cleanup);
-        if (rc)
+        if (rc) {
+            fprintf(stderr, "[w5_managed_request]"
+                    " stage=verify-stats rc=%d\n", rc);
             return rc;
+        }
     }
     *result_out = cleanup->result;
     return 0;
@@ -496,8 +595,8 @@ int w5_managed_request_cleanup_destroy(
     if (!cleanup_ptr || !*cleanup_ptr)
         return -EINVAL;
     cleanup = *cleanup_ptr;
-    if (cleanup->final_reader) {
-        rc = close_final_reader(cleanup);
+    if (cleanup->final_holder_owned) {
+        rc = close_final_holder(cleanup);
         if (rc)
             return rc;
     }

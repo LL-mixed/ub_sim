@@ -15387,8 +15387,6 @@ qwen3_after_service_coverage:
         guest_decode_step + 1U >= guest_decode_step_limit) {
         struct w5_managed_request_cleanup_config cleanup_config = {
             .client = w5_managed_runtime_client(w5_managed_runtime),
-            .channel = w5_managed_runtime_channel(w5_managed_runtime),
-            .domain = w5_managed_runtime_domain(w5_managed_runtime),
             .holder_node_id =
                 w5_managed_runtime_client_node_id(w5_managed_runtime),
             .holder_provider_incarnation =
@@ -15402,7 +15400,6 @@ qwen3_after_service_coverage:
             .timeout_ms = w5_managed_timeout_ms,
             .local_node = round_dispatch_node,
             .node_count = cluster_node_count,
-            .pin_limit = 8,
         };
         struct w5_managed_request_cleanup_result cleanup_result;
         int cleanup_rc;
