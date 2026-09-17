@@ -218,6 +218,10 @@ int main(int argc, char **argv) {
         self.assertIn("key = managed.identity.key;", bootstrap)
         self.assertIn("token_id = managed.identity.token_id;", bootstrap)
         self.assertIn("route->backing_token_id = record->token_id;", bootstrap)
+        self.assertIn("existing->cpu_window_initialized", bootstrap)
+        self.assertIn("existing->cpu_window_mapped", bootstrap)
+        self.assertIn("gsva_route_init_cpu_window(", bootstrap)
+        self.assertIn("route->cpu_window_mapped = true;", bootstrap)
         self.assertIn("managed bootstrap identity rejected", bootstrap)
         publisher = source.split(
             "static int sim_dec_handle_obmm_bootstrap_publish(", 1
