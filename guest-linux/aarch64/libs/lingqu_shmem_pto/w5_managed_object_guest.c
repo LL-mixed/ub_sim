@@ -11,6 +11,8 @@
 #include <time.h>
 
 #define W5_MANAGED_DISCOVERY_ATTEMPT_TIMEOUT_MS 5000U
+#define W5_MANAGED_POLL_INITIAL_BACKOFF_MS 1U
+#define W5_MANAGED_POLL_MAX_BACKOFF_MS 1000U
 
 struct w5_managed_object_guest {
     const struct mem_service_client *client;
@@ -46,10 +48,19 @@ static uint64_t now_ms(void)
     return (uint64_t)now.tv_sec * 1000U + (uint64_t)now.tv_nsec / 1000000U;
 }
 
-static void wait_tick(void)
+static void wait_tick(uint64_t *backoff_ms)
 {
-    const struct timespec delay = {.tv_nsec = 1000000};
+    uint64_t current;
+    struct timespec delay;
+    if (!backoff_ms) return;
+    current = *backoff_ms ? *backoff_ms : W5_MANAGED_POLL_INITIAL_BACKOFF_MS;
+    if (current > W5_MANAGED_POLL_MAX_BACKOFF_MS)
+        current = W5_MANAGED_POLL_MAX_BACKOFF_MS;
+    delay.tv_sec = (time_t)(current / 1000U);
+    delay.tv_nsec = (long)((current % 1000U) * 1000000U);
     (void)nanosleep(&delay, NULL);
+    *backoff_ms = current < W5_MANAGED_POLL_MAX_BACKOFF_MS / 2U ?
+        current * 2U : W5_MANAGED_POLL_MAX_BACKOFF_MS;
 }
 
 static int copy_text(char *out, size_t capacity, const char *text)
@@ -168,6 +179,7 @@ static int wait_allocation_active(struct w5_managed_object_guest *object,
     enum mem_service_wire_status *status_out)
 {
     uint64_t start = now_ms();
+    uint64_t backoff_ms = W5_MANAGED_POLL_INITIAL_BACKOFF_MS;
     do {
         struct mem_service_client_allocation allocation;
         int rc = mem_service_client_inspect_allocation(object->client, object->key,
@@ -180,7 +192,7 @@ static int wait_allocation_active(struct w5_managed_object_guest *object,
         } else if (*status_out != MEM_SERVICE_WIRE_STATUS_NOT_FOUND) {
             return rc;
         }
-        wait_tick();
+        wait_tick(&backoff_ms);
     } while (now_ms() - start < object->timeout_ms);
     return -ETIMEDOUT;
 }
@@ -297,6 +309,7 @@ int w5_managed_reader_open(
     struct mem_service_client_reference_result result;
     char map_operation[80];
     uint64_t start;
+    uint64_t backoff_ms = W5_MANAGED_POLL_INITIAL_BACKOFF_MS;
     int rc;
     if (!config || !object_out || !status_out || !config->holder_node_id ||
         !config->holder_node_id[0] || !config->holder_provider_incarnation)
@@ -315,7 +328,7 @@ int w5_managed_reader_open(
         if (*status_out != MEM_SERVICE_WIRE_STATUS_NOT_FOUND &&
             *status_out != MEM_SERVICE_WIRE_STATUS_TIMEOUT &&
             *status_out != MEM_SERVICE_WIRE_STATUS_STALE_REF) return rc;
-        wait_tick();
+        wait_tick(&backoff_ms);
     } while (now_ms() - start < object->timeout_ms);
     if (rc) return -ETIMEDOUT;
     if (lingqu_object_ref_v2_validate(&result.reference) ||

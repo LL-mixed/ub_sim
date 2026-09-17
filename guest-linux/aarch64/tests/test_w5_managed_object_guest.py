@@ -10,6 +10,12 @@ LIB = ROOT / "guest-linux/aarch64/libs/lingqu_shmem_pto"
 
 class W5ManagedObjectGuestTest(unittest.TestCase):
     def test_writer_reader_owner_lifecycle(self):
+        source = (LIB / "w5_managed_object_guest.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("W5_MANAGED_POLL_INITIAL_BACKOFF_MS 1U", source)
+        self.assertIn("W5_MANAGED_POLL_MAX_BACKOFF_MS 1000U", source)
+        self.assertEqual(source.count("wait_tick(&backoff_ms)"), 2)
         with tempfile.TemporaryDirectory() as directory:
             binary = pathlib.Path(directory) / "managed-object"
             subprocess.run([
