@@ -141,7 +141,7 @@ SIM_W5_MANAGED_IMPORT_REGION_BYTES="${SIM_W5_MANAGED_IMPORT_REGION_BYTES:-268435
 SIM_W5_MANAGED_MAX_MAPPINGS="${SIM_W5_MANAGED_MAX_MAPPINGS:-8}"
 SIM_W5_MANAGED_APERTURE_BASE="${SIM_W5_MANAGED_APERTURE_BASE:-0x700000000000}"
 SIM_W5_MANAGED_APERTURE_SIZE="${SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000}"
-SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="${SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES:-2097152}"
+SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES="${SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES:-67108864}"
 SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="${SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE:-1000000}"
 SIM_W5_MANAGED_BOOTSTRAP_GENERATION="${SIM_W5_MANAGED_BOOTSTRAP_GENERATION:-$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE}"
 export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
@@ -413,6 +413,10 @@ append_kernel_arg_if_missing() {
 
 append_kernel_arg_if_missing "pmd_mapping=25%"
 append_kernel_arg_if_missing "obmm.skip_cache_maintain=1"
+if [[ "$SIM_W5_MANAGED_SERVING" != "0" ]]; then
+  append_kernel_arg_if_missing \
+    "obmm.mem_allocator_granu=$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES"
+fi
 case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
   deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)
     # The synchronous simulator backend intentionally holds the only guest
@@ -599,9 +603,15 @@ validate_w5_managed_serving() {
   done
   if (( SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES < 65536 ||
         SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES % 4096 != 0 ||
-        SIM_W5_MANAGED_IMPORT_REGION_BYTES < SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES ||
+        SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES < 2097152 ||
+        (SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES &
+          (SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES - 1)) != 0 ||
+        SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES <
+          SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES + 4096 ||
+        SIM_W5_MANAGED_IMPORT_REGION_BYTES <
+          SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES ||
         SIM_W5_MANAGED_MAX_MAPPINGS > 8 )); then
-    trace "FAIL: managed serving output/import/mapping capacity is invalid"
+    trace "FAIL: managed serving output/allocator/import/mapping capacity is invalid"
     return 1
   fi
   trace "prepare: managed serving connect=$SIM_W5_MANAGED_CONNECT nodes=$SIM_W5_CLUSTER_NODE_COUNT aperture_base=$SIM_W5_MANAGED_APERTURE_BASE aperture_size=$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=kernel-selected-noncontiguous"

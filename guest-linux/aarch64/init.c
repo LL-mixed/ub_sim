@@ -2496,7 +2496,9 @@ static bool wait_for_path(const char *path, int attempts, int sleep_ms)
     return false;
 }
 
-static void try_insmod_module(const char *path, const char *module_name)
+static void try_insmod_module_with_parameter(const char *path,
+                                             const char *module_name,
+                                             const char *parameter)
 {
     pid_t pid;
     int status = 0;
@@ -2523,7 +2525,12 @@ static void try_insmod_module(const char *path, const char *module_name)
     fprintf(stderr, "[init] bootstrap insmod %s via %s\n", module_name, path);
     pid = fork();
     if (pid == 0) {
-        execl("/bin/insmod", "/bin/insmod", path, (char *)NULL);
+        if (parameter && parameter[0] != '\0') {
+            execl("/bin/insmod", "/bin/insmod", path, parameter,
+                  (char *)NULL);
+        } else {
+            execl("/bin/insmod", "/bin/insmod", path, (char *)NULL);
+        }
         _exit(127);
     }
     if (pid < 0) {
@@ -2551,8 +2558,16 @@ static void try_insmod_module(const char *path, const char *module_name)
     }
 }
 
+static void try_insmod_module(const char *path, const char *module_name)
+{
+    try_insmod_module_with_parameter(path, module_name, NULL);
+}
+
 static void bootstrap_drivers(void)
 {
+    char obmm_allocator_bytes[32] = {0};
+    char obmm_allocator_parameter[64] = {0};
+
     /*
      * Best-effort bootstrap only.
      * Harness semantics must bind to interfaces and functionality, not module form.
@@ -2562,7 +2577,21 @@ static void bootstrap_drivers(void)
     try_insmod_module("/lib/modules/ummu.ko", "ummu");
     try_insmod_module("/lib/modules/ubase.ko", "ubase");
     try_insmod_module("/lib/modules/hisi_ubus.ko", "hisi_ubus");
-    try_insmod_module("/lib/modules/obmm.ko", "obmm");
+    if (cmdline_get_value("obmm.mem_allocator_granu",
+                          obmm_allocator_bytes,
+                          sizeof(obmm_allocator_bytes))) {
+        int length = snprintf(obmm_allocator_parameter,
+                              sizeof(obmm_allocator_parameter),
+                              "mem_allocator_granu=%s",
+                              obmm_allocator_bytes);
+        if (length < 0 || (size_t)length >= sizeof(obmm_allocator_parameter)) {
+            fprintf(stderr,
+                    "[init] invalid OBMM allocator granularity length\n");
+            obmm_allocator_parameter[0] = '\0';
+        }
+    }
+    try_insmod_module_with_parameter(
+        "/lib/modules/obmm.ko", "obmm", obmm_allocator_parameter);
     try_insmod_module("/lib/modules/ub-sim-decoder.ko", "ub_sim_decoder");
     try_insmod_module("/lib/modules/ubcore.ko", "ubcore");
     try_insmod_module("/lib/modules/udma.ko", "udma");

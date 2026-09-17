@@ -16,6 +16,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.runtime_runner = self.script_dir / "run_w5_inference_cluster_runtime.sh"
         self.launcher = self.script_dir / "launch_ub_eight_node_headless.sh"
         self.initramfs_builder = self.script_dir / "build_initramfs.sh"
+        self.guest_init = self.repo / "guest-linux" / "aarch64" / "init.c"
         self.infer_source = (
             self.repo / "guest-linux" / "aarch64" / "apps" / "llm_infer" / "llm_infer.c"
         )
@@ -85,6 +86,13 @@ class W5ClusterTopologyTest(unittest.TestCase):
             "SIM_W5_MANAGED_ARTIFACT_FINGERPRINT=424242\n", result.stdout
         )
         self.assertIn("SIM_W5_MANAGED_CONNECT=tcp:10.0.0.1:9700\n", result.stdout)
+        self.assertIn(
+            "SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES=67108864\n",
+            result.stdout,
+        )
+        self.assertIn(
+            "SIM_W5_MANAGED_IMPORT_REGION_BYTES=268435456\n", result.stdout
+        )
 
     def test_cli_rejects_unsupported_cluster_size(self):
         result = self.run_config("--print-env", "--nodes", "5")
@@ -314,6 +322,20 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000", source)
         self.assertIn("SIM_W5_MANAGED_MAX_MAPPINGS:-8", source)
         self.assertIn("SIM_W5_MANAGED_MAX_MAPPINGS > 8", source)
+        self.assertIn(
+            "SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES:-67108864", source
+        )
+        self.assertIn(
+            "obmm.mem_allocator_granu="
+            "$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES",
+            source,
+        )
+        init_source = self.guest_init.read_text(encoding="utf-8")
+        self.assertIn(
+            'cmdline_get_value("obmm.mem_allocator_granu"',
+            init_source,
+        )
+        self.assertIn('"mem_allocator_granu=%s"', init_source)
         self.assertIn("managed-model-provider-fingerprint", source)
         self.assertIn("managed-model-provider: .*completion=success", source)
         self.assertIn("w5_managed_request_cleanup", source)
