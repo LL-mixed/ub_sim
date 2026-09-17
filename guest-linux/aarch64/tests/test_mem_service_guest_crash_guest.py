@@ -323,6 +323,12 @@ class GuestCrashGuestTests(unittest.TestCase):
             "\nmem_service_object_share_recovery_fault() {", 1
         )[0]
         self.assertIn("phase=crash-ready status=ready", function)
+        self.assertIn(
+            'if [ "$node" = "0" ]; then\n'
+            '    [ "$role" = "home" ] || return 2',
+            function,
+        )
+        self.assertNotIn('[ "$node" = "0" ] && [ "$role"', function)
         self.assertIn("session_id=guest-recovery-home", function)
         self.assertIn(
             "holder_canary_generation=$((old_incarnation + 101))",

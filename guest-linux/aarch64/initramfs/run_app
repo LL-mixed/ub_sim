@@ -2414,8 +2414,13 @@ mem_service_object_share_guest_recovery() {
   case "$role" in holder|replacement|home) ;; *) return 2 ;; esac
   case "$cycle" in ''|0|*[!0-9]*) return 2 ;; esac
   [ "$cycle" -le 8 ] || return 2
-  [ "$node" = "0" ] && [ "$role" = "home" ] ||
-    [ "$node" = "1" ] && [ "$role" != "home" ] || return 2
+  if [ "$node" = "0" ]; then
+    [ "$role" = "home" ] || return 2
+  elif [ "$node" = "1" ]; then
+    [ "$role" != "home" ] || return 2
+  else
+    return 2
+  fi
   [ "$cycle" = "1" ] || cycle_suffix="-$cycle"
   key="recovery-fault-guest-crash$cycle_suffix"
   rejoin_key="guest-recovery-rejoin-object$cycle_suffix"
