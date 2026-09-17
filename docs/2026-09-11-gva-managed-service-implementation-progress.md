@@ -6672,3 +6672,26 @@ r49 已覆盖同版本 `published × 2`。r49-r55 合并形成七个可续作 ph
 daemon 双次退出、ACK/receipt 缺失、旧访问拒绝、整 guest 连续退出和 replacement
 incarnation 重新加入。由此 M3“回收及 GSVA 状态恢复”阶段验收通过；M1、M2、M4、
 M5 和总目标继续保持原状态。
+
+## 2026-09-17：M1 阶段出口证据复核
+
+总计划 M1 的正文出口为两节点、单 home 的 A01-A06，加 CPU 侧 A09 子集。补充
+计划将 2/3/8-node、每节点作为 home、三轮冷启动和独立发布列在 A16/A18；这些
+要求继续保留在 M2/M4 和最终验收，不再重复挂在 M1 的未完成判据上。
+
+复核只使用已经保存的实际运行证据，没有启动新 guest 或重新执行测试：
+
+| 出口 | 已有实际证据 | 结论 |
+| --- | --- | --- |
+| A01 独立基础设施 | r306 在同一 daemon/provider 生命周期中顺序启动 100 个独立 `object-session` 进程；每轮退出后下一客户端继续使用服务 | 通过 |
+| A02 readiness 真实性 | r19-r20 的 worker 故障使活动 provider 降为 1，directory 与 data plane 均未就绪，未确认资源进入隔离；r30 重启后即使 provider directory 恢复 ready，旧资源未对账前 data plane 仍关闭 | 通过 |
+| A03 同一全局引用 | r306 每轮双 guest 使用同一 key/generation/segment/backing，200 个 reader view 与 100 个独立 payload checksum 一致 | 通过 |
+| A04 严格同址 | r126 两端实际固定 VA 冲突均返回 `EEXIST`，原映射与数据不变；正常双 guest 映射的 CPU VA/UBA/home VA 关系由资源验证器核对 | 通过 |
+| A05 单 home 区间分配 | r121 覆盖不同 size/alignment、三个并发客户端与交错释放；r118/r297 覆盖 backing/address 耗尽、确定回滚与后续小对象恢复；r306 完成百轮复用 | 通过 |
+| A06 CPU 真实直访 | r306 双 guest 逐轮直接读写和可见性核对，控制服务没有 payload 中转，最终实际 mapping/backing/kernel 资源归零 | 通过 |
+| A09 CPU 子集 | r20 覆盖 readonly/guard 同步 fault；r124 覆盖两端各 24 组 descriptor 拒绝；r321 拒绝旧引用；r381 证明退役 descriptor 的 CPU 访问 signal=7 并完成清理 | 通过 |
+
+上述证据同时覆盖正常释放、固定地址冲突、容量拒绝、幂等重放、隔离统计和服务在
+客户端退出后的继续使用。M1“独立服务的两客户端分配与访问”据此通过。该结论没有
+声明 A16/A18、多 home、两模型 2/3/8-node、混合压力或 tokenless replay 已完成；
+M2、M4、M5 与总目标继续保持原状态。
