@@ -1601,7 +1601,8 @@ static long linqu_async_load_start(struct linqu_async_load_file *ctx,
 	if (kernel_task_mode &&
 	    (ctx->capabilities & OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY))
 		required_capabilities = OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |
-			OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY;
+			OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY |
+			OBMM_ASYNC_LOAD_CAP_VOID_RETRY_REVALIDATE;
 	else
 		required_capabilities = OBMM_ASYNC_LOAD_CAP_KERNEL_FREE_EVENT_RING |
 			OBMM_ASYNC_LOAD_CAP_REPLAY_RETIRE |

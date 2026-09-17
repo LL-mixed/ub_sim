@@ -19,6 +19,7 @@ ASYNC_LOAD_PRODUCER_INDEX=0
 ASYNC_LOAD_COMPLETION=replay
 ASYNC_LOAD_MEMORY=normal-nc
 KERNEL_TASK_REPLAY=0
+MAPPING_REUSE_ADVERSARIAL=0
 ASYNC_LOAD_EVENT_LOG=on
 ASYNC_LOAD_CONTEXTS=""
 ASYNC_LOAD_ITERATIONS=""
@@ -222,6 +223,17 @@ while (( async_index <= ${#async_words} )); do
     ASYNC_LOAD_COMPLETION=replay
     append_cmdline "obmm_async_load_producer_consumer=1"
     append_cmdline "obmm_async_kernel_task_replay=1"
+    async_index=$((async_index + 1))
+    continue
+  fi
+  if [[ "$option" == "--mapping-reuse-adversarial" ]]; then
+    MAPPING_REUSE_ADVERSARIAL=1
+    KERNEL_TASK_REPLAY=1
+    ASYNC_LOAD_PRODUCER_CONSUMER=1
+    ASYNC_LOAD_COMPLETION=replay
+    append_cmdline "obmm_async_load_producer_consumer=1"
+    append_cmdline "obmm_async_kernel_task_replay=1"
+    append_cmdline "obmm_async_mapping_reuse_adversarial=1"
     async_index=$((async_index + 1))
     continue
   fi
@@ -439,7 +451,9 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
       producer_count="$(grep -c '^OBMM_ASYNC_LOAD_EXPORT .*status=ready' "$producer_log" || true)"
     fi
     if [[ -f "$consumer_log" ]]; then
-      if (( KERNEL_TASK_REPLAY )); then
+      if (( MAPPING_REUSE_ADVERSARIAL )); then
+        consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_MAPPING_REUSE_SUMMARY .*status=pass' "$consumer_log" || true)"
+      elif (( KERNEL_TASK_REPLAY )); then
         consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY .*status=pass' "$consumer_log" || true)"
       else
         consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" || true)"
@@ -475,7 +489,57 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
 
   async_load_export="$(grep '^OBMM_ASYNC_LOAD_EXPORT .*status=ready' "$producer_log" | tr -d '\r')"
   async_load_export_mem_id="$(summary_field "$async_load_export" export_mem_id)"
-  if (( KERNEL_TASK_REPLAY )); then
+  if (( MAPPING_REUSE_ADVERSARIAL )); then
+    async_load_summary="$(grep '^OBMM_ASYNC_LOAD_MAPPING_REUSE_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
+    replacement_export="$(grep '^OBMM_ASYNC_LOAD_REPLACEMENT_EXPORT .*status=ready' "$producer_log" | tr -d '\r')"
+    replacement_write="$(grep '^OBMM_ASYNC_LOAD_REPLACEMENT_WRITE ' "$producer_log" | tr -d '\r')"
+    initial_write="$(grep '^OBMM_ASYNC_LOAD_WRITE ' "$producer_log" | tr -d '\r')"
+    async_load_coroutines=1
+    async_load_operations=1
+    async_load_source_mem_id="$(summary_field "$async_load_summary" old_export_mem_id)"
+    replacement_export_mem_id="$(summary_field "$replacement_export" export_mem_id)"
+    guard_arm_count="$(grep -c '^UB_VOID_RETRY_GUARD_ARM ' "$RUN_DIR/nodeB_qemu.log" || true)"
+    stale_mapping_count="$(grep -c '^UB_VOID_RETRY_STALE_MAPPING .*action=terminal-access-error' "$RUN_DIR/nodeB_qemu.log" || true)"
+    late_drop_count="$(grep -c '^UB_VOID_RESPONSE_LATE_DROP ' "$RUN_DIR/nodeB_qemu.log" || true)"
+    duplicate_drop_count="$(grep -c '^UB_VOID_RESPONSE_DUPLICATE_DROP ' "$RUN_DIR/nodeB_qemu.log" || true)"
+    duplicate_schedule_count="$(grep -c '^UB_VOID_RESPONSE_DUPLICATE_SCHEDULE ' "$RUN_DIR/nodeA_qemu.log" || true)"
+    cache_fill_count="$(grep -c '^ASYNC_LOAD_CACHEABLE_FILL ' "$RUN_DIR/nodeB_qemu.log" || true)"
+    kernel_block_count="$(grep -c 'remote-load block path=.* pid=' "$consumer_log" || true)"
+    kernel_wake_count="$(grep -c 'remote-load wake path=.* pid=' "$consumer_log" || true)"
+    kernel_blocked_tasks=0
+    if [[ "$async_load_source_mem_id" != "$async_load_export_mem_id" ||
+          "$(summary_field "$async_load_summary" replacement_export_mem_id)" != "$replacement_export_mem_id" ||
+          "$(summary_field "$async_load_summary" event_delivery)" != "void-response-data-abort" ||
+          "$(summary_field "$async_load_summary" retirement)" != "terminal-access-error" ||
+          "$(summary_field "$async_load_summary" late_completion)" != "drop" ||
+          "$(summary_field "$async_load_summary" duplicate_completion)" != "drop" ||
+          "$(summary_field "$async_load_summary" address_reuse)" != "same-va" ||
+          "$(summary_field "$async_load_summary" initial_load_returned)" != "0" ||
+          "$(summary_field "$async_load_summary" expected)" != "$(summary_field "$async_load_summary" actual)" ||
+          "$(summary_field "$async_load_summary" pending)" != "0" ||
+          "$(summary_field "$async_load_summary" completions)" != "0" ||
+          "$(summary_field "$async_load_summary" sleeps)" != "0" ||
+          "$(summary_field "$async_load_summary" wakeups)" != "0" ||
+          "$(summary_field "$async_load_summary" replay_consumed)" != "0" ||
+          "$(summary_field "$async_load_summary" replay_mismatch)" != "0" ||
+          "$(summary_field "$async_load_summary" nc_plt_allocations)" != "0" ||
+          "$(summary_field "$async_load_summary" nc_plt_pending)" != "0" ||
+          "$(summary_field "$async_load_summary" direct_el0_upcalls)" != "0" ||
+          "$(summary_field "$initial_write" value)" == "$(summary_field "$replacement_write" value)" ||
+          "$(summary_field "$async_load_summary" old_map_generation)" == "$(summary_field "$async_load_summary" new_map_generation)" ||
+          "$guard_arm_count" -lt 1 || "$stale_mapping_count" != "1" ||
+          "$late_drop_count" -lt 1 || "$duplicate_drop_count" -lt 1 ||
+          "$duplicate_schedule_count" -lt 1 || "$cache_fill_count" != "0" ||
+          "$kernel_block_count" != "0" || "$kernel_wake_count" != "0" ]]; then
+      echo "ASYNC_LOAD mapping-reuse lifetime evidence is incomplete" >&2
+      exit 1
+    fi
+    terminal_signal="$(summary_field "$async_load_summary" terminal_signal)"
+    if [[ "$terminal_signal" != <1-> ]]; then
+      echo "ASYNC_LOAD old instruction did not terminate with a signal" >&2
+      exit 1
+    fi
+  elif (( KERNEL_TASK_REPLAY )); then
     async_load_summary="$(grep '^OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY .*status=pass' "$consumer_log" | tr -d '\r')"
     async_load_coroutines="$(summary_field "$async_load_summary" threads)"
     async_load_operations="$(summary_field "$async_load_summary" operations)"
@@ -914,7 +978,12 @@ integer node_index=1
 print -r -- "OBMM_RUN_EVIDENCE node_count=$NODE_COUNT scenario_sha256=$SCENARIO_SHA256 model_file_sha256=$MODEL_FILE_SHA256 model_contract_hash=$MODEL_CONTRACT_HASH qemu_sha256=$QEMU_SHA256 kernel_sha256=$KERNEL_SHA256 initramfs_sha256=$INITRAMFS_SHA256 qemu_destroyed=1"
 if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeA role=producer export_mem_id=$async_load_export_mem_id writes=$async_load_coroutines status=ready"
-  if (( KERNEL_TASK_REPLAY )); then
+  if (( MAPPING_REUSE_ADVERSARIAL )); then
+    print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=1 completed=1 event_log=$ASYNC_LOAD_EVENT_LOG status=pass"
+    print -r -- "OBMM_ASYNC_LOAD_MAPPING_REUSE_EVIDENCE guard_arms=$guard_arm_count stale_mapping_rejections=$stale_mapping_count late_drops=$late_drop_count duplicate_drops=$duplicate_drop_count duplicate_schedules=$duplicate_schedule_count cache_fills=$cache_fill_count blocks=$kernel_block_count wakes=$kernel_wake_count status=pass"
+    grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\|REPLACEMENT_WRITE\|REPLACEMENT_EXPORT\)' "$producer_log"
+    grep '^OBMM_ASYNC_LOAD_\(KERNEL_THREAD\|MAPPING_REUSE_SUMMARY\)' "$consumer_log"
+  elif (( KERNEL_TASK_REPLAY )); then
     print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=$async_load_coroutines completed=$async_load_operations event_log=$ASYNC_LOAD_EVENT_LOG status=pass"
     print -r -- "OBMM_ASYNC_LOAD_KERNEL_TASK_EVIDENCE event_log=$ASYNC_LOAD_EVENT_LOG operations=$async_load_operations blocked_tasks=$kernel_blocked_tasks blocks=$kernel_block_count wakes=$kernel_wake_count stats_wakeups=$(summary_field "$async_load_summary" wakeups) direct_el0_upcalls=0 status=pass"
     if (( VOID_RESPONSE_DELIVERY_ENABLED )); then

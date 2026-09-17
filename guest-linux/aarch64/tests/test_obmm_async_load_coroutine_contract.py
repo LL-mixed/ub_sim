@@ -50,6 +50,8 @@ _Static_assert(OBMM_ASYNC_LOAD_CAP_CACHEABLE_FILL_REPLAY == (1ULL << 16),
                "Cacheable fill-replay capability");
 _Static_assert(OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY == (1ULL << 17),
                "void-response retry capability");
+_Static_assert(OBMM_ASYNC_LOAD_CAP_VOID_RETRY_REVALIDATE == (1ULL << 18),
+               "void-response revalidation capability");
 _Static_assert(OBMM_ASYNC_LOAD_EVENT_CACHEABLE_FILL == (1U << 2),
                "Cacheable fill event flag");
 _Static_assert(OBMM_ASYNC_LOAD_START_REPLAY_RETIRE == 1,
@@ -548,13 +550,18 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     device = (QEMU_ROOT / "hw" / "ub" / "ub_async_load_device.c").read_text()
     driver = (ROOT / "driver" / "linqu_ub_drv.c").read_text()
     launcher = (ROOT / "scripts" / "run_ub_dual_node_apps.sh").read_text()
+    app = (APP_DIR / "obmm_async_coroutine.c").read_text()
+    run_app = (ROOT / "initramfs" / "run_app").read_text()
+    runner = (ROOT / "scripts" / "run_ub_obmm_eval.sh").read_text()
 
     assert "OBMM_ASYNC_LOAD_CAP_VOID_RESPONSE_RETRY" in uapi
+    assert "OBMM_ASYNC_LOAD_CAP_VOID_RETRY_REVALIDATE" in uapi
     assert "UbVoidResponsePolicyConfig" in policy_header
     assert "threshold_ns" in policy_header
     assert "latency_ns" in policy_header
     assert "jitter_ns" in policy_header
     assert "fault_voids" in policy_header
+    assert "late_duplicates" in policy_header
     assert "ub_void_response_policy_decide" in policy
     assert "UB_VOID_RESPONSE_FAULT_INJECTION" in policy
     assert "UBC_SIM_DEC_READ_FLAG_VOID_ELIGIBLE" in ubc_header
@@ -566,6 +573,9 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     assert "UB_VOID_RESPONSE_LOCAL_TRIGGER" in ubc
     assert "UB_VOID_RESPONSE_TRIGGER_RACE_LOST" in ubc
     assert "UB_VOID_RESPONSE_LATE_DROP" in ubc
+    assert "UB_VOID_RESPONSE_DUPLICATE_DROP" in ubc
+    assert "UB_VOID_RESPONSE_DUPLICATE_SCHEDULE" in ubc
+    assert "voided_tombstones" in ubc
     assert "ubc_obmm_async_child_try_void" in ubc
     assert "UBC_VOID_TRIGGER_SOURCE_POLICY" in ubc
     assert "UBC_VOID_TRIGGER_REMOTE_WIRE" in ubc
@@ -577,8 +587,15 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     assert "child->complete" in late_drop
     assert "ubc_async_load_irq_set" not in late_drop
     assert "ub_async_load_cpu_take_kernel_fault" in device
+    assert "UB_VOID_RETRY_GUARD_ARM" in device
+    assert "UB_VOID_RETRY_STALE_MAPPING" in device
+    assert "ubc_obmm_map_identity_equal" in device
+    assert (
+        "UbAsyncLoadPendingResult pending = "
+        "UB_ASYNC_LOAD_PENDING_ACCEPTED;"
+    ) in device
     tokenless_complete = device.split(
-        "if (result->status == OBMM_REMOTE_STATUS_VOIDED)", 1
+        "if (result->status == OBMM_REMOTE_STATUS_VOIDED", 1
     )[1].split("ub_async_load_complete_future", 1)[0]
     assert "ub_async_load_future_release" in tokenless_complete
     assert "ubc_async_load_irq_set" not in tokenless_complete
@@ -597,6 +614,11 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     assert "ubc.void-response-policy=" in launcher
     assert "--source-void-response-policy" in launcher
     assert "ubc.source-void-response-policy=" in launcher
+    assert "--mapping-reuse-adversarial" in app
+    assert "MAP_FIXED_NOREPLACE" in app
+    assert "OBMM_ASYNC_LOAD_MAPPING_REUSE_SUMMARY" in app
+    assert "obmm_async_mapping_reuse_adversarial=1" in run_app
+    assert "OBMM_ASYNC_LOAD_MAPPING_REUSE_EVIDENCE" in runner
 
 
 def test_normal_cacheable_void_response_uses_fill_replay_without_nc_plt():

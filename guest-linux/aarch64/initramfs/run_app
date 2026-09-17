@@ -422,6 +422,7 @@ run_obmm_async_coroutine() {
       obmm_async_producer_index=*) args="$args --producer-index ${token#*=}" ;;
       obmm_async_load_producer_consumer=1) args="$args --async-load-producer-consumer" ;;
       obmm_async_kernel_task_replay=1) args="$args --kernel-task-replay" ;;
+      obmm_async_mapping_reuse_adversarial=1) args="$args --mapping-reuse-adversarial" ;;
       obmm_uffd_case=*) args="$args --uffd-case ${token#*=}" ;;
       obmm_uffd_worker_threads=*) args="$args --worker-threads ${token#*=}" ;;
       obmm_uffd_handler_cpu=*) args="$args --handler-cpu ${token#*=}" ;;
