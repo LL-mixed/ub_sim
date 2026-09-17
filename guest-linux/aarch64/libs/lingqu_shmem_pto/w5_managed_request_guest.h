@@ -40,6 +40,21 @@ struct w5_managed_request_cleanup_result {
 
 struct w5_managed_request_cleanup;
 
+/* Retire one allocation produced by the local node after every consumer has
+ * advanced beyond that step. Success means the provider has reclaimed the
+ * backing and the allocation is durably RETIRED; repeating the same call is
+ * idempotent. Keeping only the immediately previous decode step bounds home
+ * backing and GSVA registrations for long-running requests. */
+int w5_managed_request_retire_local_step(
+    const struct mem_service_client *client,
+    w5_managed_request_object_key_fn object_key,
+    uint64_t run,
+    uint64_t request,
+    uint32_t local_node,
+    uint64_t step,
+    uint64_t timeout_ms,
+    struct mem_service_client_allocation *allocation_out);
+
 /* Create local cleanup state without issuing an RPC. The final token is used
  * as a request-scoped rendezvous: every node acquires it, the terminal node
  * verifies the exact participant holder set and retires it, then every node

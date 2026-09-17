@@ -24,6 +24,7 @@ static char states[TEST_NODES][TEST_STEPS][16];
 static unsigned reader_opens;
 static unsigned reader_closes;
 static unsigned retires;
+static unsigned rolling_retires;
 
 static int test_object_key(char *out, size_t capacity, uint64_t run,
     uint64_t request, uint32_t producer, uint64_t step)
@@ -149,7 +150,14 @@ int mem_service_client_inspect_allocation(
     struct mem_service_client_allocation *allocation_out,
     enum mem_service_wire_status *status_out)
 {
+    uint32_t node;
+    uint64_t step;
+
     (void)client;
+    parse_key(key, &node, &step);
+    if (node == TEST_NODES - 1U && step == first_step &&
+        strcmp(states[node][step - first_step], "retiring") == 0)
+        strcpy(states[node][step - first_step], "retired");
     fill_allocation(allocation_out, key);
     *status_out = MEM_SERVICE_WIRE_STATUS_OK;
     return 0;
@@ -174,8 +182,14 @@ int mem_service_client_retire_object(
     assert(expected_generation == generation_for(node, step));
     assert(node == TEST_NODES - 1U);
     assert(strcmp(states[node][step - first_step], "active") == 0);
-    strcpy(states[node][step - first_step],
-           step == first_step + TEST_STEPS - 1U ? "retiring" : "retired");
+    if (strncmp(idempotency_key, "wrr-", 4) == 0) {
+        assert(step == first_step);
+        strcpy(states[node][step - first_step], "retiring");
+        ++rolling_retires;
+    } else {
+        assert(step == first_step + TEST_STEPS - 1U);
+        strcpy(states[node][step - first_step], "retiring");
+    }
     fill_allocation(allocation_out, key);
     *status_out = MEM_SERVICE_WIRE_STATUS_OK;
     ++retires;
@@ -201,6 +215,7 @@ int main(void)
     struct mem_service_access_domain domain = {0};
     struct w5_managed_request_cleanup *cleanup = NULL;
     struct w5_managed_request_cleanup_result result;
+    struct mem_service_client_allocation rolled;
     struct w5_managed_request_cleanup_config config = {
         .client = &client,
         .channel = &channel,
@@ -223,6 +238,18 @@ int main(void)
             strcpy(states[node][step], node == TEST_NODES - 1U ?
                    "active" : "retired");
     }
+    memset(&rolled, 0, sizeof(rolled));
+    assert(w5_managed_request_retire_local_step(&client, test_object_key,
+        test_run, test_request, TEST_NODES - 1U, first_step, 1000,
+        &rolled) == 0);
+    assert(strcmp(rolled.state, "retired") == 0);
+    assert(rolled.generation == generation_for(TEST_NODES - 1U,
+                                                first_step));
+    memset(&rolled, 0, sizeof(rolled));
+    assert(w5_managed_request_retire_local_step(&client, test_object_key,
+        test_run, test_request, TEST_NODES - 1U, first_step, 1000,
+        &rolled) == 0);
+    assert(strcmp(rolled.state, "retired") == 0 && rolling_retires == 1);
     memset(&result, 0, sizeof(result));
     assert(w5_managed_request_cleanup_create(&config, &cleanup) == 0);
     assert(cleanup);
@@ -232,8 +259,9 @@ int main(void)
         TEST_NODES - 1U, first_step + TEST_STEPS - 1U));
     assert(result.stats.backing_registered == TEST_NODES);
     assert(w5_managed_request_cleanup_destroy(&cleanup) == 0 && !cleanup);
-    assert(reader_opens == 1 && reader_closes == 1 && retires == TEST_STEPS);
-    puts("w5_managed_request_guest=pass terminal_barrier=1 local_retire=2 "
-         "request_retired=6 resource_baseline=1");
+    assert(reader_opens == 1 && reader_closes == 1 && retires == TEST_STEPS &&
+           rolling_retires == 1);
+    puts("w5_managed_request_guest=pass rolling_retire=1 terminal_barrier=1 "
+         "local_retire=2 request_retired=6 resource_baseline=1");
     return 0;
 }

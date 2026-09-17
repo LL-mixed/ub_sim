@@ -14140,6 +14140,37 @@ decode_round_start:
                     round_dispatch_node + 1U, guest_decode_step, managed_rc);
             goto out;
         }
+        {
+            uint64_t first_request_step =
+                guest_decode_step_limit - guest_decode_steps;
+
+            if (guest_decode_step >= first_request_step + 2U) {
+                struct mem_service_client_allocation retired;
+                uint64_t retired_step = guest_decode_step - 2U;
+
+                memset(&retired, 0, sizeof(retired));
+                managed_rc = w5_managed_request_retire_local_step(
+                    w5_managed_runtime_client(w5_managed_runtime),
+                    llm_infer_managed_object_key,
+                    w5_managed_run, w5_managed_request,
+                    round_dispatch_node, retired_step,
+                    w5_pto_ub_gm_timeout_ms, &retired);
+                if (managed_rc != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail managed completed-step retire"
+                            " node=%u step=%" PRIu64 " rc=%d\n",
+                            round_dispatch_node + 1U, retired_step,
+                            managed_rc);
+                    goto out;
+                }
+                printf("[w4_guest] stage w5_managed_completed_step_retired"
+                       " node=%u step=%" PRIu64
+                       " generation=%" PRIu64
+                       " state=%s status=ok\n",
+                       round_dispatch_node + 1U, retired_step,
+                       retired.generation, retired.state);
+            }
+        }
         goto model_after_compute_publish;
     }
     if (w5_qwen3_pto) {

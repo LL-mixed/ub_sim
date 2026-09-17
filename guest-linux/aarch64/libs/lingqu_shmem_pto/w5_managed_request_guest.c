@@ -82,6 +82,72 @@ static int object_key(
         cleanup->config.request, producer, step);
 }
 
+int w5_managed_request_retire_local_step(
+    const struct mem_service_client *client,
+    w5_managed_request_object_key_fn key_fn,
+    uint64_t run,
+    uint64_t request,
+    uint32_t local_node,
+    uint64_t step,
+    uint64_t timeout_ms,
+    struct mem_service_client_allocation *allocation_out)
+{
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    struct mem_service_client_allocation allocation;
+    char key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
+    char operation[48];
+    uint64_t generation = 0;
+    uint64_t start;
+    int length;
+    int rc;
+
+    if (!client || !key_fn || !run || !request || !timeout_ms ||
+        !allocation_out)
+        return -EINVAL;
+    rc = key_fn(key, sizeof(key), run, request, local_node, step);
+    if (rc)
+        return rc;
+    start = now_ms();
+    do {
+        rc = mem_service_client_inspect_allocation(client, key, &allocation,
+                                                   &status);
+        if (rc)
+            return rc;
+        if (!generation)
+            generation = allocation.generation;
+        if (!generation || allocation.generation != generation)
+            return -ESTALE;
+        if (strcmp(allocation.state, "retired") == 0) {
+            *allocation_out = allocation;
+            return 0;
+        }
+        if (strcmp(allocation.state, "quarantined") == 0)
+            return -EIO;
+        if (strcmp(allocation.state, "active") == 0) {
+            length = snprintf(operation, sizeof(operation),
+                "wrr-%08" PRIx32 "-%016" PRIx64,
+                local_node, identity_hash(key));
+            if (length < 0 || (size_t)length >= sizeof(operation))
+                return -ENAMETOOLONG;
+            rc = mem_service_client_retire_object(client, key, operation,
+                true, generation, &allocation, &status);
+            if (rc)
+                return rc;
+            if (allocation.generation != generation)
+                return -ESTALE;
+        }
+        if (strcmp(allocation.state, "retiring") != 0 &&
+            strcmp(allocation.state, "retired") != 0)
+            return -ESTALE;
+        if (strcmp(allocation.state, "retired") == 0) {
+            *allocation_out = allocation;
+            return 0;
+        }
+        wait_tick();
+    } while (now_ms() - start < timeout_ms);
+    return -ETIMEDOUT;
+}
+
 static int open_final_reader(struct w5_managed_request_cleanup *cleanup)
 {
     struct w5_managed_reader_config reader_config;

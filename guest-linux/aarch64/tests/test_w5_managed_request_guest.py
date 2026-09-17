@@ -24,7 +24,8 @@ class W5ManagedRequestGuestTest(unittest.TestCase):
                                     check=True, timeout=10)
             self.assertEqual(
                 result.stdout.strip(),
-                "w5_managed_request_guest=pass terminal_barrier=1 "
+                "w5_managed_request_guest=pass rolling_retire=1 "
+                "terminal_barrier=1 "
                 "local_retire=2 request_retired=6 resource_baseline=1")
 
 
