@@ -5924,3 +5924,74 @@ nodeB qemu  f59b095336ba461319858feef7f4131ced63727d3d61e65412096ca42321fdb7
 访问拒绝子项，同时重新证明旧 CPU pin、fencing receipt 与 home 物理退役闭环。
 裸 reserve-intent/torn 隔离实际注入、完整杀死/重启/rejoin 和重复故障矩阵仍未
 完成，M3 与总目标继续保持进行中。
+
+### n4 双 guest holder-recovery r13-r15：replacement 重新加入闭环
+
+r13 已完成 replacement transaction 与 worker 准备，但新 object-session peer canary
+在 node 1 导入 backing 时由 kernel 返回 `EEXIST`。当时 provider 总是选择第一个固定
+本地 PA `0x40000000000`，同进程已有 mapping 占用了该区间。独立服务 `3725f0d`
+从 sysfs memory windows 枚举最多 64 个对齐 import PA 候选，保留历史首选地址，并
+跨不连续窗口 round-robin；仅对明确 `EEXIST` 继续尝试，其他错误保持失败关闭。
+候选选择同时适用于普通 OBMM 与 strict GSVA import，不改变远端 GSVA 身份。
+`2c0e897` 将 wrap `ioctl` 测试中由外部符号修改的事件计数改为 volatile，避免 O2
+将真实更新优化掉。mem_service 定向测试在本地与 n4-910c1 各 8/8 通过，两笔提交
+均只推送授权的 `origin/codex/gva-managed-service-completion`；父仓库同步
+gitlink/lock。
+
+r14 越过原 PA 冲突。reader peer canary、acquire、map、wait-visible、read、unmap、
+release 和 retire 均成功，checksum 为 `0xed87efe0aa520383`。guest harness 随后从
+`action=read` 行提取 generation；真实 object-session 将代际输出在
+`action=acquire` 行，read 只输出 offset、len 与 checksum，因此成功会话仍返回 1。
+父仓库 `32c51cc` 修正提取来源，并把验证夹具改为真实 session 输出契约。
+
+r15 的实际运行组合为：
+
+```text
+parent business 32c51cc5a187fb1ed97b60de9ccfa32c5576bb19
+qemu            5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel          dd07fe43c50de0432a9d363bcb6205ff29abab7e
+mem_service     2c0e897ce57c77cbf688603764f0cef8b4995bb4
+```
+
+initramfs-only 构建 exit 0。双 guest 从 01:06:05 至 01:07:14 UTC 运行约 68 秒；
+业务路径完整完成，但原 runner exit 1。node B 实际 `SIGKILL` incarnation 7 worker，
+incarnation 8 replacement 完成旧 holder `LOCAL_REVOKE`、fencing receipt 与 ledger
+归档。新 home allocation generation 6 绑定 incarnation 8；旧 incarnation 7 的
+acquire 以 `holder_provider_mismatch` 拒绝。writer op 3、publish op 4 与 reader op 5
+均覆盖 offset 0、65536 bytes，并得到相同 checksum `0xed87efe0aa520383`。两端
+object-session 分别以 14 和 9 个操作 `result=ok`，新对象及同步对象随后全部退役。
+
+原 runner 的唯一失败来自验证器仍要求 write/publish 携带 state/generation；真实
+身份位于 writer acquire。完整 rejoin 还让 node A 正常出现原对象和两个同步对象的
+三条 COMMITTED retire，验证器原先要求全日志唯一。父仓库 `8667d45` 按 writer
+acquire 关联 generation，并逐字段比较 write/publish/read 的 offset、len、checksum；
+`607998e` 再按 `status=recovered` 的 allocation generation 精确选择对应
+release-intent、COMMITTED retire 与 QEMU bind/revoke。相关本地定向测试 6/6 通过。
+
+提交后的验证器直接复核 r15 四份原始日志，无需重跑 guest，结果为：
+
+```text
+status                    pass
+scope                     replacement-holder-revoke-home-retire-and-rejoin
+old_cpu_signal            7
+old_pto_error             pto_ub_gm_bad_memref
+old_pto_operation_id      8
+old_pto_mapping_id        1
+home segment/epoch/export 0xc4c2000000000001 / 1 / 1
+rejoin generation         6
+old/current incarnation   7 / 8
+```
+
+四份原始日志 SHA-256：
+
+```text
+nodeA guest 03d454bd71e3b1aac416a5c696e661877ecb89993c0e6b99c4c2ef97589dd692
+nodeB guest 68773495524c1bf2a24ae3acdcfedc8ea803d8c029ba2ce86da5a92ea43c8ad7
+nodeA qemu  2cd9fa0fbbcabbb15882236ed01acd69edf604d0e6e338ebe942a6de781c9f7c
+nodeB qemu  3cd4a01b4e2777821abc2db784f3823fb0a2d4b380264b91417cec44bfbcaec9
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭一个实际 worker
+kill/replacement/rejoin、旧 provider 身份拒绝和新 allocation 跨 guest 数据闭环。
+管理进程与 guest 故障、其他事务注入点、裸 reserve-intent/torn 隔离及重复故障
+矩阵继续未完成，M3 与总目标保持进行中。
