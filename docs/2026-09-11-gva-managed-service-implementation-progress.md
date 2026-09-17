@@ -7410,3 +7410,98 @@ data plane 保持 0。旧 acquire 重放和新 allocation 均以
 address 均为 0。三组结束后 QEMU 数量为 0。结合已完成的两机 A01-A04、Qwen 与
 DeepSeek 同发布组合 8-node/4-step，A18 独立发布与复现通过。M4 剩余工作收敛为
 prefix/decode-KV/hidden 语义化混合压力，以及热 prefix 和不同 suffix 的独立重复组。
+
+## 2026-09-18：M4 语义对象压力与 prefix 重复矩阵
+
+独立服务提交 `218cdf150ab37c49e1c31d92c210321798a1546e` 增加
+`semantic-pressure-fixtures` CLI。它在同一个两客户端序列中混合 prefix、decode-KV
+和 hidden：prefix 由 4 segments 扩到 8 segments，lookup 必须选择最长有效项，旧
+version 的 6-segment 写入必须冲突；decode-KV 使用 4096/8192 bytes，hidden 使用
+1024/2048/3072 bytes，并核对 version 2 被 version 3 淘汰、scoped TTL 与容量驱逐。
+计数轨迹为：
+
+```text
+initial   objects=9 bytes=16640
+ttl       objects=9 bytes=16128
+capacity  objects=9 bytes=32256
+final     objects=0 bytes=0
+kinds     prefix_groups=1 prefix_entries=1 decode_kv=3 hidden=2
+```
+
+本地只执行 host CLI 构建、该 fixture 的一个定向单测和 downstream lock 的 10 项
+轻量契约测试，全部通过。父仓库提交 `c35b6853` 同步 gitlink 与
+`mem_service.lock`；独立服务提交只推送到已授权的
+`origin/codex/gva-managed-service-completion`。n4-910c1 从该远端分支检出精确 SHA，
+重新构建 host CLI 后只运行新增 fixture，结果与上面一致。远端日志
+`/tmp/mem-service-semantic-pressure-218cdf1.log` 的 SHA-256 为
+`337a4749d29690f005685123bcc9170a7d570977cd9c566e6af40e626508df09`，运行后
+QEMU 数量为 0。
+
+父仓库提交 `e6bfe20e` 把 prefix matrix 改为两个独立组。hot-prefix 和
+divergent-suffix 各运行 1 个功能样本、2 个预热样本、5 个正式样本；每个样本
+强制检查 `matched_prefix_tokens=3`、`suffix_replay_tokens=2` 和 8/8 GSVA KV hit。
+本地 3 项 runner 契约测试、zsh 语法及 diff 检查通过。
+
+n4-910c 继续使用 A18 已验证的 QEMU
+`93e5d2e267a7fad9997d2b5ebe626ef24bcb3606f2976354e52b3d559fdba8c7`、kernel
+`befadfaa4f9b94d98a7988846f6531699308063aef70e526eff7f411dc5c63bf`、sim-cli
+`2f6c0c551cbc24310cc6e8469ddf9631c6cbb773742ad97ecdf902bb9351181a` 和 package
+initramfs `b503969138fe4362ac4a7e8ab58c01a8bdcc400411b91fd1c0faaf05c780d42f`。
+portable snapshot 初次在 source gate 因缺少 `mem_service/VERSION` 停止，未启动
+guest；补入远端可获取的 `218cdf1` 和匹配 lock 后通过。4-node seed 随后在 guest
+内部完成 4/4 step，但 Qwen profile 的外层 8-worker 合同以
+`range_forwards=16/32` 拒绝，因此没有计入有效样本；诊断日志
+`/tmp/m4-prefix-matrix-e6bfe20e.4node-rejected.log` 的 SHA-256 为
+`e1060779b4adb37d4c461bc5f62b6dd5ec31553b9b9cfc79432a0f73d3295855`。
+正式矩阵改用该 profile 的 8-node 宽度。
+
+seed 为 `2026-09-18_06-29-30_w5_qwen3_0_6b_decode_7344`，summary SHA-256
+`a52aecd3435017acebc16535a68b169dfecc88eb53755deebe5db4ec7e9b5242`。16 个
+复用样本如下，全部 `status=pass`：
+
+| 分组 | 样本 | run ID | summary SHA-256 |
+| --- | --- | --- | --- |
+| hot | functional | `2026-09-18_06-30-18_w5_qwen3_0_6b_decode_11676` | `9ba94d6e707b86f2615561f59464374926ebb6e63d73357f51b7f4f1468c7885` |
+| hot | warmup 1 | `2026-09-18_06-31-06_w5_qwen3_0_6b_decode_5929` | `c6d1a4bdfaea3d45127c1097d15569d6c91115471b049a331028d44e92e41cb8` |
+| hot | warmup 2 | `2026-09-18_06-31-54_w5_qwen3_0_6b_decode_29100` | `7de2999e25e8b76751f841f64b2c73cfa5408168800822d8ab34c72b5359a075` |
+| hot | measured 1 | `2026-09-18_06-32-42_w5_qwen3_0_6b_decode_26707` | `1fbd987ef5f309f96fb67862106d2dad7b9b8ce4628990da938e4de7ef080b3f` |
+| hot | measured 2 | `2026-09-18_06-33-29_w5_qwen3_0_6b_decode_18067` | `e4f4d1615780028e44c352eb6fed361701ab1cfa6a7232c993c4948e3bc6f19b` |
+| hot | measured 3 | `2026-09-18_06-34-17_w5_qwen3_0_6b_decode_23481` | `cbd0d37ed5084dee60f363489bad23906a7af3d36b992bc6671cc03fd0a28059` |
+| hot | measured 4 | `2026-09-18_06-35-04_w5_qwen3_0_6b_decode_24168` | `a04a806c6018601c55534ea12a871ab7824ed7cb9d957243c489f3d4423551aa` |
+| hot | measured 5 | `2026-09-18_06-35-53_w5_qwen3_0_6b_decode_662` | `ca11f3dcde38b0522fcdd2a2c3fa3be150c32b3f22e504218db5a05f1ff65b23` |
+| suffix | functional | `2026-09-18_06-36-41_w5_qwen3_0_6b_decode_28611` | `523f6df043ee9c4d0fbc2bc9551aa27d000d9f7fc7777c16dd80a28b1fe38437` |
+| suffix | warmup 1 | `2026-09-18_06-37-28_w5_qwen3_0_6b_decode_22101` | `3aecfdb2f059b9bf02745769a1ef4f59a6afcd1a94a9ff97c54094053136f039` |
+| suffix | warmup 2 | `2026-09-18_06-38-16_w5_qwen3_0_6b_decode_23085` | `6ad87c5777d5c27859e6dc44e3cbc5b9946a281a679a2cae00cb349232fb3447` |
+| suffix | measured 1 | `2026-09-18_06-39-04_w5_qwen3_0_6b_decode_19300` | `89090eec6bdf1d518715f54b113128941be3afad1b520c9e2403945542268c91` |
+| suffix | measured 2 | `2026-09-18_06-39-52_w5_qwen3_0_6b_decode_32393` | `4de310eb392dc6ab15e732d32c97e1e410c999677d355734bd750920bc9686c6` |
+| suffix | measured 3 | `2026-09-18_06-40-40_w5_qwen3_0_6b_decode_7348` | `439dc839d65296b9494c19b774c1e764ffee3ba5dd9abc00afd4c66409427ec6` |
+| suffix | measured 4 | `2026-09-18_06-41-28_w5_qwen3_0_6b_decode_29952` | `fdd6ec242cdf862d7354a1af33d21589b8020ab7372caaa0ab9491c0efac0cfa` |
+| suffix | measured 5 | `2026-09-18_06-42-16_w5_qwen3_0_6b_decode_31167` | `857e721664173d48cadf818588742b2a01ceafab29424f27016b480b48aada9c` |
+
+两组正式样本统计为：
+
+| 分组 / 指标 | median | min | max | mean | population stdev |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| hot TTFT (ms) | 10060.0 | 9838.0 | 10475.0 | 10127.4 | 238.510 |
+| hot TPOT (ms) | 5142.7 | 5106.7 | 5193.7 | 5149.42 | 32.799 |
+| hot E2E (ms) | 25599.0 | 25211.0 | 25907.0 | 25575.6 | 300.455 |
+| hot compute (ms) | 6107.0 | 6001.0 | 6239.0 | 6125.8 | 85.329 |
+| hot publish (ms) | 556.0 | 552.0 | 576.0 | 561.4 | 9.415 |
+| hot GSVA lookup (ms) | 8.0 | 7.0 | 9.0 | 7.8 | 0.748 |
+| hot GSVA map-read (ms) | 4.0 | 4.0 | 6.0 | 4.6 | 0.800 |
+| suffix TTFT (ms) | 10260.0 | 9960.0 | 10639.0 | 10297.4 | 231.455 |
+| suffix TPOT (ms) | 5158.7 | 5106.7 | 5284.0 | 5172.54 | 61.618 |
+| suffix E2E (ms) | 25657.0 | 25280.0 | 26491.0 | 25815.0 | 407.582 |
+| suffix compute (ms) | 6200.0 | 6122.0 | 6397.0 | 6242.6 | 113.136 |
+| suffix publish (ms) | 561.0 | 554.0 | 600.0 | 566.8 | 16.845 |
+| suffix GSVA lookup (ms) | 8.0 | 8.0 | 9.0 | 8.2 | 0.400 |
+| suffix GSVA map-read (ms) | 3.0 | 2.0 | 3.0 | 2.6 | 0.490 |
+
+seed 的 TTFT/TPOT/E2E 为 `11385/4978.0/26319 ms`。两组 E2E 中位数只下降约
+2.7% 和 2.5%；TTFT/compute 下降，TPOT/publish 回退，GSVA lookup/map-read 增加
+约 10 至 12 ms。因此该组只构成当前模拟器配置的 case show，没有稳定硬件性能收益
+声明。16 个逐样本 benefit comparison、两个 repetition report 和空 store 的
+`--require-prefix-cache` fail-closed 均通过。完整日志
+`/tmp/m4-prefix-matrix-e6bfe20e.log` 的 SHA-256 为
+`16f80038ba69a38b1524f6cdcc60417fded8b0c60278975e29547cc0b0356e49`；结束后
+QEMU 精确进程计数为 0。M4 据此通过，剩余计划工作为 M5 tokenless replay 联合失效。

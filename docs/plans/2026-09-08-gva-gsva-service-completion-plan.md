@@ -1622,7 +1622,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 已由 M4 与最终验收独立关闭 |
 | M2 动态身份与 W5 | 通过 | r123/r124 覆盖 home 与 consumer 的 token/epoch/owner/descriptor 身份拒绝；r274/r38/r41 覆盖错误、重复、迟到和缺失 ACK、恢复回执及旧 CPU/PTO 拒绝；r286/r384 覆盖正常 PTO drain；r322 百轮拒绝旧 key/V2 并读取新代；r381 拒绝退役 descriptor 的 CPU 访问并验证新映射；当前锁定服务 `3592080c`、QEMU `02d214fe`；r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node，两个核心配置均完成 8-step 和终态资源归零 | 无；本文 M2 的身份、故障和模型/拓扑矩阵已满足。M4 压力/收益与 M5 tokenless replay 继续独立验收 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
-| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零；A16 以 managed W5 的 2/3/4/8-node 每节点 home 记录和 `a8787024` 的 2/3/4/8-node 全有向矩阵共同关闭，8-node 56 个有向节点对各执行 10 轮数据核对并完成三次同源码冷启动；A18 的 hash-bound source-free 包已在两台远端完成基础 managed 数据路径，并以同一组合完成四种 CPU/PTO 访问、同址复用与旧引用拒绝、provider 双次重启隔离，以及 Qwen/DeepSeek 8-node/4-step | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成 |
+| M4 压力与收益 | 通过 | r121 已覆盖三个并发客户端、不同 size/alignment、交错释放和 replacement，r297/r306/r307/r322 覆盖耗尽、复用、百轮及旧引用拒绝；Qwen 4-node 冷 cache 组完成 1 功能、2 预热、5 测量；`218cdf1` 的两客户端语义压力 fixture 混合 prefix、decode-KV、hidden，验证最长 prefix、TTL、版本冲突、容量驱逐及对象/字节计数回到 0；`e6bfe20e` 的 8-node prefix matrix 在 n4-910c 完成 1 seed，并对 hot-prefix 与 divergent-suffix 各完成 1 功能、2 预热、5 测量，16 个复用样本均为 3-token prefix、2-token suffix replay、8/8 GSVA KV hit；两组正式样本 E2E 中位数分别为 25599/25657 ms，完整矩阵、收益报告和 fail-closed 通过；A16、A18 也已按各自矩阵关闭 | 无；容量回收、三类 serving 对象语义、冷/热/不同 suffix 分组及如实收益报告均满足本文 M4 验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
 2026-09-17 M2 补记：Qwen 8-node/8-step 的首次 r83 在 32 个历史
@@ -1842,6 +1842,63 @@ backing/address 均为 0，`managed_recovery_required=1`。三组完成后精确
 QEMU 数量为 0。结合两台机器的 A01-A04 基础闭环和同发布组合的两模型结果，A18
 “独立发布与复现”验收通过。M4 继续保留语义化混合压力和热 prefix/different suffix
 重复组。
+
+2026-09-18 M4 完成补记：独立服务提交
+`218cdf150ab37c49e1c31d92c210321798a1546e` 新增可直接调用的
+`semantic-pressure-fixtures`。同一两客户端序列先发布 4-segment prefix，再发布
+8-segment prefix，lookup 返回最长有效值；随后以旧版本写 6-segment prefix 被
+`version_conflict` 拒绝。序列同时放入 4096/8192-byte decode-KV 和
+1024/2048/3072-byte hidden 对象，验证 hidden version 2 在 version 3 发布后失效，
+再执行 scoped TTL 与确定性容量驱逐。对象/字节计数依次为
+`9/16640 -> 9/16128 -> 9/32256 -> 0/0`，最终类型计数为 1 个 prefix group、
+1 个 prefix entry、3 个 decode-KV 和 2 个 hidden。host CLI、对应单元测试和
+downstream lock 契约均通过；父仓库 `c35b6853` 同步 gitlink 与 lock。n4-910c1
+从已推送分支检出该精确 SHA 后重新构建并运行唯一新增 fixture，输出与本地一致，
+日志 `/tmp/mem-service-semantic-pressure-218cdf1.log` 的 SHA-256 为
+`337a4749d29690f005685123bcc9170a7d570977cd9c566e6af40e626508df09`，终态
+QEMU 数量为 0。
+
+父仓库提交 `e6bfe20e` 将 prefix matrix 拆成两个独立请求组；每组固定执行 1 次
+功能核对、2 次预热和 5 次正式测量，每轮分别强制校验 3-token 最长 prefix、
+2-token suffix replay 与 8 个节点的 GSVA KV 命中。n4-910c 使用 A18 已锁定的
+QEMU `93e5d2e267a7fad9997d2b5ebe626ef24bcb3606f2976354e52b3d559fdba8c7`、kernel
+`befadfaa4f9b94d98a7988846f6531699308063aef70e526eff7f411dc5c63bf`、sim-cli
+`2f6c0c551cbc24310cc6e8469ddf9631c6cbb773742ad97ecdf902bb9351181a` 和 package
+initramfs `b503969138fe4362ac4a7e8ab58c01a8bdcc400411b91fd1c0faaf05c780d42f`。
+第一次准备因 portable snapshot 未带 `mem_service/VERSION` 在启动 guest 前停止；
+补入远端可获取的 `218cdf1` 和匹配 lock 后通过 source gate。随后尝试的 4-node
+seed 虽然 guest 内部完成 4/4 step，但 Qwen profile 的外层合同要求 8 个 worker，
+以 `16/32 range_forwards` 拒绝，未计入样本；诊断日志 SHA-256 为
+`e1060779b4adb37d4c461bc5f62b6dd5ec31553b9b9cfc79432a0f73d3295855`。
+正式矩阵据此使用 profile 原生 8-node 宽度。
+
+有效 seed run 为
+`2026-09-18_06-29-30_w5_qwen3_0_6b_decode_7344`，summary SHA-256 为
+`a52aecd3435017acebc16535a68b169dfecc88eb53755deebe5db4ec7e9b5242`。
+16 个复用 run 均返回 `status=pass`；完整 run ID 和逐 summary SHA 保存在实施记录，
+矩阵总日志 `/tmp/m4-prefix-matrix-e6bfe20e.log` 的 SHA-256 为
+`16f80038ba69a38b1524f6cdcc60417fded8b0c60278975e29547cc0b0356e49`。正式样本
+统计如下：
+
+| 分组 / 指标 | median | min | max | mean | population stdev |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| hot-prefix TTFT (ms) | 10060.0 | 9838.0 | 10475.0 | 10127.4 | 238.510 |
+| hot-prefix TPOT (ms) | 5142.7 | 5106.7 | 5193.7 | 5149.42 | 32.799 |
+| hot-prefix E2E (ms) | 25599.0 | 25211.0 | 25907.0 | 25575.6 | 300.455 |
+| hot-prefix compute / publish (ms) | 6107.0 / 556.0 | 6001.0 / 552.0 | 6239.0 / 576.0 | 6125.8 / 561.4 | 85.329 / 9.415 |
+| hot-prefix GSVA lookup / map-read (ms) | 8.0 / 4.0 | 7.0 / 4.0 | 9.0 / 6.0 | 7.8 / 4.6 | 0.748 / 0.800 |
+| divergent-suffix TTFT (ms) | 10260.0 | 9960.0 | 10639.0 | 10297.4 | 231.455 |
+| divergent-suffix TPOT (ms) | 5158.7 | 5106.7 | 5284.0 | 5172.54 | 61.618 |
+| divergent-suffix E2E (ms) | 25657.0 | 25280.0 | 26491.0 | 25815.0 | 407.582 |
+| divergent-suffix compute / publish (ms) | 6200.0 / 561.0 | 6122.0 / 554.0 | 6397.0 / 600.0 | 6242.6 / 566.8 | 113.136 / 16.845 |
+| divergent-suffix GSVA lookup / map-read (ms) | 8.0 / 3.0 | 8.0 / 2.0 | 9.0 / 3.0 | 8.2 / 2.6 | 0.400 / 0.490 |
+
+seed 的 TTFT/TPOT/E2E 为 `11385/4978.0/26319 ms`。hot-prefix 与
+divergent-suffix 的 E2E 中位数仅下降约 2.7% 和 2.5%；TTFT/compute 有下降，
+TPOT/publish 有回退，GSVA lookup/map-read 还引入约 10 至 12 ms。该结果只作为当前
+模拟器配置的 case show，不宣称稳定硬件加速收益。16 份逐样本 baseline comparison、
+两个 repetition report 和空存储 `--require-prefix-cache` fail-closed 均通过；结束后
+精确进程计数为 0。至此 M4 验收通过，剩余里程碑只有 M5 tokenless replay 联合失效。
 
 ## 9. Review 意见处置
 
