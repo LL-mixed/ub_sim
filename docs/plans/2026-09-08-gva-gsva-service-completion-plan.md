@@ -1619,10 +1619,10 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
-| M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
+| M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 已由 M4 与最终验收独立关闭 |
 | M2 动态身份与 W5 | 通过 | r123/r124 覆盖 home 与 consumer 的 token/epoch/owner/descriptor 身份拒绝；r274/r38/r41 覆盖错误、重复、迟到和缺失 ACK、恢复回执及旧 CPU/PTO 拒绝；r286/r384 覆盖正常 PTO drain；r322 百轮拒绝旧 key/V2 并读取新代；r381 拒绝退役 descriptor 的 CPU 访问并验证新映射；当前锁定服务 `3592080c`、QEMU `02d214fe`；r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node，两个核心配置均完成 8-step 和终态资源归零 | 无；本文 M2 的身份、故障和模型/拓扑矩阵已满足。M4 压力/收益与 M5 tokenless replay 继续独立验收 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
-| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零；A16 以 managed W5 的 2/3/4/8-node 每节点 home 记录和 `a8787024` 的 2/3/4/8-node 全有向矩阵共同关闭，8-node 56 个有向节点对各执行 10 轮数据核对并完成三次同源码冷启动；A18 的 hash-bound source-free 包已在 n4-910c1 和 n4-910c 分别完成 2-node/1-step managed 数据路径，并在 n4-910c 以同一发布组合完成 Qwen 与 DeepSeek 8-node/4-step | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成；A18 的四种访问、重用/旧引用和 provider 重启隔离仍待验收 |
+| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零；A16 以 managed W5 的 2/3/4/8-node 每节点 home 记录和 `a8787024` 的 2/3/4/8-node 全有向矩阵共同关闭，8-node 56 个有向节点对各执行 10 轮数据核对并完成三次同源码冷启动；A18 的 hash-bound source-free 包已在两台远端完成基础 managed 数据路径，并以同一组合完成四种 CPU/PTO 访问、同址复用与旧引用拒绝、provider 双次重启隔离，以及 Qwen/DeepSeek 8-node/4-step | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
 2026-09-17 M2 补记：Qwen 8-node/8-step 的首次 r83 在 32 个历史
@@ -1819,8 +1819,29 @@ initramfs `b503969138fe4362ac4a7e8ab58c01a8bdcc400411b91fd1c0faaf05c780d42f`、Q
 终态无 QEMU。此前三次 DeepSeek step 0 失败分别定位出固化源码路径、QEMU 与
 sim-cli fingerprint 不一致、以及 source-free 目标机缺少预构建 Simpler artifact；
 三项均在下一次运行前独立修正，失败样本没有计为通过。A18 的两模型 8-node/4-step
-同包子项据此通过；四种访问组合、一次重用/旧引用拒绝和一次 provider 重启隔离
-继续未完成。
+同包子项据此通过。
+
+2026-09-18 A18 最小复现集合补记：n4-910c 继续使用上述 package initramfs、QEMU、
+sim-cli 和服务 tar，双节点 runner 全部启用 `--use-prebuilt-qemu` 与
+`--skip-guest-artifact-preparation`。四种访问使用预构建、无源码依赖的 callable-1
+cross-page 工件；工件归档 SHA-256 为
+`473ae95bbf9df46db485645ce6b51449bae43f0abfc12d70978016f9b3e27560`，manifest
+SHA-256 为 `f328647f2852c0f9dfa97478762dc847ec37a3e2bdf8c73e4cf6307b4069baad`，
+fingerprint 为 `0xc8bd48ef54c247e5`。第一次 preflight 使用了默认 ND manifest，因 layout
+不匹配在 guest 启动前退出，未计为通过。
+
+| 子项 | run ID | 关键结果 | 验证 JSON SHA-256 |
+| --- | --- | --- | --- |
+| 四种访问 | `a18-package-cpu-pto-20260918-r2` | CPU/CPU、CPU/TLOAD、TSTORE/CPU、TSTORE/TLOAD 全部通过；2 次 dispatch、4 LOAD、2 STORE、2 fence，零 staging | `732649cd24eda3ef1e5d4ed01fbdbfa310150fe56756056dde0ad26df8c24366` |
+| 同址复用与旧引用 | `a18-package-reference-20260918-r2` | 2 轮、8 个 allocation、4 个新 view；generation 1→5 同址复用，旧两份引用在 resolve/acquire/map-begin 共 6 次返回 `stale_ref` | `8eb6d0e8f21e37ae01300a38b8dc350ff0a26dbd65af44b01599275fb7a11dd2` |
+| provider 重启隔离 | `a18-package-manager-crash-20260918-r1` | daemon 连续 2 次退出 137；对象身份保持并隔离，目录恢复后 data plane 仍为 0，旧 acquire 与新 allocation 均拒绝 | `1aecbde14682f6b45abcfcb4062c39be4b223db9c4cc20380b628969451021a4` |
+
+访问与引用两组正常终态的 live object、backing/address、mapping、reference、
+in-flight 和 quarantine 全部归零；重启组按设计保留 2 MiB quarantine，实际
+backing/address 均为 0，`managed_recovery_required=1`。三组完成后精确进程查询的
+QEMU 数量为 0。结合两台机器的 A01-A04 基础闭环和同发布组合的两模型结果，A18
+“独立发布与复现”验收通过。M4 继续保留语义化混合压力和热 prefix/different suffix
+重复组。
 
 ## 9. Review 意见处置
 

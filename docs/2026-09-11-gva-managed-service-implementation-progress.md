@@ -7367,4 +7367,46 @@ worker/handoff 均为 32；token 为 `260,6646,5217,1951`，文本为
 两次正式运行各有 8 条 `allocations=32` cleanup，非零 live object、backing/
 address bytes 和 quarantine 记录均为 0，终态无 QEMU。A18 的两模型
 8-node/4-step 同包复现子项通过。三次失败样本保留为部署依赖缺口证据，没有计入
-通过结果。A18 仍需四种访问组合、一次重用/旧引用拒绝和一次 provider 重启隔离。
+通过结果。A18 的两模型子项据此通过。
+
+## 2026-09-18：A18 四种访问、同址复用与重启隔离
+
+n4-910c 继续使用同一发布组合：服务 tar
+`45794cd6e82762b0d4c8bfa64923ee1554097bc896a882ae7b8a3a4ef30b09b7`、package
+initramfs `b503969138fe4362ac4a7e8ab58c01a8bdcc400411b91fd1c0faaf05c780d42f`、QEMU
+`93e5d2e267a7fad9997d2b5ebe626ef24bcb3606f2976354e52b3d559fdba8c7`、kernel
+`befadfaa4f9b94d98a7988846f6531699308063aef70e526eff7f411dc5c63bf` 和 sim-cli
+`2f6c0c551cbc24310cc6e8469ddf9631c6cbb773742ad97ecdf902bb9351181a`。所有双节点
+case 使用 package initramfs、预构建 QEMU，并跳过 guest artifact preparation。
+
+四种访问需要冻结的 callable-1 cross-page 工件。目标机原默认 manifest 为 ND
+32×32，首次 preflight 因精确 layout 不匹配退出，没有启动 QEMU。随后复用既有
+source-free artifact snapshot；压缩归档 SHA-256 为
+`473ae95bbf9df46db485645ce6b51449bae43f0abfc12d70978016f9b3e27560`，manifest
+SHA-256 为 `f328647f2852c0f9dfa97478762dc847ec37a3e2bdf8c73e4cf6307b4069baad`，
+sim-cli 重新计算得到 callable 1 fingerprint `0xc8bd48ef54c247e5`。
+
+`a18-package-cpu-pto-20260918-r2` 完成同一 managed object 的 CPU/CPU、CPU/TLOAD、
+TSTORE/CPU 与 TSTORE/TLOAD。验证器记录 2 次成功 dispatch、4 次 LOAD、2 次 STORE、
+2 次 fence、零 staging，home/compute 为 node 0/1，最终资源归零。验证 JSON SHA-256
+为 `732649cd24eda3ef1e5d4ed01fbdbfa310150fe56756056dde0ad26df8c24366`。
+
+reference 首次 1 轮运行虽然通过引用捕获、解除映射和资源回收，但验证 JSON 的
+`stale_reference_checks` 为空，未计入 A18 旧引用结果。唯一重跑
+`a18-package-reference-20260918-r2` 使用 2 轮和 16 MiB aperture：第二轮把
+`0x700000000000` 从 generation 1 复用为 generation 5，上一轮两份引用分别在
+resolve、acquire、map-begin 返回 `stale_ref`，共 6 次；新代 4 个 view 数据核对
+通过，8 个 allocation 全部退役。验证 JSON SHA-256 为
+`8eb6d0e8f21e37ae01300a38b8dc350ff0a26dbd65af44b01599275fb7a11dd2`。
+
+`a18-package-manager-crash-20260918-r1` 对运行中的 daemon 连续执行两次实际
+`SIGKILL`，两次退出码均为 137。原 key/generation/descriptor/address/home/provider
+身份和 live ref 保持，对象进入 quarantine；两个 provider 重新注册后目录 ready，
+data plane 保持 0。旧 acquire 重放和新 allocation 均以
+`managed_reconciliation_required` 拒绝。验证 JSON SHA-256 为
+`1aecbde14682f6b45abcfcb4062c39be4b223db9c4cc20380b628969451021a4`。
+
+正常两组终态资源全部归零；重启隔离组保留 2 MiB quarantine，同时实际 backing 和
+address 均为 0。三组结束后 QEMU 数量为 0。结合已完成的两机 A01-A04、Qwen 与
+DeepSeek 同发布组合 8-node/4-step，A18 独立发布与复现通过。M4 剩余工作收敛为
+prefix/decode-KV/hidden 语义化混合压力，以及热 prefix 和不同 suffix 的独立重复组。
