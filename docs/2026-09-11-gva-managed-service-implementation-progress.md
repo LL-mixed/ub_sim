@@ -6411,3 +6411,89 @@ validation  8e0e1a43767f940e9a63216af9fe3296411619ac9320a2b0fa5210475fad66f6
 覆盖整个 holder guest 在 RETIRE ACK 前消失后的 service-managed 对账/rejoin，也
 没有覆盖重复事务故障、重复 guest 故障或完整重复故障矩阵；M3 与总目标继续保持
 进行中。
+
+### n4 双 guest managed-guest-recovery r42-r43：整个 holder guest 终止后恢复
+
+独立服务 `62ccd379986ee8da62c3e3711a7fcd1271e6e236` 增加
+`fence-terminated-holder-state`。该入口供平台 supervisor 已经确认旧 guest/QEMU
+进程终止后的 replacement provider 使用。服务核对以下事实后才提交持久化 holder
+fencing receipt：
+
+- 旧配置与 replacement 配置的节点绑定一致、incarnation 已改变；
+- 传入的旧 kernel instance 是精确的 32 位非零十六进制身份，当前 kernel instance
+  与之不同；
+- replacement kernel inventory 连续两次稳定且为空；
+- replacement provider 已注册，required provider directory 已 ready；
+- recovery poll 返回精确旧 allocation/holder descriptor；
+- `LOCAL_REVOKE` 成功，或者旧 route 在 kernel replacement 后精确返回
+  `GSVA_ERR_ROUTE_MISSING` 且没有其他 errno；
+- receipt 写入前再次核对当前 kernel identity 与 inventory revision 未变化。
+
+命令参数中的旧 kernel identity 只参与绑定核对，不能证明进程已经终止。平台仍须
+提供 QEMU/process exit receipt；lease expiry、provider replacement 和 route missing
+中的任意单项均不足以授权 holder 清除。服务的定向测试及 AArch64 构建通过，提交
+已只推送用户授权的 `origin/codex/gva-managed-service-completion`。n4-910c1 上原生
+worker 定向用例 1/1 通过，覆盖旧 kernel 缺失、相同 kernel、非空 inventory 的拒绝，
+以及 replacement kernel 下 route missing 的受约束接受。
+
+父仓库 `df5c6bfc8ad2b36ff831913a26acbd0df38abca0` 接通实际 guest 流程：旧
+node B 先导出 kernel identity，runner 对 QEMU 发送 `SIGKILL` 并等待退出码 137，
+replacement guest 以 incarnation 8 注册；replacement 在 worker 启动前完成上述
+fencing，node A 收到 receipt 后回收旧 home，随后双方用新对象验证重新加入。
+`e43327d7` 修正一个既有原生测试把合法 `reserved + sync-exit` 组合误列为配置
+错误的问题。父仓库没有推送。
+
+r42 只运行一次实际 guest case。终止、fencing 与旧对象回收链路已成功：旧/new
+kernel instance 不同，replacement inventory 为空，holder receipt 完成，node A 将
+旧 generation 1 对象推进到 RETIRED，replacement worker 也发布了新 generation 2
+对象。该轮 rejoin writer/reader 在任何数据操作前都报告 `provider obmm
+unavailable`。原因是 replacement 使用 `replacement_incarnation + 1048576`，node A
+却使用 `original_incarnation + 2097152`，peer-canary generation 无法配对。该轮
+0/1 结果保留为失败证据，没有原样重跑。
+
+`277ba6a9b2065094b3b2e4a1d4efa07885dec25a` 统一双方使用
+`replacement_incarnation + 1048576`，并增加两端配置必须引用同一
+`bootstrap_generation` 的契约断言。本地轻量门禁只执行 shell 语法和 guest-crash
+契约测试，4/4 通过。n4-910c1 r43 随后只执行一次同一实际双 guest case，运行组合
+为：
+
+```text
+parent      277ba6a9b2065094b3b2e4a1d4efa07885dec25a
+mem_service 62ccd379986ee8da62c3e3711a7fcd1271e6e236
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   ec4ef69b1fbc5a0bf84e3cae8a13b6901cdffdb9aa74a77fb66316d136a6e5b9
+```
+
+r43 runner exit 0、1/1 PASS，机器报告
+`scope=actual-guest-sigkill-reconcile-rejoin`。实际行为为：
+
+- runner 记录旧 node B `SIGKILL`、退出码 137 和 incarnation 7→8；
+- 旧/new kernel instance 分别为
+  `cb0b803934bab4f66e8f38ba5163c7c5` 与
+  `5d3c6d80c2019e4ff96123cbad014a58`；
+- holder fencing receipt 完成后，旧 generation 1 home 被 service reclaim；
+- incarnation 7 的 acquire 以 `holder_provider_mismatch` 拒绝；
+- incarnation 8 发布 generation 2，新 writer/reader 对 65536 bytes 得到相同
+  checksum `0x71c4d15c79b10383`，随后完成 unmap、release、retire 和物理 reclaim；
+- 最终 `live_objects`、backing/address、refs、in-flight、quarantine、import/export
+  mapping 与 kernel region 全部归零，`managed_recovery_required=0`。
+
+原始文件及报告 SHA-256：
+
+```text
+nodeA guest       4e6631998f6d236863459fcd7498330db905fbb01d76d7c0d0733e144f86573b
+nodeB before      be10a6bdcfb09b4aa0a846095550187af31362fe5584ef1caeb9a2a5b3569405
+nodeB replacement 2820cbe9c155f3858a816387072a7cd5efa78cb8bc5633da0e7ffdad61ab852d
+nodeA QEMU        f8db35983fdfdcfe8fecdd58cec798567131289de41ded02706e5cb115f6125a
+nodeB QEMU before d97ec7159178d3626c5c2880699059ab1a42db9c63d136f84a84b24df89150f2
+nodeB QEMU after  00f7fd447f6595e86a785fe5c7c674c88d48b032b187bd2be22e9bf5d4c4a89e
+host receipt      abda2210fdb537883ad62fc53422222a692d03267006176fb07acb8c1db6ef18
+validation JSON   2c25fa22c4250c1cb1837ebca6065417f265b4506984061e8a5c315ea3828a6a
+runner report     99c7731f2a6753a5659b0ef8147836c2f5f83e1c9495a8cc7b3d18fce9371ec0
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭整个 holder guest 在
+RETIRE ACK 前消失后的 service-managed fencing、旧 home 对账/reclaim 和
+replacement rejoin 子项。重复 guest 故障、重复事务故障和完整重复故障矩阵仍待
+验收；M3 与总目标继续保持进行中。
