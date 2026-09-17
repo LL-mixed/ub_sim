@@ -198,6 +198,10 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn(
             'LINQU_UB_NODE_COUNT="$SIM_W5_CLUSTER_NODE_COUNT"', source
         )
+        self.assertIn(
+            "export SIM_W5_CLUSTER_NODE_COUNT=$SIM_W5_CLUSTER_NODE_COUNT",
+            self.guest_runner.read_text(encoding="utf-8"),
+        )
         self.assertIn('%s_QEMU_PID_FILE=', source)
 
     def test_guest_wait_fails_when_a_qemu_process_exits(self):
