@@ -6955,3 +6955,31 @@ in-flight、quarantine 全部为零。summary SHA-256 为
 r87 关闭 DeepSeek 2-node/4-step 子项。M2 仍缺 DeepSeek 3/8-node 4-step、
 DeepSeek 核心 8-step、Qwen 4-node 定点回归和完整身份/故障矩阵。M4 仍缺正式
 重复性能样本与混合压力；M5 尚未开始。总目标继续进行。
+
+### n4-910c1 DeepSeek 3-node/4-step（r88）
+
+r88 没有代码改动，复用 r87 的锁定源码和模型，以参数化 launcher 唯一执行一次
+`--managed-serving --nodes 3 --steps 4`：
+
+```text
+run          2026-09-18_01-28-12_w5_deepseek_v4_flash_decode_6415_headless8
+passed_nodes 3/3
+worker_records 12
+tokens       260,6646,5217,1951
+text         " a leading global information"
+round_ms     584185,438156,168881,168777
+```
+
+三段 layer range 为 `[0,15)`、`[15,29)`、`[29,43)`；每步完成两次跨节点
+handoff，node C 发布 terminal token。四个 token、runner-up、margin 和 checksum
+与 r87 的 2-node oracle 一致。三节点各完成 4/4 step，runner exit 0，报告器
+`status=pass`。
+
+三个 cleanup record 均为 `allocations=12`、`final_generation=12`，对象、
+backing/address bytes、export/import mappings、live refs、in-flight 和 quarantine
+全部为零。summary SHA-256 为
+`17147d769a2db67cbe1cdecbcde64d13bf7e69909a8bb02eacd19ae64068fade`；精确进程
+查询无遗留 QEMU。该 case 没有重跑。
+
+r88 关闭 DeepSeek 3-node/4-step 子项。M2 仍缺 DeepSeek 8-node/4-step、核心
+8-step、Qwen 4-node 定点回归和完整身份/故障矩阵；M4、M5 和总目标状态不变。
