@@ -10768,6 +10768,7 @@ int main(int argc, char **argv)
     uint64_t w5_managed_artifact_fingerprint = 0;
     uint64_t w5_managed_output_capacity = 0;
     uint64_t w5_managed_import_region_bytes = 0;
+    uint64_t w5_managed_allocation_granularity_bytes = 0;
     const char *w5_managed_connect = NULL;
     struct qwen3_pto_guest_operation *qwen3_pto_operation = NULL;
     struct qwen3_pto_guest_output qwen3_pto_output = {0};
@@ -11181,6 +11182,9 @@ int main(int argc, char **argv)
             "SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES", 32ULL * 1024ULL * 1024ULL);
         w5_managed_import_region_bytes = env_u64_or_default(
             "SIM_W5_MANAGED_IMPORT_REGION_BYTES", 256ULL * 1024ULL * 1024ULL);
+        w5_managed_allocation_granularity_bytes = env_u64_or_default(
+            "SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES",
+            64ULL * 1024ULL * 1024ULL);
         w5_managed_run = w5_managed_identity_hash(run_id);
         w5_managed_request = w5_managed_identity_hash(serving_request_id);
         provider_bootstrap_generation =
@@ -11207,19 +11211,29 @@ int main(int argc, char **argv)
             w5_managed_output_capacity < 65536 ||
             w5_managed_output_capacity > W5_MANAGED_MODEL_MAX_VIEW_BYTES ||
             w5_managed_output_capacity % PAGE_SIZE_BYTES ||
+            w5_managed_allocation_granularity_bytes < 2ULL * 1024ULL * 1024ULL ||
+            (w5_managed_allocation_granularity_bytes &
+             (w5_managed_allocation_granularity_bytes - 1ULL)) != 0 ||
+            w5_managed_allocation_granularity_bytes <
+                w5_managed_output_capacity + PAGE_SIZE_BYTES ||
             w5_managed_import_region_bytes < w5_managed_output_capacity ||
+            w5_managed_import_region_bytes <
+                w5_managed_allocation_granularity_bytes ||
             max_mappings == 0 || max_mappings > UINT32_MAX) {
             fprintf(stderr,
                     "[w4_guest] fail managed serving configuration"
                     " connect=%u nodes=%u profile=%s engram=%u memory=%u"
                     " top_k=%" PRIu64 " output_capacity=%" PRIu64
-                    " import_region=%" PRIu64 " max_mappings=%" PRIu64 "\n",
+                    " import_region=%" PRIu64
+                    " allocation_granularity=%" PRIu64
+                    " max_mappings=%" PRIu64 "\n",
                     w5_managed_connect && w5_managed_connect[0] ? 1U : 0U,
                     cluster_node_count, w4_runtime_model_key(),
                     qwen3_engram_config.enabled ? 1U : 0U,
                     qwen3_memory_decision_config.enabled ? 1U : 0U,
                     sampler_config.top_k, w5_managed_output_capacity,
-                    w5_managed_import_region_bytes, max_mappings);
+                    w5_managed_import_region_bytes,
+                    w5_managed_allocation_granularity_bytes, max_mappings);
             return 1;
         }
         runtime_config = (struct w5_managed_runtime_config) {
@@ -11228,6 +11242,8 @@ int main(int argc, char **argv)
             .client_provider_incarnation = client_provider_incarnation,
             .timeout_ms = w5_pto_ub_gm_timeout_ms,
             .import_region_bytes = w5_managed_import_region_bytes,
+            .allocation_granularity_bytes =
+                w5_managed_allocation_granularity_bytes,
             .bootstrap_generation = provider_bootstrap_generation,
             .max_mappings = (uint32_t)max_mappings,
             .local_node = managed_local_node,
@@ -11250,11 +11266,13 @@ int main(int argc, char **argv)
                " run=0x%016" PRIx64 " request=0x%016" PRIx64
                " nodes=%u output_capacity=%" PRIu64
                " import_region=%" PRIu64
+               " allocation_granularity=%" PRIu64
                " provider_bootstrap_generation=%" PRIu64
                " holder_node=%s holder_incarnation=%" PRIu64
                " callable=4 control=mem_service data=obmm status=ok\n",
                w5_managed_run, w5_managed_request, cluster_node_count,
                w5_managed_output_capacity, w5_managed_import_region_bytes,
+               w5_managed_allocation_granularity_bytes,
                provider_bootstrap_generation,
                managed_client_node, client_provider_incarnation);
     }

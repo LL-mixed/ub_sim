@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define W5_MANAGED_CANARY_REGION_BYTES (2U * 1024U * 1024U)
+#define W5_MANAGED_MIN_ALLOCATION_GRANULARITY_BYTES (2U * 1024U * 1024U)
 #define W5_MANAGED_CANARY_VISIBLE_BYTES 256U
 #define W5_MANAGED_CANARY_SEED_BASE 41U
 
@@ -49,7 +49,13 @@ int w5_managed_runtime_open(
         !config->connect_spec[0] || !config->timeout_ms ||
         !config->client_node_id || !config->client_node_id[0] ||
         !config->client_provider_incarnation ||
-        !config->import_region_bytes || !config->bootstrap_generation ||
+        !config->import_region_bytes ||
+        config->allocation_granularity_bytes <
+            W5_MANAGED_MIN_ALLOCATION_GRANULARITY_BYTES ||
+        config->allocation_granularity_bytes > config->import_region_bytes ||
+        (config->allocation_granularity_bytes &
+         (config->allocation_granularity_bytes - 1U)) != 0 ||
+        !config->bootstrap_generation ||
         !config->max_mappings ||
         config->max_mappings > MEM_SERVICE_PROVIDER_OBMM_MAX_MAPPINGS ||
         config->node_count < 2 ||
@@ -114,14 +120,16 @@ int w5_managed_runtime_open(
     if (!rc) {
         runtime->open_stage = "canary-prepare";
         rc = mem_service_provider_obmm_endpoint_prepare_canary_region(
-            &runtime->provider, W5_MANAGED_CANARY_REGION_BYTES,
+            &runtime->provider, config->allocation_granularity_bytes,
             W5_MANAGED_CANARY_VISIBLE_BYTES,
             (uint8_t)(W5_MANAGED_CANARY_SEED_BASE + config->local_node),
             &canary_region, &local_canary, &canary_checksum);
         if (rc != 0)
             fprintf(stderr,
-                    "[w5_managed_runtime] open stage=canary-prepare rc=%d\n",
-                    rc);
+                    "[w5_managed_runtime] open stage=canary-prepare rc=%d"
+                    " region_bytes=%llu\n",
+                    rc, (unsigned long long)
+                        config->allocation_granularity_bytes);
     }
     if (!rc) {
         runtime->open_stage = "canary-exchange";

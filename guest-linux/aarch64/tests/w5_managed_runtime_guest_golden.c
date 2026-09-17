@@ -93,7 +93,7 @@ int mem_service_provider_obmm_endpoint_prepare_canary_region(
     uint64_t *checksum_out)
 {
     assert(endpoint->implementation);
-    assert(region_len == 2 * 1024 * 1024);
+    assert(region_len == 64 * 1024 * 1024);
     assert(visible_len == 256 && seed == 42);
     memset(region_out, 0, sizeof(*region_out));
     memset(remote_out, 0, sizeof(*remote_out));
@@ -234,17 +234,26 @@ int mem_service_provider_obmm_endpoint_close_checked(
 int main(void)
 {
     struct w5_managed_runtime_guest *runtime = NULL;
+    struct w5_managed_runtime_config invalid_config;
     struct w5_managed_runtime_config config = {
         .connect_spec = "unix:/tmp/mem-service.sock",
         .client_node_id = "guest-node-3",
         .client_provider_incarnation = 1000003,
         .timeout_ms = 300000,
         .import_region_bytes = 64 * 1024 * 1024,
+        .allocation_granularity_bytes = 64 * 1024 * 1024,
         .bootstrap_generation = 0x12345678,
         .max_mappings = 8,
         .local_node = 1,
         .node_count = 2,
     };
+    invalid_config = config;
+    invalid_config.allocation_granularity_bytes = 0;
+    assert(w5_managed_runtime_open(&invalid_config, &runtime) == -EINVAL);
+    invalid_config.allocation_granularity_bytes = 3 * 1024 * 1024;
+    assert(w5_managed_runtime_open(&invalid_config, &runtime) == -EINVAL);
+    invalid_config.allocation_granularity_bytes = 128 * 1024 * 1024;
+    assert(w5_managed_runtime_open(&invalid_config, &runtime) == -EINVAL);
     assert(w5_managed_runtime_open(&config, &runtime) == 0 && runtime);
     assert(!strcmp(w5_managed_runtime_open_stage(runtime), "ready"));
     assert(strstr(w5_managed_runtime_open_detail(runtime),

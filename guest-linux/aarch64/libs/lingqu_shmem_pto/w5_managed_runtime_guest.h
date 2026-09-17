@@ -16,6 +16,7 @@ struct w5_managed_runtime_config {
     uint64_t client_provider_incarnation;
     uint64_t timeout_ms;
     uint64_t import_region_bytes;
+    uint64_t allocation_granularity_bytes;
     uint64_t bootstrap_generation;
     uint32_t max_mappings;
     uint32_t local_node;

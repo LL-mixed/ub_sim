@@ -16,6 +16,8 @@ Managed W5 serving defaults the OBMM allocation granularity to 64 MiB and
 passes the same value to the built-in or loadable OBMM allocator through
 `obmm.mem_allocator_granu`. A callable-4 output view is smaller than one
 allocator granule, so strict PTO registration observes one physically
-contiguous backing range. `SIM_W5_MANAGED_IMPORT_REGION_BYTES` must be at least
-the configured `SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES`; the runner rejects
-smaller or non-power-of-two configurations before launching guests.
+contiguous backing range. The managed runtime also sizes its OBMM readiness
+canary to that granule instead of assuming a fixed 2 MiB region.
+`SIM_W5_MANAGED_IMPORT_REGION_BYTES` must be at least the configured
+`SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES`; the runner and guest reject
+smaller or non-power-of-two configurations before opening the provider.
