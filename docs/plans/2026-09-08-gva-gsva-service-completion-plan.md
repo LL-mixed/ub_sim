@@ -1620,10 +1620,20 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `163dc8c`；n4-910c1 r81/r82 完成 Qwen 2/3-node 4-step callable 4 连续 decode、每节点独立 home、8/12 条 provider completion 和终态资源归零 | Qwen 8-node 与核心 8-step、DeepSeek 2/3/8-node 的 4-step 与核心 8-step，以及完整身份/故障矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `163dc8c`；n4-910c1 r81/r82 完成 Qwen 2/3-node 4-step；r84 完成 Qwen 8-node/8-step callable 4 连续 decode、64 条 worker completion、每节点滚动退役 6 个历史 allocation 和终态资源归零 | DeepSeek 2/3/8-node 的 4-step 与核心 8-step、Qwen 4-node 定点回归，以及完整身份/故障矩阵未完成 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成；A16 的 2/3/8-node 每节点 home 与三轮冷启动、A18 独立包跨机复现仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
+
+2026-09-17 M2 补记：Qwen 8-node/8-step 的首次 r83 在 32 个历史
+allocation 全部仍存活时，于 node C 的 step 4 previous-token 映射前失败；此前四个
+terminal token 已完成，失败后没有生成新的 GSVA map。提交 `f527a84f` 在每轮完成
+后退役本节点两步之前的 allocation，并等待 provider 确认 `retired`，把长期请求的
+home backing 保留量限制为最近两个 step。定向生命周期测试通过。n4-910c1 r84
+仅重跑该受影响 case，8 个节点各完成 8/8 step、共 64 条 worker 记录，token 为
+`264,3644,7653,304,279,2070,315,1995`；每节点观察到 6 次滚动退役，最终 64 个
+allocation 及 backing/address、export/import mapping、reference、in-flight 和
+quarantine 全部归零，报告 `status=pass`，无 QEMU 残留。完整证据见实施进度记录。
 
 ## 9. Review 意见处置
 

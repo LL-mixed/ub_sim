@@ -6810,3 +6810,78 @@ reference、in-flight、quarantine 全部为零。运行结束后精确进程查
 r82 关闭 Qwen 3-node/4-step 子项。M2 仍缺 Qwen 8-node 与核心 8-step、DeepSeek
 2/3/8-node 的 4-step 与核心 8-step，以及正文保留的完整身份/故障矩阵。M4、M5
 和总目标状态不变。
+
+### n4-910c1 Qwen 8-node/8-step（失败 r83；修复 r84）
+
+r83 用一轮 Qwen 8-node/8-step 同时覆盖剩余 Qwen 8-node 与核心 8-step，运行：
+
+```text
+run 2026-09-17_19-35-16_w5_qwen3_0_6b_decode_8624_headless8
+```
+
+前四个 terminal token `264,3644,7653,304` 已发布，全部节点完成 step 0–3。
+node C 进入 step 4 后在 previous-token reader 路径返回 `rc=-1`；node H 随后已将
+step 3 token allocation generation 32 发布为 active，但 node C QEMU 没有观察到
+下一次 GSVA map。失败时 8 节点乘 4 step 的 32 个 home allocation 全部仍为
+live：round close 只关闭 holder/mapping，旧 allocation 一直保留到最终请求清理。
+这使长期 decode 的 provider region、地址和 backing 使用量随 step 单调增长。
+r83 在首个 fatal marker 停止，没有重跑；精确进程查询确认清理后无 QEMU 残留。
+
+父仓库 `f527a84f` 增加 completed-step rolling retirement。每个节点完成 step `N`
+并关闭本轮 reader/writer 后，退役自身 step `N-2` 的 allocation，等待 provider
+回收完成并确认 `retired`。进入 step `N+1` 时仍保留 step `N` 的 KV 和最近一步，
+所有更早 hidden/KV/token 引用已经由 terminal 顺序证明消费完成。最终 request
+cleanup 继续遍历全部 allocation：已滚动退役的对象幂等跳过，最后两个 step 和
+final-token holder barrier 仍按原流程回收。定向门禁为：
+
+```text
+python3 -m unittest guest-linux/aarch64/tests/test_w5_managed_request_guest.py
+1 test, PASS
+git diff --check, PASS
+```
+
+远端只同步该提交涉及的五个源码/测试文件；本地与远端 SHA-256 逐项一致：
+
+```text
+llm_infer.c                         4118df8acf98120cc3d06eba31a31e8d103279a046211d14d70fa00ab69b0b26
+w5_managed_request_guest.c         3a1a6892ed97b1c2157833bce1f23b3c63c8fa0acdf7cf087607dce7abd2bec6
+w5_managed_request_guest.h         634f06e19f5b48525000fb1e02f7fd524db1536ebc6ffb93eda2001828ee33dc
+w5_managed_request_guest_golden.c  5ad66c1a05f5b79b40c477b3fbc5a5bbebf00e129bf0f685a75ae4d75098de43
+test_w5_managed_request_guest.py    bf013974580be2d37b683bf2ec4f9e705b620a802ee0dad0097818682bc196e6
+initramfs.cpio.gz                   9fd61f65f3e36bc5069fbbd97e3b3feacff0cb421f8fbee3caed750edc500134
+```
+
+r84 的实际组合和唯一一次修复后命令为：
+
+```text
+parent source f527a84f（隔离远端工作区使用上述精确源码；父仓库未推送）
+mem_service  163dc8c321449a420e389c53ef7ccffd9211e75e
+qemu         d1307d0f8d2464c64df9f0942685b381cf33e2d8
+fingerprint  9115506146201997557
+command      run_w5_cluster_config.sh --managed-serving --nodes 8 --steps 8
+run          2026-09-17_19-57-50_w5_qwen3_0_6b_decode_30455_headless8
+```
+
+runner exit 0，报告器返回 `status=pass`：
+
+```text
+decode_steps_expected 8
+decode_steps_observed 8
+passed_nodes          8/8
+worker_records        64
+handoff_records       64
+tokens                264,3644,7653,304,279,2070,315,1995
+text                  " a global leader in the field of information"
+round_ms              16331,22726,29298,35350,41723,47457,53340,57593
+```
+
+原 r83 故障点已跨过：node C 完成 step 4，并最终完成 8/8 step。八个节点各记录
+6 次 `w5_managed_completed_step_retired`，总计 48 次滚动退役；每个节点的最终
+request cleanup 都核对 `allocations=64`、`live_objects=0`、backing/address bytes、
+export/import mappings、refs、in-flight 与 quarantine 全部为零。fatal marker 为
+0，精确进程查询 `qemu-system-aarch64` 为 0。summary SHA-256 为
+`5b6609b205f4d84d70ba78bde4bd62b0d6c468aa2b541e673aff569f8f0b73a4`。
+
+r84 关闭 Qwen 8-node 和核心 8-step 子项。M2 仍缺 DeepSeek 2/3/8-node 4-step、
+DeepSeek 核心 8-step、Qwen 4-node 定点回归和计划列明的完整身份/故障矩阵。M4、
+M5 与总目标状态不变。
