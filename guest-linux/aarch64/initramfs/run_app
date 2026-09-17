@@ -2366,7 +2366,7 @@ mem_service_object_share_guest_recovery() {
       echo "provider_import_region_bytes=2097152"
       echo "op=acquire key=$key idempotency_key=guest-recovery-holder-acquire expected_generation=$generation"
       echo "op=map key=$key flags=read"
-      echo "op=wait_state key=guest-recovery-hold state=active timeout_ms=600000 poll_ms=100"
+      echo "op=wait_state key=guest-recovery-hold state=active timeout_ms=60000 poll_ms=100"
     } >/tmp/guest-recovery-holder.conf
     /bin/linqu_mem_service object-session \
       --config /tmp/guest-recovery-holder.conf \

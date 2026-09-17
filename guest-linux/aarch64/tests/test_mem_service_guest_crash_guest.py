@@ -151,6 +151,8 @@ class GuestCrashGuestTests(unittest.TestCase):
             "\nmem_service_object_share_recovery_fault() {", 1
         )[0]
         self.assertIn("phase=crash-ready status=ready", function)
+        self.assertIn("timeout_ms=60000 poll_ms=100", function)
+        self.assertNotIn("timeout_ms=600000", function)
         self.assertIn("expired_count=1", function)
         self.assertIn("new_incarnation=$replacement_incarnation", function)
         self.assertIn("managed_reconciliation_required", function)
