@@ -106,8 +106,20 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     require(home_canary.group(1) == replacement_canary.group(1),
             "PTO peers used different bootstrap discovery generations")
 
-    require_pattern(node_a, r"mem_service recover-allocation: status=ok",
-                    "home recovery was not accepted")
+    receipt_required = require_pattern(
+        node_a,
+        r"mem_service holder-recovery: node=0 phase=receipt-required "
+        r"status=confirmed generation=([1-9][0-9]*) "
+        r"remaining_holders=([1-9][0-9]*)",
+        "home recovery was not rejected before the holder receipt",
+    )
+    recovery_accepted = require_pattern(
+        node_a, r"mem_service recover-allocation: status=ok",
+        "home recovery was not accepted after the holder receipt",
+    )
+    require(node_a.index(receipt_required.group(0)) <
+            node_a.index(recovery_accepted.group(0)),
+            "home recovery was accepted before the missing receipt was observed")
     require_pattern(node_a, r"^state=retiring$",
                     "home recovery did not enter RETIRING")
     require_pattern(
@@ -155,6 +167,13 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
                     "old provider lease expiry is missing")
     require_pattern(node_b, r"^replaced=0$",
                     "replacement was not registered after old-provider removal")
+    receipt_gate = require_pattern(
+        node_b,
+        r"mem_service holder-recovery: node=1 phase=receipt-required-gate "
+        r"status=observed old_incarnation=([1-9][0-9]*) "
+        r"current_incarnation=([1-9][0-9]*)",
+        "replacement did not wait for the missing-receipt denial",
+    )
     require_pattern(
         node_b,
         r"obmm-holder-fence: status=fenced key=holder-recovery-object",
@@ -240,6 +259,7 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
             cpu_probe_started.group(3) == cpu_rejected.group(3),
             "CPU rejection does not match the prepared mapping")
     require(node_b.index(observed.group(0)) <
+            node_b.index(receipt_gate.group(0)) <
             node_b.index("obmm-holder-fence: status=fenced") <
             node_b.index(rejected_observed.group(0)) <
             node_b.index(cpu_probe_observed.group(0)) <
@@ -423,6 +443,10 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     require_pattern(qemu_b, r"OBMM_COH_FENCE_ACK.*status=0",
                     "holder QEMU did not receive a successful fence acknowledgement")
     home_retire = require_home_retire(node_a, qemu_a)
+    require(int(receipt_required.group(1)) == home_retire["worker_generation"],
+            "missing-receipt denial used the wrong allocation generation")
+    require(receipt_gate.groups() == (old_incarnation, current_incarnation),
+            "missing-receipt barrier used the wrong replacement identity")
 
     return {
         "status": "pass",
@@ -432,6 +456,12 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         "old_pto_operation_id": int(rejected.group(1)),
         "old_pto_mapping_id": int(prepared.group(3)),
         "pto_bootstrap_generation": int(home_canary.group(1)),
+        "receipt_gate": {
+            "generation": int(receipt_required.group(1)),
+            "remaining_holders": int(receipt_required.group(2)),
+            "old_incarnation": int(receipt_gate.group(1)),
+            "current_incarnation": int(receipt_gate.group(2)),
+        },
         "home_retire": home_retire,
         "rejoin": {
             "key": "holder-recovery-rejoin-object",

@@ -1514,6 +1514,7 @@ mem_service_object_share_holder_recovery() {
   local key="holder-recovery-object"
   local ready_key="holder-recovery-ready"
   local pto_ready_key="holder-recovery-pto-ready"
+  local receipt_gate_key="holder-recovery-receipt-required"
   local generation=""
   local replacement=$((incarnation + 1))
   local attempt=0
@@ -1524,6 +1525,7 @@ mem_service_object_share_holder_recovery() {
   local pto_status=0
   local pto_op=""
   local cpu_signal=""
+  local remaining_holders=""
 
   {
     echo "connect=$connect"
@@ -1583,6 +1585,53 @@ mem_service_object_share_holder_recovery() {
     /bin/busybox cat /tmp/holder-recovery-replacement.log
     [ "$attempt" -lt 600 ] || return 1
     echo "mem_service holder-recovery: node=0 phase=replacement-directory status=ready incarnation=$replacement"
+
+    attempt=0
+    while [ "$attempt" -lt 600 ]; do
+      result=0
+      /bin/linqu_mem_service recover-allocation --connect "$connect" \
+        --timeout-ms 1000 --max-attempts 1 \
+        --key "$key" --node-id guest-node-0 --incarnation "$incarnation" \
+        --generation "$generation" --fenced-incarnation "$incarnation" \
+        --backing-gone 0 >/tmp/holder-recovery-receipt-required.log 2>&1 || result=$?
+      /bin/busybox cat /tmp/holder-recovery-receipt-required.log
+      if [ "$result" -eq 0 ]; then
+        echo "mem_service holder-recovery: node=0 phase=receipt-required status=unexpected-success generation=$generation"
+        return 1
+      fi
+      if /bin/busybox grep -q '^reason=holder_fence_receipt_required$' \
+          /tmp/holder-recovery-receipt-required.log; then
+        remaining_holders="$(/bin/busybox sed -n \
+          's/^remaining_holders=\([1-9][0-9]*\)$/\1/p' \
+          /tmp/holder-recovery-receipt-required.log | /bin/busybox head -n 1)"
+        [ -n "$remaining_holders" ] || return 1
+        break
+      fi
+      /bin/busybox grep -Eq \
+        'reason=(state_conflict|recovery_providers_not_ready|managed_reconciliation_required)' \
+        /tmp/holder-recovery-receipt-required.log || return 1
+      attempt=$((attempt + 1))
+      /bin/busybox sleep 0.1
+    done
+    [ "$attempt" -lt 600 ] || return 1
+    echo "mem_service holder-recovery: node=0 phase=receipt-required status=confirmed generation=$generation remaining_holders=$remaining_holders"
+    /bin/linqu_mem_service allocate-object --connect "$connect" \
+      --key "$receipt_gate_key" \
+      --idempotency-key holder-recovery-receipt-required \
+      --session-id holder-recovery-controller --home-node guest-node-0 \
+      --size-bytes 65536 --capabilities 1 \
+      >/tmp/holder-recovery-receipt-gate.log 2>&1 || return 1
+    /bin/busybox cat /tmp/holder-recovery-receipt-gate.log
+    {
+      echo "session_id=holder-recovery-receipt-gate"
+      echo "connect=$connect"
+      echo "request_timeout_ms=30000"
+      echo "op=wait_state key=$receipt_gate_key state=active timeout_ms=60000 poll_ms=50"
+    } >/tmp/holder-recovery-receipt-gate.conf
+    /bin/linqu_mem_service object-session \
+      --config /tmp/holder-recovery-receipt-gate.conf || return 1
+    echo "mem_service holder-recovery: node=0 phase=receipt-required-gate status=active generation=$generation"
+
     attempt=0
     while [ "$attempt" -lt 600 ]; do
       result=0
@@ -1713,6 +1762,23 @@ mem_service_object_share_holder_recovery() {
     >/tmp/holder-recovery-register.log 2>&1 || return 1
   /bin/busybox cat /tmp/holder-recovery-register.log
   /bin/busybox grep -q 'replaced=0' /tmp/holder-recovery-register.log || return 1
+  {
+    echo "session_id=holder-recovery-receipt-observer"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "op=wait_state key=$receipt_gate_key state=active timeout_ms=60000 poll_ms=50"
+  } >/tmp/holder-recovery-receipt-observer.conf
+  /bin/linqu_mem_service object-session \
+    --config /tmp/holder-recovery-receipt-observer.conf \
+    >/tmp/holder-recovery-receipt-observer.log 2>&1 || {
+      /bin/busybox cat /tmp/holder-recovery-receipt-observer.log
+      return 1
+    }
+  /bin/busybox cat /tmp/holder-recovery-receipt-observer.log
+  /bin/busybox grep -q \
+    "action=wait_state key=$receipt_gate_key status=ok state=active" \
+    /tmp/holder-recovery-receipt-observer.log || return 1
+  echo "mem_service holder-recovery: node=1 phase=receipt-required-gate status=observed old_incarnation=$incarnation current_incarnation=$replacement"
   if ! /bin/linqu_mem_service_provider_obmm fence-holder-state \
       --config /tmp/managed-share.worker.conf \
       --replacement-config /tmp/managed-share.worker.replacement.conf \

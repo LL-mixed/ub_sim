@@ -1549,6 +1549,9 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "MANAGED_PTO_HOLDER_RECOVERY node=1 state=rejected" in holder_recovery
     assert "old_cpu_signal=$cpu_signal" in holder_recovery
     assert "holder_fence_receipt_required" in holder_recovery
+    assert "holder-recovery-receipt-required" in holder_recovery
+    assert "phase=receipt-required status=confirmed" in holder_recovery
+    assert "phase=receipt-required-gate status=observed" in holder_recovery
     assert 'echo "provider=obmm"' not in holder_recovery
     assert 'echo "provider_node_count=2"' not in holder_recovery
     assert "op=map key=$key flags=readwrite" not in holder_recovery
