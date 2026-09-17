@@ -9,6 +9,9 @@ The model caller supplies SDK owners for a published read-only control view,
 zero to two read-only V2 input views and a separate writable output allocation.
 Inputs must have been acquired/mapped using those exact V2 references. The
 adapter pins these existing owners; it does not resolve/grant new holders.
+The W5 deployment opens its OBMM channel with O_SYNC mappings because strict
+PTO registration requires an uncached page-granular VMA, including when the
+managed output allocation is homed on the executing node.
 Control is 8768 bytes: little-endian magic/version/count/op ID/request ID,
 eight range coordinates, 8192 prompt-control bytes and two 256-byte V2 slots.
 Unused slots are zero. The fingerprint CLI is

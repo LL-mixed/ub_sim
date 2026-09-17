@@ -65,6 +65,7 @@ int mem_service_provider_obmm_endpoint_open(
     assert(config->import_region_bytes == 64 * 1024 * 1024);
     assert(config->max_remote_mappings == 8);
     assert(config->required_peer_mappings == 1);
+    assert(config->force_osync);
     if (endpoint_open_result) return endpoint_open_result;
     endpoint->implementation = endpoint;
     return 0;

@@ -78,6 +78,9 @@ int w5_managed_runtime_open(
         .import_region_bytes = config->import_region_bytes,
         .max_remote_mappings = config->max_mappings,
         .required_peer_mappings = config->node_count - 1U,
+        /* Strict PTO registration accepts only O_SYNC VMAs. This also covers
+         * a range output whose managed allocation is homed on this node. */
+        .force_osync = true,
     };
     rc = mem_service_provider_obmm_probe_device(
         provider_config.device_path, provider_config.primary_cna_path,
