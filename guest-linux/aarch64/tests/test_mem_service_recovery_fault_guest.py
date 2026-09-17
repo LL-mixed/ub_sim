@@ -32,6 +32,7 @@ def fixture(fault):
         ]
         if node == 0:
             lines += [
+                "obmm-worker initial refresh provider_directory_ready=1",
                 f"obmm-worker fault-injection=triggered phase=reserve-intent "
                 f"mode={mode} ledger_bytes=2048",
                 f"mem_service recovery-fault: node=0 phase=worker-exit status=expected "

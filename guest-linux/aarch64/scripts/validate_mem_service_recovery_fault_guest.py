@@ -90,8 +90,7 @@ def validate(node_a, node_b, fault):
 
     require(generations[0] == generations[1],
             "guests observed different quarantined generations")
-    triggers = [row for row in records(node_a, "obmm-worker")
-                if row.get("fault-injection") == "triggered"]
+    triggers = records(node_a, "obmm-worker fault-injection=triggered")
     require(len(triggers) == 1 and triggers[0].get("phase") == "reserve-intent" and
             triggers[0].get("mode") == mode and int(triggers[0]["ledger_bytes"]) > 0,
             "missing deterministic worker crash receipt")
