@@ -33,7 +33,8 @@ def fixture():
         "MANAGED_PTO_RESULT node=0 status=pass key=holder-recovery-object generation=1 holder_recovery_probe=1 role=peer old_cpu_access=not-applicable old_pto_access=not-applicable cpu_signal=0 cleanup=provider-close",
         "mem_service holder-recovery: node=0 status=recovered key=holder-recovery-object state=retired",
         "mem_service object-session: session=holder-recovery-rejoin-reader peer_canary=ok peers=1",
-        "mem_service object-session: session=holder-recovery-rejoin-reader op=4 action=read key=holder-recovery-rejoin-object status=ok state=active generation=2",
+        "mem_service object-session: session=holder-recovery-rejoin-reader op=2 action=acquire key=holder-recovery-rejoin-object status=ok state=active generation=2",
+        "mem_service object-session: session=holder-recovery-rejoin-reader op=5 action=read key=holder-recovery-rejoin-object status=ok offset=0 len=65536 checksum=0xed87efe0aa520383",
         "mem_service object-session: session=holder-recovery-rejoin-reader op=9 action=wait_state key=holder-recovery-rejoin-object status=ok state=retired generation=2",
         "mem_service holder-recovery: node=0 phase=rejoin-read status=pass key=holder-recovery-rejoin-object generation=2 holder_incarnation=7 home_incarnation=8",
     ))
@@ -143,6 +144,7 @@ class HolderRecoveryGuestTests(unittest.TestCase):
             (1, "phase=rejoin-stale-identity"),
             (1, "action=write key=holder-recovery-rejoin-object"),
             (1, "phase=rejoin-write"),
+            (0, "action=acquire key=holder-recovery-rejoin-object"),
             (0, "action=read key=holder-recovery-rejoin-object"),
             (0, "phase=rejoin-read"),
             (0, "status=COMMITTED"),
@@ -207,6 +209,14 @@ class HolderRecoveryGuestTests(unittest.TestCase):
             "phase=rejoin-allocation status=active key=holder-recovery-rejoin-object generation=3",
         )
         with self.assertRaisesRegex(ValueError, "write identity"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        logs[0] = logs[0].replace(
+            "action=acquire key=holder-recovery-rejoin-object status=ok state=active generation=2",
+            "action=acquire key=holder-recovery-rejoin-object status=ok state=active generation=3",
+        )
+        with self.assertRaisesRegex(ValueError, "reader acquire identity"):
             validator.validate(*logs)
 
         logs = fixture()

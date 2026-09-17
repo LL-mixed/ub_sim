@@ -1579,6 +1579,8 @@ def test_mem_service_object_share_has_dual_guest_runner_skeleton():
     assert "op=write key=$key" in holder_rejoin
     assert "op=publish_data key=$key" in holder_rejoin
     assert "op=read key=$key" in holder_rejoin
+    assert "action=acquire key=$key status=ok state=active generation=" in holder_rejoin
+    assert "action=read key=$key status=ok state=active generation=" not in holder_rejoin
     assert "status=rejoined" in holder_rejoin
     assert "phase=rejoin-read status=pass" in holder_rejoin
     assert "phase=rejoin-write status=pass" in holder_rejoin

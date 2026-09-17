@@ -337,10 +337,16 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"peer_canary=ok peers=1",
         "remote reader did not establish its peer mapping to the replacement",
     )
+    rejoin_acquire = require_pattern(
+        node_a,
+        r"action=acquire key=holder-recovery-rejoin-object status=ok "
+        r"state=active generation=([1-9][0-9]*)",
+        "remote reader did not acquire the rejoined allocation",
+    )
     require_pattern(
         node_a,
         r"action=read key=holder-recovery-rejoin-object status=ok "
-        r"state=active generation=[1-9][0-9]*",
+        r"offset=0 len=[1-9][0-9]* checksum=0x[0-9a-f]+",
         "remote reader did not read the rejoined allocation",
     )
     rejoin_read = require_pattern(
@@ -367,6 +373,8 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     require(rejoin_done.groups() ==
             (old_incarnation, current_incarnation, rejoin_generation),
             "rejoin completion identity does not match the new allocation")
+    require(rejoin_acquire.group(1) == rejoin_generation,
+            "remote reader acquire identity does not match the new allocation")
     require(rejoin_read.group(1) == rejoin_generation and
             rejoin_read.group(3) == current_incarnation,
             "remote read identity does not match the new allocation")

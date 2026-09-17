@@ -1852,7 +1852,7 @@ mem_service_object_share_holder_rejoin() {
       }
     /bin/busybox cat /tmp/holder-recovery-rejoin-reader.log
     generation="$(/bin/busybox sed -n \
-      "s/.*action=read key=$key status=ok state=active generation=\([0-9][0-9]*\).*/\1/p" \
+      "s/.*action=acquire key=$key status=ok state=active generation=\([0-9][0-9]*\).*/\1/p" \
       /tmp/holder-recovery-rejoin-reader.log | /bin/busybox head -n 1)"
     [ -n "$generation" ] || return 1
     echo "mem_service holder-recovery: node=0 phase=rejoin-read status=pass key=$key generation=$generation holder_incarnation=$incarnation home_incarnation=$replacement"
