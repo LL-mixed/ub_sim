@@ -33,6 +33,9 @@ struct llm_infer_terminal_result {
     uint64_t candidate_tokens[LLM_INFER_TERMINAL_CANDIDATES];
     uint64_t candidate_logit_bits[LLM_INFER_TERMINAL_CANDIDATES];
     uint64_t candidate_text_checksums[LLM_INFER_TERMINAL_CANDIDATES];
+    /* Full tokenizer-piece byte lengths followed by their first 16 bytes.
+     * Only the sampled candidate must fit completely in this preview because
+     * it is also published as the fixed-size token result. */
     uint64_t candidate_piece_bytes[LLM_INFER_TERMINAL_CANDIDATES];
     uint64_t candidate_piece_word0[LLM_INFER_TERMINAL_CANDIDATES];
     uint64_t candidate_piece_word1[LLM_INFER_TERMINAL_CANDIDATES];

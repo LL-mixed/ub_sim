@@ -118,13 +118,18 @@ static int llm_infer_decode_terminal_result(const unsigned char *bytes,
                     (size_t)candidate * 48;
                 uint64_t token = result_word(item);
                 uint64_t item_piece_bytes = result_word(item + 24);
-                if (token >= expected->vocab_size || !result_word(item + 16) ||
-                    !item_piece_bytes || item_piece_bytes > 16) {
+                /* Candidate words are a 16-byte preview. Their length and
+                 * checksum still describe the full tokenizer piece, which
+                 * may be empty or longer than the preview. The separately
+                 * published sampled-token record must remain fully
+                 * representable and byte-for-byte identical. */
+                if (token >= expected->vocab_size || !result_word(item + 16)) {
                     valid = false;
                     break;
                 }
                 if (token == sampled) {
                     if (sampled_candidate || result_word(item + 16) != text_checksum ||
+                        !item_piece_bytes || item_piece_bytes > 16 ||
                         item_piece_bytes != piece_bytes ||
                         result_word(item + 32) != result_word(text + 32) ||
                         result_word(item + 40) != result_word(text + 40)) {

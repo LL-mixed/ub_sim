@@ -312,6 +312,22 @@ class ManagedResultTest(unittest.TestCase):
         duplicate[2048:2048 + len(block)] = block
         self.assertNotEqual(self.call(duplicate, identity)[0], 0)
 
+    def test_terminal_range_allows_unsampled_piece_outside_inline_preview(self):
+        data, identity = fixture(terminal=True, step=4)
+        runner = LOGITS_ENTRY + 168 + 48
+        for piece_bytes in (0, 17, 4096):
+            changed = bytearray(data)
+            struct.pack_into("<Q", changed, runner + 24, piece_bytes)
+            with self.subTest(piece_bytes=piece_bytes):
+                rc, result = self.call(changed, identity)
+                self.assertEqual(rc, 0)
+                self.assertEqual(result.terminal.candidate_piece_bytes[1],
+                                 piece_bytes)
+
+        sampled = bytearray(data)
+        struct.pack_into("<Q", sampled, LOGITS_ENTRY + 168 + 24, 17)
+        self.assertNotEqual(self.call(sampled, identity)[0], 0)
+
     def test_terminal_range_rejects_inconsistent_logits_and_token_text(self):
         data, identity = fixture(terminal=True, step=4)
         mutations = (
