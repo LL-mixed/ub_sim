@@ -801,6 +801,31 @@ r126 覆盖实际固定 VA 冲突；r124、r321、r381 覆盖畸形 descriptor�
 退役 descriptor 的拒绝；正常与故障终态均有实际资源清单。由此 M1“独立服务的
 两客户端分配与访问”阶段验收通过。A16/A18 及两模型运行矩阵没有降级或删除。
 
+同日 M2 managed serving 续作：QEMU `d1307d0f8d2464c64df9f0942685b381cf33e2d8`
+把 managed home 的严格访问改为直接 RAM backing，远端 import 继续使用 CPU
+window；resolver 只接受两种模式中的精确一种，避免 home 访问经 MMIO 回调递归。
+独立服务 `163dc8c321449a420e389c53ef7ccffd9211e75e` 按 kernel aperture、节点编号和
+节点总数划分候选区间，并由 kernel 对每个候选地址做最终准入；`EBUSY` 且返回
+descriptor 全零时才继续探测下一候选。该分支已按授权推送，父仓库 gitlink 与
+`mem_service.lock` 本地同步，父仓库未推送。
+
+n4-910c1 r81 在 2-node、4-step Qwen3-0.6B managed serving 上完成一次实际功能
+验收：2/2 节点、4/4 step、8 条 worker completion 全部成功，terminal token 为
+`[264, 3644, 7653, 304]`，文本为 `" a global leader in"`；四轮 round time 分别为
+5798、4713、4104、4636 ms。node A 的四个 home 位于 `0x700000000000` 至
+`0x700018000000`，node B 的四个 home 位于 `0x700104000000` 至
+`0x70011c000000`，证明同一运行内的节点分区和多 home 数据路径。最终对象、
+backing/address、export/import mapping、reference、in-flight 与 quarantine 全部
+归零，无 QEMU 残留。原 runner 在完成计算和清理后仍执行 legacy artifact 检查而
+返回失败；`c4c2d06c` 与 `361a8c0e` 将 managed terminal observation 计入 decode
+证据，并跳过只属于 legacy range publish 的 artifact gate。同一份 r81 summary 经
+更新后的报告器复核为 `status=pass`，没有为验证器改动重复运行 guest。
+
+该结果关闭 callable 4 连续 decode、Qwen 2-node/4-step 及每节点独立 home 子项。
+M2 仍须完成 Qwen 3/8-node、核心 8-step，以及 DeepSeek 2/3/8-node 的 4-step 与
+核心 8-step；模型身份、prompt、采样和 topology 仍按正文要求锁定。M4 的重复性能
+样本和混合压力未由单次 r81 关闭，M5 仍未开始，总目标继续进行。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser
@@ -1586,7 +1611,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 688db48；callable 4 主循环、请求级退役及精确 holder 身份已完成构建/契约门禁，r608 实际 guest 证明 object-session holder 身份可驱动 lost-home recovery | callable 4 连续 decode 尚待实际运行；同时多 home、两模型 2/3/8 节点及完整身份/故障矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `163dc8c`；r81 在 n4-910c1 完成 Qwen 2-node/4-step callable 4 连续 decode、每节点独立 home、8 条 provider completion 和终态资源归零 | Qwen 3/8-node 与核心 8-step、DeepSeek 2/3/8-node 的 4-step 与核心 8-step，以及完整身份/故障矩阵未完成 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成；A16 的 2/3/8-node 每节点 home 与三轮冷启动、A18 独立包跨机复现仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |

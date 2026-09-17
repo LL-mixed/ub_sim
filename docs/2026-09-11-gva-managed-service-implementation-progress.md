@@ -6695,3 +6695,74 @@ M5 和总目标继续保持原状态。
 客户端退出后的继续使用。M1“独立服务的两客户端分配与访问”据此通过。该结论没有
 声明 A16/A18、多 home、两模型 2/3/8-node、混合压力或 tokenless replay 已完成；
 M2、M4、M5 与总目标继续保持原状态。
+
+## 2026-09-17：W5 managed serving 连续 decode（r78-r81）
+
+本批把已构建的 callable 4 serving loop 推进到实际多步运行。QEMU
+`d1307d0f8d2464c64df9f0942685b381cf33e2d8` 为 managed home route 增加
+`direct_home_backing`，本地严格访问直接调用底层 RAM DMA；远端 import 继续使用
+CPU window。resolver 要求 direct home 与 CPU window 两种 backing 模式精确互斥，
+两者同时存在或同时缺失均 fail-closed。QEMU 源码测试 11/11 通过，父仓库提交为
+`047cde283ac0dec070c910c94c11d766f0c5ce50`。
+
+r78 的首次实际运行在约十秒内暴露两节点都从 `0x700000000000` 分配的真实地址
+冲突；node B 先导入 node A route，随后自己的 route 注册以 `rc=-2` 失败。独立
+服务 `163dc8c321449a420e389c53ef7ccffd9211e75e` 将完整 kernel aperture 按
+`(node_id, node_count)` 划分候选区间，global allocation generation 只在本节点
+区间生成对齐候选，并以精确 `requested_home_va` 请求 kernel。只有 `EBUSY` 且
+descriptor 全零时继续探测，其他错误保留不确定状态；服务不维护第二套空闲表，
+支持不连续地址和回收后的本地重用。独立服务提交已仅推送用户授权的
+`origin/codex/gva-managed-service-completion`，父仓库 `a8329f4f`、`bfe3201b`
+与 `f5e34e00` 同步策略检查、gitlink 和 lock，父仓库未推送。定向 worker/topology
+门禁 24 项通过、1 项因本地非 Linux AArch64 环境跳过；交叉编译实际执行成功。
+
+r79 仍使用旧 base initramfs，guest 日志显示 `home_policy=single-owner`，因此保留为
+无效环境证据。更新 lock 后在 n4-910c1 通过项目 wrapper 重建 guest artifact，源码
+检查锁定 `163dc8c`，并从 cpio 内确认 worker 包含
+`home_policy=node-partitioned-probe`。r80 首次越过地址冲突，实际完成 2/2 节点、
+4/4 step 和全部数据/计算/清理；原 summary parser 只识别 legacy
+`model_terminal_token_result_publish`，没有识别 managed callable 4 的 terminal
+observation。`c4c2d06c` 增加 managed terminal evidence，并让 managed serving
+跳过明确属于 legacy `obmm_shmem` range-exit 的 boundary summary。定向 summary
+与 topology 测试 32/32 通过。
+
+r81 使用以下实际组合：
+
+```text
+parent      c4c2d06c（运行时；post-run gate 修复后为 361a8c0e）
+mem_service 163dc8c321449a420e389c53ef7ccffd9211e75e
+qemu        d1307d0f8d2464c64df9f0942685b381cf33e2d8
+run         2026-09-17_19-25-23_w5_qwen3_0_6b_decode_32292_headless8
+```
+
+实际结果为：
+
+```text
+decode_steps_expected 4
+decode_steps_observed 4
+passed_nodes          2/2
+worker_records        8
+tokens                264,3644,7653,304
+text                  " a global leader in"
+round_ms              5798,4713,4104,4636
+```
+
+node A 的四次 allocation 为 `0x700000000000`、`0x700008000000`、
+`0x700010000000`、`0x700018000000`；node B 为 `0x700104000000`、
+`0x70010c000000`、`0x700114000000`、`0x70011c000000`。8 次 provider
+LOAD/STORE/FENCE/UNBIND 均成功，两个节点各完成 4/4 step。请求完成后
+`live_objects`、`backing_bytes`、`address_bytes`、`export_mappings`、
+`import_mappings`、`live_refs`、`in_flight`、`quarantined_objects` 和
+`quarantined_bytes` 全部为零，精确进程查询无遗留 QEMU。
+
+原 runner 在上述成功之后仍要求 managed 路径生成 legacy host memory/object/
+registry JSON。`361a8c0e` 保留 DeepSeek flash catalog 校验，并让非 DeepSeek
+managed serving 跳过这些 legacy artifact 要求；managed cleanup 继续由实际资源
+归零记录验收。topology 契约测试 20/20 通过，同一份 r81 summary 经
+`w5_inference_run_report.py` 复核返回 `status=pass`。验证器修正没有改变 guest
+行为，因此没有启动 r82 重复同一功能 case。
+
+r81 关闭 callable 4 连续 decode、Qwen 2-node/4-step 和同一运行内每节点独立
+home 子项。M2 仍缺 Qwen 3/8-node、核心 8-step，DeepSeek 2/3/8-node 的 4-step
+与核心 8-step，以及计划列明的完整身份/故障矩阵。M4 仍缺混合压力和至少五轮
+正式重复性能样本；M5 仍未开始。总目标继续进行。
