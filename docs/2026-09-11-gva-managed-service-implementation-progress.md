@@ -7213,3 +7213,35 @@ managed cold start：
 `dcbc37158b098f9850270ac4062aebafc369267e8785c2494a62e9e1147fba87`，终态无
 QEMU。raw 全有向矩阵与 managed W5 证据分工明确，合并满足 A16；A18、prefix/
 decode-KV/hidden 语义压力、热 prefix 和不同 suffix 重复组继续保留。
+
+## 2026-09-18：A18 独立 OBMM 发布包第一批
+
+独立服务提交 `12a659b33d375cdc4a563573bbeab17ce096e5b8` 增加
+`build_mem_service_obmm_package.py build|verify`。该入口接收已构建的 AArch64
+core、managed OBMM provider、严格 worker 配置、服务/平台 revision 和 OBMM UAPI
+版本，生成成员固定、mtime/owner 固定的确定性 tar。包只包含两个静态运行二进制、
+一份 provider 配置和 hash-bound manifest；manifest 明确
+`platform_linkage=static`、`source_repo_required=0`、`infer_required=0` 和
+`model_required=0`。校验器拒绝额外成员、链接、配置字段缺失及 payload 哈希变化。
+Python 定向测试 3/3 和 `git diff --check` 通过。该提交已推送到用户授权的
+`origin/codex/gva-managed-service-completion`，父仓库提交 `50d34bb3` 同步 gitlink
+与 lock，父仓库没有推送。
+
+n4-910c1 使用已通过 managed W5 的真实静态 AArch64 core/provider 生成：
+
+```text
+package  linqu-mem-service-obmm-aarch64.tar
+sha256   45794cd6e82762b0d4c8bfa64923ee1554097bc896a882ae7b8a3a4ef30b09b7
+service  12a659b33d375cdc4a563573bbeab17ce096e5b8
+platform 50d34bb3
+uapi     gsva-abi-1+pool-helpers-1
+```
+
+该 tar 在 n4-910c1、当前本地环境和 n4-910c 的独立 `/tmp` 路径分别通过同一
+成员/schema/hash 校验，三处 SHA-256 完全一致。n4-910c 的首次 full-system 执行
+smoke 没有计为通过：该机 2026-09-08 的旧单节点 QEMU/initramfs 在 UB controller
+等待不存在的 remote fabric 时停住，包内 provider 尚未进入 `rdinit`。日志保留于
+`/tmp/mem-service-obmm-package-smoke.8wD5V6/guest-serial.log`。这项结果只定位出
+单节点夹具不适用，没有证明运行包成功或失败。A18 仍需用匹配的双节点/多节点
+fabric 从包启动 core/provider，完成 A01-A04、四种访问、重用/旧引用拒绝、一次
+provider 重启隔离，以及两模型 8-node/4-step 的同包跨机复现。
