@@ -6572,3 +6572,62 @@ runner report          5a5af72961edf945cbf757d19c065c100fa27af59d6287583160aae17
 精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭同一 node A 服务生命
 周期内连续两次整个 holder guest 终止、fencing、reclaim 与 rejoin 子项。重复事务
 故障及完整重复故障矩阵仍待验收；M3 与总目标继续保持进行中。
+
+### n4 双 guest managed-transaction-repeat r47-r49：重复可续作事务故障
+
+父仓库 `87d5a66f1e60f540f66fc13b74ba8e153fe81ee5` 为七个可续作的
+`reserved`、`exported`、`published`、`release-intent`、`unexported`、`retired`
+和 `reclaimed` phase 增加
+`MEM_SERVICE_OBJECT_SHARE_TRANSACTION_CRASH_CYCLES=1..8`。每周期使用独立对象、
+session 和 idempotency key；验证器要求两端观察相同、严格递增且不复用的
+generation，以及逐周期唯一 fault receipt、worker exit、resume 和资源归零。
+该参数对 `reserve-intent` 完整/半写隔离、manager crash 和 guest crash 明确拒绝，
+避免把无法在同一服务生命周期继续的故障误记为重复恢复。
+
+r47 的第一周期已完整恢复，第二周期在分配前失败。新 injection worker 复用了
+第一周期已经存在的 state file，`serve-allocations` 按契约报告 reconciliation
+required。`c2c56c19c931b033b68cbde98ce5a20b5812c9e9` 为每周期生成独立 ledger，
+并让该周期的 injection worker 与 resume worker 共享同一路径；完成的旧 ledger
+保留为事务证据。
+
+r48 的第二 injection worker 以独立 ledger 和 `startup=new` 启动，在首次 provider
+refresh 前退出。第一周期 resume worker 收到 SIGTERM 后正常 deregister，同一
+incarnation 的新 worker 只执行 refresh，无法代替 supervisor 注册。
+`5a1d75a33531387f05379442cf812c0aaa9c7e3c` 在每个后续周期启动前显式执行
+`provider-register`，再启动只负责 refresh 和数据面的 worker。r47、r48 均保留为
+唯一失败证据，终态无资源或 QEMU 残留，没有原样重跑。
+
+本批最终轻量门禁为 `run_app`/runner shell 语法、recovery-fault 契约测试 8/8 和
+`git diff --check` 全部通过。本地没有启动 QEMU、模型、workload 或完整测试集。
+n4-910c1 r49 只运行一次 `published_crash × 2` 实际 case，组合为：
+
+```text
+parent      5a1d75a33531387f05379442cf812c0aaa9c7e3c
+mem_service 62ccd379986ee8da62c3e3711a7fcd1271e6e236
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   da75dff7d8831e771642a803be49b55f2e09f934213be01b625a1348f041b692
+```
+
+runner exit 0、1/1 PASS。两个 worker 均在完整 `published` ledger 同步后退出 86，
+generation 分别为 1、2；两次 `obmm-worker-resume` 均报告 `reservations=1`、
+`scope=ledger-owned-segment-export-records`。恢复控制器逐轮观察 active，随后 retire
+并等待 retired；第二周期前的 provider register 成功，directory 保持
+`active=2 ready=1`。最终 `live_objects`、backing/address bytes、export/import
+mappings、refs、in-flight、quarantine 和 kernel region 全部为零，
+`managed_recovery_required=0`。
+
+原始文件及报告 SHA-256：
+
+```text
+nodeA guest     ab46213f6cfdf9c9cb2f3bbd1a33b067266d2e1c86d8da6943e607e1c52e2dc0
+nodeB guest     93c84b4ba440187b810176086c5b673eae327596d7d63349ba791789dfd66533
+nodeA QEMU      ee04d5d827e37b12b8ada3d07ce864d2f7c48aca0bace5e820033482447d5c61
+nodeB QEMU      7a0bc85fcf8ed26aeb179f2d45e834cda87b43bc2b623c3614628ebf3513237e
+validation JSON ed18555e8fdb5e31b28191f3668cef1810a61b0784e59b1fc96325bab0e4212b
+runner report   d1001a699865dbec026b6e7cfe0e5025349e1dbff4eef7925eb28c924ad4e06d
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭同一 node A
+daemon/guest 生命周期内连续两次可续作 worker 事务故障子项。七个可续作 phase
+全部重复的完整矩阵仍待验收；M3 与总目标继续保持进行中。
