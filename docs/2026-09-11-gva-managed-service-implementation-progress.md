@@ -7245,3 +7245,32 @@ smoke 没有计为通过：该机 2026-09-08 的旧单节点 QEMU/initramfs 在 
 单节点夹具不适用，没有证明运行包成功或失败。A18 仍需用匹配的双节点/多节点
 fabric 从包启动 core/provider，完成 A01-A04、四种访问、重用/旧引用拒绝、一次
 provider 重启隔离，以及两模型 8-node/4-step 的同包跨机复现。
+
+随后发现 W5 per-run initramfs 构建把 base image 固定为
+`out/initramfs.cpio.gz`，调用方传入的 `INITRAMFS_IMAGE` 没有进入实际 guest；因此
+第一次 `2026-09-18_04-45-45_w5_qwen3_0_6b_decode_15447` 只记普通基线，明确
+不计为发布包证据。父仓库提交 `95713a10` 让 BusyBox 与 openEuler 两条 per-run
+构建路径都使用调用方 base image，25 项 topology/launcher 定向测试、zsh 语法和
+`git diff --check` 通过；n4-910c1 同一测试 25/25 通过。
+
+修复后，n4-910c1 从上述 tar 解包 core/provider，覆盖到一个独立的临时 base
+initramfs，再通过新的 override 入口执行唯一一次 2-node/1-step managed Qwen
+定点运行：
+
+```text
+run          2026-09-18_04-48-23_w5_qwen3_0_6b_decode_23968_headless8
+package      45794cd6e82762b0d4c8bfa64923ee1554097bc896a882ae7b8a3a4ef30b09b7
+core         4abf28555e659a6d5eedf90d36c83f18d0260e57d63894b49560e6ea9bf262cf
+provider     1cba1ee712d4774a5156f2f143ee844851829be5f3c7ae113d050a2a8ff1d129
+nodes/steps  2/2, 1/1
+workers      2
+handoffs     2
+token/text   264 / " a"
+summary      6c8a179af5a91aff3679be5b33a89ba9f8cedacb4ecdddb7525349b8db60101a
+```
+
+报告器返回 `status=pass`；两条 cleanup 各核对 `allocations=2`，live object、
+backing/address bytes 和 quarantine 均为零，终态无 QEMU。该结果关闭 A18 的
+“发布包可在真实双节点 managed 数据路径启动”子项。A18 仍未关闭：n4-910c 还需
+使用匹配的双/多节点 fabric 完成计划指定的 A01-A04、四种访问、重用/旧引用、
+provider 重启隔离和两模型 8-node/4-step 同包复现。
