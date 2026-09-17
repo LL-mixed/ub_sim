@@ -226,6 +226,15 @@ class RecoveryFaultGuestTests(unittest.TestCase):
         )
         self.assertIn("mem_service_prepare_recovery_fault_worker_config", run_app)
         self.assertIn('"$fault" "$cycle" || exit 1', run_app)
+        repeat_block = run_app.split(
+            '"$fault" "$cycle" || exit 1', 1
+        )[1].split("worker_pid=$!", 1)[0]
+        self.assertIn("provider-register", repeat_block)
+        self.assertIn('--incarnation "$incarnation"', repeat_block)
+        self.assertLess(
+            repeat_block.index("provider-register"),
+            repeat_block.index("serve-allocations"),
+        )
         self.assertIn('final_state="quarantined"', function)
         self.assertIn('final_state="retired"', function)
         self.assertIn("in_flight=1 quarantined_objects=1", function)

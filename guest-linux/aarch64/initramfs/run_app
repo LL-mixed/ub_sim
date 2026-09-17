@@ -3494,6 +3494,9 @@ mem_service_object_share_managed() (
           wait "$worker_pid" 2>/dev/null || true
           mem_service_prepare_recovery_fault_worker_config \
             "$fault" "$cycle" || exit 1
+          /bin/linqu_mem_service provider-register --connect "$connect" \
+            --node-id "guest-node-$node" --incarnation "$incarnation" \
+            --readiness-generation "$incarnation" --capabilities 1 || exit 1
           /bin/linqu_mem_service_provider_obmm serve-allocations \
             --config /tmp/managed-share.worker.conf \
             >/tmp/managed-share.worker.log 2>&1 &
