@@ -34,6 +34,7 @@ int mem_service_provider_obmm_endpoint_open(
     assert(!strcmp(config->instance, "w5-managed-serving"));
     assert(config->import_region_bytes == 64 * 1024 * 1024);
     assert(config->max_remote_mappings == 8);
+    assert(config->required_peer_mappings == 1);
     endpoint->implementation = endpoint;
     return 0;
 }

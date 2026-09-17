@@ -56,6 +56,7 @@ int w5_managed_runtime_open(
         .instance = "w5-managed-serving",
         .import_region_bytes = config->import_region_bytes,
         .max_remote_mappings = config->max_mappings,
+        .required_peer_mappings = 1,
     };
     rc = mem_service_provider_registry_init(&runtime->registry);
     if (!rc)

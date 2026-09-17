@@ -312,6 +312,8 @@ class W5ClusterTopologyTest(unittest.TestCase):
         )
         self.assertIn("allocation_policy=kernel-selected-noncontiguous", source)
         self.assertIn("SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000", source)
+        self.assertIn("SIM_W5_MANAGED_MAX_MAPPINGS:-8", source)
+        self.assertIn("SIM_W5_MANAGED_MAX_MAPPINGS > 8", source)
         self.assertIn("managed-model-provider-fingerprint", source)
         self.assertIn("managed-model-provider: .*completion=success", source)
         self.assertIn("w5_managed_request_cleanup", source)
