@@ -2572,8 +2572,9 @@ mem_service_object_share_guest_recovery() {
 
   echo "mem_service guest-recovery: node=0 phase=rejoin-bootstrap status=start generation=$replacement_incarnation"
   /bin/linqu_gva_manager --bootstrap --node-id "$node" --node-count 2 \
-    --generation "$replacement_incarnation" --aperture-base 0x700000000000 \
-    --aperture-size "$aperture_size" || return 1
+    --generation "$incarnation" \
+    --bootstrap-generation "$replacement_incarnation" --reuse-aperture \
+    --aperture-base 0x700000000000 --aperture-size "$aperture_size" || return 1
   /bin/linqu_mem_service_obmm_provider_conformance --node-id "$node" \
     --node-count 2 --generation "$replacement_incarnation" || return 1
   echo "mem_service guest-recovery: node=0 phase=rejoin-bootstrap status=ready generation=$replacement_incarnation"
@@ -2786,6 +2787,8 @@ mem_service_object_share_managed() (
   seed="$4"
   port="$5"
   incarnation="$6"
+  aperture_generation="$incarnation"
+  bootstrap_generation="$incarnation"
   fault="$7"
   access="${8:-cpu}"
   guest_restart="$(cmdline_value mem_service.object_share_guest_restart 0)"
@@ -2809,6 +2812,7 @@ mem_service_object_share_managed() (
   if [ "$guest_restart" = "1" ]; then
     [ "$fault" = "guest_crash" ] && [ "$node" = "1" ] || exit 2
     incarnation=$((incarnation + 1))
+    bootstrap_generation="$incarnation"
   fi
   requested_aperture="$(cmdline_value mem_service.object_share_aperture_size "$(cmdline_value mem_service_object_share_aperture_size auto)")"
   if [ "$requested_aperture" != "auto" ]; then
@@ -2864,10 +2868,11 @@ mem_service_object_share_managed() (
     daemon_pid=$!
   fi
   /bin/linqu_gva_manager --bootstrap --node-id "$node" --node-count 2 \
-    --generation "$incarnation" --aperture-base 0x700000000000 \
-    --aperture-size "$aperture_size" || exit 1
+    --generation "$aperture_generation" \
+    --bootstrap-generation "$bootstrap_generation" \
+    --aperture-base 0x700000000000 --aperture-size "$aperture_size" || exit 1
   /bin/linqu_mem_service_obmm_provider_conformance --node-id "$node" \
-    --node-count 2 --generation "$incarnation" || exit 1
+    --node-count 2 --generation "$bootstrap_generation" || exit 1
   echo "mem_service kernel-regions: phase=baseline"
   /bin/linqu_gva_manager --dump-obmm-regions || exit 1
   mem_service_object_share_wait_daemon "$connect" "$daemon_pid" || exit 1

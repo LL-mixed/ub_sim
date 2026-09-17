@@ -114,6 +114,9 @@ struct gva_mgr_config {
     int node_id;
     int node_count;
     uint64_t generation;
+    uint64_t bootstrap_generation;
+    bool bootstrap_generation_explicit;
+    bool reuse_aperture;
     uint64_t aperture_base;
     uint64_t aperture_size;
     uint64_t segment_size;
@@ -399,6 +402,19 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
         parse_u64_str(value, &parsed64)) {
         cfg->generation = parsed64;
     }
+    if (obmm_env_or_cmdline("GVA_MANAGER_BOOTSTRAP_GENERATION",
+                            "gva_manager_bootstrap_generation",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->bootstrap_generation = parsed64;
+        cfg->bootstrap_generation_explicit = true;
+    }
+    if (obmm_env_or_cmdline("GVA_MANAGER_REUSE_APERTURE",
+                            "gva_manager_reuse_aperture",
+                            value, sizeof(value)) &&
+        parse_i32_str(value, &parsed32)) {
+        cfg->reuse_aperture = parsed32 != 0;
+    }
     if (obmm_env_or_cmdline("GVA_MANAGER_APERTURE_BASE",
                             "gva_manager_aperture_base",
                             value, sizeof(value)) &&
@@ -667,6 +683,12 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             if (!parse_u64_str(argv[++i], &parsed64))
                 return -EINVAL;
             cfg->generation = parsed64;
+        } else if (strcmp(argv[i], "--bootstrap-generation") == 0 &&
+                   i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->bootstrap_generation = parsed64;
+            cfg->bootstrap_generation_explicit = true;
         } else if (strcmp(argv[i], "--aperture-base") == 0 && i + 1 < argc) {
             if (!parse_u64_str(argv[++i], &parsed64))
                 return -EINVAL;
@@ -720,11 +742,14 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                 return -EINVAL;
         } else if (strcmp(argv[i], "--conflict") == 0) {
             cfg->inject_conflict = true;
+        } else if (strcmp(argv[i], "--reuse-aperture") == 0) {
+            cfg->reuse_aperture = true;
         } else {
             fprintf(stderr,
                     "usage: gva_manager --bootstrap --node-id N --node-count C "
-                    "[--generation G] [--aperture-base A] "
-                    "[--aperture-size S] [--conflict]\n"
+                    "[--generation G] [--bootstrap-generation G] "
+                    "[--aperture-base A] [--aperture-size S] "
+                    "[--reuse-aperture] [--conflict]\n"
                     "       gva_manager --alloc --node-id N --node-count C "
                     "[--aperture-base A] [--aperture-size S] [--requested-home-va VA] "
                     "[--segment-size S] [--segment-alignment A] [--cache-policy POLICY] "
@@ -745,6 +770,9 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             return -EINVAL;
         }
     }
+
+    if (!cfg->bootstrap_generation_explicit)
+        cfg->bootstrap_generation = cfg->generation;
 
     if (cfg->dump_segments)
         return argc == 2 ? 0 : -EINVAL;
@@ -805,6 +833,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
     if (cfg->node_id < 0 || cfg->node_id >= cfg->node_count)
         return -EINVAL;
     if (cfg->node_count < 2 || cfg->node_count > MAX_NODES)
+        return -EINVAL;
+    if (!cfg->generation || !cfg->bootstrap_generation ||
+        (cfg->reuse_aperture &&
+         (cfg->node_id != 0 || cfg->inject_conflict || cfg->allocate_segment)))
         return -EINVAL;
     if (cfg->aperture_size == 0 ||
         (cfg->aperture_base & (4096ULL - 1)) != 0 ||
@@ -1149,7 +1181,7 @@ static int send_segment_msg(struct obmm_mpmc_bus *bus,
     msg->hdr.magic = GVA_MGR_MAGIC;
     msg->hdr.version = GVA_MGR_VERSION;
     msg->hdr.type = type;
-    msg->hdr.generation = cfg->generation;
+    msg->hdr.generation = cfg->bootstrap_generation;
     msg->hdr.seq = seq;
     msg->hdr.src_node = (uint32_t)cfg->node_id;
     msg->hdr.dst_node = (uint32_t)dst;
@@ -1330,7 +1362,7 @@ static bool segment_msg_matches_token_change(
         const struct obmm_gsva_segment_desc_v1 *old_desc,
         const struct obmm_gsva_segment_desc_v1 *new_desc)
 {
-    return msg->hdr.generation == cfg->generation &&
+    return msg->hdr.generation == cfg->bootstrap_generation &&
            msg->segment_id == new_desc->segment_id &&
            msg->segment_base == new_desc->home_va &&
            msg->segment_size == new_desc->size &&
@@ -1347,7 +1379,7 @@ static bool segment_msg_matches_desc(const struct gva_mgr_config *cfg,
                                      const struct gva_mgr_aperture_msg *msg,
                                      const struct obmm_gsva_segment_desc_v1 *desc)
 {
-    return msg->hdr.generation == cfg->generation &&
+    return msg->hdr.generation == cfg->bootstrap_generation &&
            msg->segment_id == desc->segment_id &&
            msg->segment_base == desc->home_va &&
            msg->segment_size == desc->size &&
@@ -2336,6 +2368,30 @@ static int register_kernel_aperture(int obmm_fd, const struct gva_mgr_config *cf
     return 0;
 }
 
+static int validate_kernel_aperture(int obmm_fd,
+                                    const struct gva_mgr_config *cfg)
+{
+    struct obmm_cmd_gsva_aperture expected = {0};
+    struct obmm_cmd_gsva_aperture observed = {0};
+
+    expected.base = cfg->aperture_base;
+    expected.size = cfg->aperture_size;
+    expected.generation = cfg->generation;
+    expected.node_id = (uint32_t)cfg->node_id;
+    expected.node_count = (uint32_t)cfg->node_count;
+    expected.flags = OBMM_GSVA_APERTURE_F_ACTIVE;
+    if (gva_manager_validate_aperture(
+            obmm_fd, &expected, &observed) != 0) {
+        log_msg("kernel aperture reuse validation failed errno=%d", errno);
+        return -1;
+    }
+    log_msg("kernel aperture reuse -> ok base=%#" PRIx64
+            " size=%#" PRIx64 " generation=%#" PRIx64,
+            observed.base, observed.size, observed.generation);
+    log_kernel_aperture_proc();
+    return 0;
+}
+
 static void log_gsva_desc(const char *action,
                           const struct obmm_gsva_segment_desc_v1 *desc)
 {
@@ -2630,7 +2686,8 @@ static int run_protocol(struct gva_mgr_config *cfg,
         if (peer == cfg->node_id)
             continue;
         if (send_msg_broadcast_reliable(bus, slots, cfg->node_id, peer,
-                                        GVA_MGR_MSG_HELLO, cfg->generation,
+                                        GVA_MGR_MSG_HELLO,
+                                        cfg->bootstrap_generation,
                                         seq++, cfg->aperture_base,
                                         cfg->aperture_size, 0) != 0) {
             log_msg("send HELLO failed peer=%d", peer);
@@ -2648,7 +2705,7 @@ static int run_protocol(struct gva_mgr_config *cfg,
             goto fail;
         }
         if (msg.hdr.type == GVA_MGR_MSG_HELLO &&
-            msg.hdr.generation == cfg->generation && !hello[src]) {
+            msg.hdr.generation == cfg->bootstrap_generation && !hello[src]) {
             hello[src] = true;
             pending--;
         }
@@ -2656,23 +2713,33 @@ static int run_protocol(struct gva_mgr_config *cfg,
     log_msg("bootstrap hello -> ok peers=%d", cfg->node_count - 1);
 
     if (cfg->node_id == 0) {
-        reserved = reserve_aperture(cfg->aperture_base, cfg->aperture_size);
-        if (!reserved) {
-            log_msg("aperture reserve failed base=%#" PRIx64
-                    " size=%#" PRIx64 " errno=%d",
-                    cfg->aperture_base, cfg->aperture_size, errno);
-            goto fail;
-        }
-        log_msg("aperture reserved registry=process-local base=%#" PRIx64
-                " size=%#" PRIx64,
+        if (cfg->reuse_aperture) {
+            if (validate_kernel_aperture(obmm_fd, cfg) != 0)
+                goto fail;
+            log_msg("aperture reused registry=kernel-obmm base=%#" PRIx64
+                    " size=%#" PRIx64,
+                    cfg->aperture_base, cfg->aperture_size);
+        } else {
+            reserved = reserve_aperture(
                 cfg->aperture_base, cfg->aperture_size);
-        if (register_kernel_aperture(obmm_fd, cfg) != 0)
-            goto fail;
+            if (!reserved) {
+                log_msg("aperture reserve failed base=%#" PRIx64
+                        " size=%#" PRIx64 " errno=%d",
+                        cfg->aperture_base, cfg->aperture_size, errno);
+                goto fail;
+            }
+            log_msg("aperture reserved registry=process-local base=%#" PRIx64
+                    " size=%#" PRIx64,
+                    cfg->aperture_base, cfg->aperture_size);
+            if (register_kernel_aperture(obmm_fd, cfg) != 0)
+                goto fail;
+        }
 
         for (peer = 1; peer < cfg->node_count; peer++) {
             if (send_msg_broadcast_reliable(
                     bus, slots, cfg->node_id, peer,
-                    GVA_MGR_MSG_APERTURE_PROPOSE, cfg->generation, seq++,
+                    GVA_MGR_MSG_APERTURE_PROPOSE,
+                    cfg->bootstrap_generation, seq++,
                     cfg->aperture_base, cfg->aperture_size, 0) != 0) {
                 log_msg("send PROPOSE failed peer=%d", peer);
                 goto fail;
@@ -2688,7 +2755,7 @@ static int run_protocol(struct gva_mgr_config *cfg,
                 log_msg("timeout waiting ACCEPT");
                 goto fail;
             }
-            if (msg.hdr.generation != cfg->generation)
+            if (msg.hdr.generation != cfg->bootstrap_generation)
                 continue;
             if (msg.hdr.type == GVA_MGR_MSG_ERROR) {
                 log_msg("peer=%u reported bootstrap error status=%u", src,
@@ -2706,7 +2773,8 @@ static int run_protocol(struct gva_mgr_config *cfg,
         for (peer = 1; peer < cfg->node_count; peer++) {
             if (send_msg_broadcast_reliable(
                     bus, slots, cfg->node_id, peer,
-                    GVA_MGR_MSG_APERTURE_COMMIT, cfg->generation, seq++,
+                    GVA_MGR_MSG_APERTURE_COMMIT,
+                    cfg->bootstrap_generation, seq++,
                     cfg->aperture_base, cfg->aperture_size, 0) != 0) {
                 log_msg("send COMMIT failed peer=%d", peer);
                 goto fail;
@@ -2721,7 +2789,8 @@ static int run_protocol(struct gva_mgr_config *cfg,
                 log_msg("timeout waiting PROPOSE");
                 goto fail;
             }
-            if (src != 0 || msg.hdr.generation != cfg->generation ||
+            if (src != 0 ||
+                msg.hdr.generation != cfg->bootstrap_generation ||
                 msg.hdr.type != GVA_MGR_MSG_APERTURE_PROPOSE)
                 continue;
 
@@ -2733,7 +2802,8 @@ static int run_protocol(struct gva_mgr_config *cfg,
                 int saved_errno = errno;
 
                 (void)send_msg(bus, slots, cfg->node_id, 0,
-                               GVA_MGR_MSG_ERROR, cfg->generation, seq++,
+                               GVA_MGR_MSG_ERROR,
+                               cfg->bootstrap_generation, seq++,
                                cfg->aperture_base, cfg->aperture_size,
                                (uint32_t)saved_errno);
                 log_msg("aperture reserve failed base=%#" PRIx64
@@ -2748,7 +2818,8 @@ static int run_protocol(struct gva_mgr_config *cfg,
                 goto fail;
 
             if (send_msg(bus, slots, cfg->node_id, 0,
-                         GVA_MGR_MSG_APERTURE_ACCEPT, cfg->generation,
+                         GVA_MGR_MSG_APERTURE_ACCEPT,
+                         cfg->bootstrap_generation,
                          seq++, cfg->aperture_base, cfg->aperture_size,
                          0) != 0) {
                 log_msg("send ACCEPT failed");
@@ -2766,7 +2837,7 @@ static int run_protocol(struct gva_mgr_config *cfg,
                 goto fail;
             }
             if (src == 0 &&
-                msg.hdr.generation == cfg->generation &&
+                msg.hdr.generation == cfg->bootstrap_generation &&
                 msg.hdr.type == GVA_MGR_MSG_APERTURE_COMMIT &&
                 msg.aperture_base == cfg->aperture_base &&
                 msg.aperture_size == cfg->aperture_size)
@@ -2778,8 +2849,10 @@ static int run_protocol(struct gva_mgr_config *cfg,
         goto fail;
 
     log_msg("result=done generation=%#" PRIx64 " aperture_base=%#" PRIx64
-            " aperture_size=%#" PRIx64 " registry=kernel-obmm",
-            cfg->generation, cfg->aperture_base, cfg->aperture_size);
+            " aperture_size=%#" PRIx64 " registry=kernel-obmm"
+            " bootstrap_generation=%#" PRIx64 " reuse_aperture=%d",
+            cfg->generation, cfg->aperture_base, cfg->aperture_size,
+            cfg->bootstrap_generation, cfg->reuse_aperture ? 1 : 0);
     if (reserved)
         munmap(reserved, cfg->aperture_size);
     if (conflict)
@@ -2787,7 +2860,9 @@ static int run_protocol(struct gva_mgr_config *cfg,
     return 0;
 
 fail:
-    log_msg("result=fail generation=%#" PRIx64, cfg->generation);
+    log_msg("result=fail generation=%#" PRIx64
+            " bootstrap_generation=%#" PRIx64,
+            cfg->generation, cfg->bootstrap_generation);
     if (reserved)
         munmap(reserved, cfg->aperture_size);
     if (conflict)
@@ -2852,9 +2927,13 @@ int main(int argc, char **argv)
 
     log_msg("start node=%d count=%d generation=%#" PRIx64
             " aperture_base=%#" PRIx64 " aperture_size=%#" PRIx64
-            " conflict=%d allocate_segment=%d retire_segment=%d reuse_segment=%d",
+            " bootstrap_generation=%#" PRIx64
+            " conflict=%d reuse_aperture=%d allocate_segment=%d"
+            " retire_segment=%d reuse_segment=%d",
             cfg.node_id, cfg.node_count, cfg.generation,
-            cfg.aperture_base, cfg.aperture_size, cfg.inject_conflict ? 1 : 0,
+            cfg.aperture_base, cfg.aperture_size, cfg.bootstrap_generation,
+            cfg.inject_conflict ? 1 : 0,
+            cfg.reuse_aperture ? 1 : 0,
             cfg.allocate_segment ? 1 : 0, cfg.retire_segment ? 1 : 0,
             cfg.reuse_segment ? 1 : 0);
 
@@ -2910,12 +2989,12 @@ int main(int argc, char **argv)
     }
 
     if (obmm_bootstrap_publish(obmm_fd, cfg.node_id, cfg.node_count,
-                               cfg.generation, &local_meta) != 0) {
+                               cfg.bootstrap_generation, &local_meta) != 0) {
         log_msg("OBMM bootstrap publish failed errno=%d", errno);
         goto out;
     }
     if (obmm_bootstrap_lookup(obmm_fd, local_cna, cfg.node_count,
-                              cfg.generation, metas, got_meta) != 0) {
+                              cfg.bootstrap_generation, metas, got_meta) != 0) {
         log_msg("OBMM bootstrap lookup failed errno=%d", errno);
         goto out;
     }

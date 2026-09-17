@@ -41,6 +41,36 @@ static int valid_descriptor(const struct obmm_gsva_segment_desc_v1 *desc)
            !(desc->size & ((uint64_t)page_size - 1));
 }
 
+static int valid_aperture_request(
+    const struct obmm_cmd_gsva_aperture *request, long page_size)
+{
+    return request && page_size > 0 &&
+           valid_range(request->base, request->size, (uint64_t)page_size) &&
+           !(request->size & ((uint64_t)page_size - 1)) &&
+           request->generation && request->node_count &&
+           request->node_id < request->node_count;
+}
+
+int gva_manager_validate_aperture(
+    int fd, const struct obmm_cmd_gsva_aperture *expected,
+    struct obmm_cmd_gsva_aperture *observed)
+{
+    long page_size = sysconf(_SC_PAGESIZE);
+
+    if (!observed || !valid_aperture_request(expected, page_size))
+        return fail(EINVAL);
+    memset(observed, 0, sizeof(*observed));
+    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_QUERY, observed) != 0)
+        return -1;
+    if (!(observed->flags & OBMM_GSVA_APERTURE_F_ACTIVE) ||
+        observed->base != expected->base || observed->size != expected->size ||
+        observed->generation != expected->generation ||
+        observed->node_id != expected->node_id ||
+        observed->node_count != expected->node_count)
+        return fail(EPROTO);
+    return 0;
+}
+
 int gva_manager_register_aperture(
     int fd, const struct obmm_cmd_gsva_aperture *request,
     struct obmm_cmd_gsva_aperture *observed)
@@ -48,24 +78,13 @@ int gva_manager_register_aperture(
     struct obmm_cmd_gsva_aperture copy;
     long page_size = sysconf(_SC_PAGESIZE);
 
-    if (!request || !observed || page_size <= 0 ||
-        !valid_range(request->base, request->size, (uint64_t)page_size) ||
-        (request->size & ((uint64_t)page_size - 1)) ||
-        !request->node_count || request->node_id >= request->node_count)
+    if (!observed || !valid_aperture_request(request, page_size))
         return fail(EINVAL);
     copy = *request;
     copy.flags |= OBMM_GSVA_APERTURE_F_ACTIVE;
-    memset(observed, 0, sizeof(*observed));
-    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &copy) != 0 ||
-        ioctl(fd, OBMM_CMD_GSVA_APERTURE_QUERY, observed) != 0)
+    if (ioctl(fd, OBMM_CMD_GSVA_APERTURE_REGISTER, &copy) != 0)
         return -1;
-    if (!(observed->flags & OBMM_GSVA_APERTURE_F_ACTIVE) ||
-        observed->base != copy.base || observed->size != copy.size ||
-        observed->generation != copy.generation ||
-        observed->node_id != copy.node_id ||
-        observed->node_count != copy.node_count)
-        return fail(EPROTO);
-    return 0;
+    return gva_manager_validate_aperture(fd, &copy, observed);
 }
 
 int gva_manager_allocate_segment(

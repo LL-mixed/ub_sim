@@ -184,7 +184,13 @@ int main(void)
     assert(gva_manager_register_aperture(42, &request, &observed) == 0);
     assert(!(request.flags & OBMM_GSVA_APERTURE_F_ACTIVE));
     assert(observed.flags & OBMM_GSVA_APERTURE_F_ACTIVE);
+    before = calls;
+    assert(gva_manager_validate_aperture(42, &request, &observed) == 0);
+    assert(calls == before + 1);
     mode = APERTURE_NODE;
+    before = calls;
+    assert(gva_manager_validate_aperture(42, &request, &observed) == -1);
+    assert(errno == EPROTO && calls == before + 1);
     assert(gva_manager_register_aperture(42, &request, &observed) == -1);
     assert(errno == EPROTO);
     mode = APERTURE_GENERATION;

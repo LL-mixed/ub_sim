@@ -10,6 +10,9 @@
 int gva_manager_register_aperture(
     int fd, const struct obmm_cmd_gsva_aperture *request,
     struct obmm_cmd_gsva_aperture *observed);
+int gva_manager_validate_aperture(
+    int fd, const struct obmm_cmd_gsva_aperture *expected,
+    struct obmm_cmd_gsva_aperture *observed);
 int gva_manager_allocate_segment(
     int fd, struct obmm_cmd_gsva_alloc_segment_v1 *command);
 int gva_manager_query_segment(

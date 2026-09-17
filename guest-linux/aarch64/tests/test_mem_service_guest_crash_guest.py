@@ -146,6 +146,12 @@ class GuestCrashGuestTests(unittest.TestCase):
     def test_guest_and_runner_wire_guest_crash_profile(self):
         run_app = (ROOT / "guest-linux/aarch64/initramfs/run_app").read_text()
         runner = (SCRIPTS / "run_ub_dual_node_apps.sh").read_text()
+        manager = (
+            ROOT / "guest-linux/aarch64/apps/gva_manager/gva_manager.c"
+        ).read_text()
+        manager_header = (
+            ROOT / "guest-linux/aarch64/libs/gva_manager/gva_manager.h"
+        ).read_text()
         function = run_app.split("mem_service_object_share_guest_recovery() {", 1)[1].split(
             "\nmem_service_object_share_recovery_fault() {", 1
         )[0]
@@ -159,9 +165,9 @@ class GuestCrashGuestTests(unittest.TestCase):
         self.assertIn("new_incarnation=$replacement_incarnation", function)
         self.assertIn("managed_reconciliation_required", function)
         self.assertIn("phase=rejoin-bootstrap status=start", function)
+        self.assertIn('--generation "$incarnation"', function)
         self.assertIn(
-            '--generation "$replacement_incarnation" '
-            '--aperture-base 0x700000000000',
+            '--bootstrap-generation "$replacement_incarnation" --reuse-aperture',
             function,
         )
         self.assertIn(
@@ -169,6 +175,14 @@ class GuestCrashGuestTests(unittest.TestCase):
             function,
         )
         self.assertIn("phase=rejoin-bootstrap status=ready", function)
+        self.assertIn('aperture_generation="$incarnation"', run_app)
+        self.assertIn('bootstrap_generation="$incarnation"', run_app)
+        self.assertIn('--generation "$aperture_generation"', run_app)
+        self.assertIn('--bootstrap-generation "$bootstrap_generation"', run_app)
+        self.assertIn('cfg->bootstrap_generation', manager)
+        self.assertIn('cfg->reuse_aperture', manager)
+        self.assertIn("gva_manager_validate_aperture", manager)
+        self.assertIn("gva_manager_validate_aperture", manager_header)
         self.assertIn('kill -9 "$guest_pid"', runner)
         self.assertIn("mem_service.object_share_guest_restart=1", runner)
         restart_block = runner.split(
