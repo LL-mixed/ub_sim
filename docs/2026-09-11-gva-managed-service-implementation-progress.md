@@ -6885,3 +6885,73 @@ export/import mappings、refs、in-flight 与 quarantine 全部为零。fatal ma
 r84 关闭 Qwen 8-node 和核心 8-step 子项。M2 仍缺 DeepSeek 2/3/8-node 4-step、
 DeepSeek 核心 8-step、Qwen 4-node 定点回归和计划列明的完整身份/故障矩阵。M4、
 M5 与总目标状态不变。
+
+### n4-910c1 DeepSeek 2-node/4-step（失败 r85/r86；修复 r87）
+
+r85 使用真实 DeepSeek V4 Flash IQ2XXS 模型。step 0、1 分别发布 token `260`
+和 `6646`，step 2 的模型计算及四个候选均已完成，guest 随后在 terminal result
+decode 返回 `-EPROTO`。原 decoder 要求 top-4 每个候选的完整 piece 长度均为
+1–16；producer 合约保存完整长度，同时只在两个 word 中保存前 16 byte preview。
+本次未采样候选 token `62793` 的完整 piece 长度为 19，采样 token `5217` 的
+piece 长度为 7。父仓库 `3a302481` 只对实际采样 token 应用固定 token record 的
+16-byte 上限，保留所有候选 checksum、完整长度与 preview 一致性校验。新增边界
+覆盖未采样长度 0、17、4096 以及采样长度 17 的拒绝；定向 decoder 测试 15/15
+通过。
+
+r86 为：
+
+```text
+run 2026-09-18_00-29-02_w5_deepseek_v4_flash_decode_4196_headless8
+```
+
+四步计算和 token `260,6646,5217,1951` 均成功，证明 result decoder 修复有效。
+最终 request cleanup 在 node A 返回 `rc=-1`。日志显示 node A 在最终计算完成后
+额外导入并立即解除 final-token GSVA mapping。清理屏障当时通过完整 reader open
+取得 holder；reference acquire 先于 mapping confirm。terminal node 观察到全部
+预期 holder 后可立即把 allocation 推进到 `RETIRING`，peer 随后的 MAP_BEGIN 或
+CONFIRM 因对象已退役而失败。holder 到达与 reader 映射完成之间存在真实竞态。
+
+父仓库 `6e4480d2` 将 final-token rendezvous 收敛为控制面 holder 屏障。每个节点
+只执行 reference resolve、node-bound acquire；terminal node 校验精确 session、
+node id、provider incarnation 和 generation 后 retire；随后各节点 release holder。
+该屏障不读取 payload，也不创建数据映射。失败日志新增明确 cleanup stage，配置
+删除未使用的 channel/domain/pin。定向测试报告
+`holder_only_barrier=1`，同时覆盖 rolling retire、terminal barrier、全部 request
+allocation retire 和资源基线归零；1/1 通过，`git diff --check` 通过。
+
+r87 的实际组合和唯一一次修复后运行是：
+
+```text
+parent source 6e4480d2（隔离远端工作区使用精确源码；父仓库未推送）
+mem_service  1107b0677e7d1558b185e6440582c2b409fb3771
+qemu         d1307d0f8d2464c64df9f0942685b381cf33e2d8
+model        DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf
+command      run_w5_cluster_config.sh --managed-serving --nodes 2 --steps 4
+run          2026-09-18_01-03-43_w5_deepseek_v4_flash_decode_24558_headless8
+```
+
+同步的三个源文件在本地与远端 SHA-256 一致。runner exit 0，报告器返回
+`status=pass`：
+
+```text
+decode_steps_expected 4
+decode_steps_observed 4
+passed_nodes          2/2
+worker_records        8
+tokens                260,6646,5217,1951
+text                  " a leading global information"
+round_ms              628439,398631,174895,201830
+```
+
+两个节点各完成 4/4 step。step 2 再次接受长度 19 的未采样 candidate preview；
+最终 token `1951`、runner-up `7352`、margin `2841`。node A 在 step 3 输入读取后
+最后一次 GSVA import/unimport 为 map `0x8`，cleanup 没有额外 final-token mapping。
+两个 cleanup record 均为 `allocations=8`、`final_generation=8`，且
+`live_objects`、backing/address bytes、export/import mappings、live refs、
+in-flight、quarantine 全部为零。summary SHA-256 为
+`449750d3bc881a427fed86a764bb5b8848726a7cde8059ce79d0c63e8fbb1639`；精确进程
+查询无遗留 QEMU。
+
+r87 关闭 DeepSeek 2-node/4-step 子项。M2 仍缺 DeepSeek 3/8-node 4-step、
+DeepSeek 核心 8-step、Qwen 4-node 定点回归和完整身份/故障矩阵。M4 仍缺正式
+重复性能样本与混合压力；M5 尚未开始。总目标继续进行。
