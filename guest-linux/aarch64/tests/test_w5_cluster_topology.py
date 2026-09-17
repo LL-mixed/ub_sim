@@ -41,6 +41,15 @@ class W5ClusterTopologyTest(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
+    def test_per_run_initramfs_honors_caller_base_image(self):
+        source = self.guest_runner.read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count(
+                'local base_initramfs="${INITRAMFS_IMAGE:-$OUT_DIR/initramfs.cpio.gz}"'
+            ),
+            2,
+        )
+
     def test_cli_selects_supported_cluster_sizes(self):
         for node_count in (2, 3, 4, 8):
             with self.subTest(node_count=node_count):

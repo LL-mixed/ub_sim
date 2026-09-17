@@ -1568,7 +1568,7 @@ stage_qwen3_pto_token_table() {
 }
 
 build_w4_initramfs() {
-  local base_initramfs="$OUT_DIR/initramfs.cpio.gz"
+  local base_initramfs="${INITRAMFS_IMAGE:-$OUT_DIR/initramfs.cpio.gz}"
 
   trace "prepare: build per-run initramfs image=$RUN_INITRAMFS_IMAGE"
   ensure_ub_guest_artifacts "$ROOT_DIR" "$OUT_DIR/Image" "$base_initramfs" || return 1
@@ -1617,7 +1617,7 @@ UNIT
 }
 
 build_w4_openEuler_initramfs() {
-  local base_initramfs="$OUT_DIR/initramfs.cpio.gz"
+  local base_initramfs="${INITRAMFS_IMAGE:-$OUT_DIR/initramfs.cpio.gz}"
   local overlay_dir
 
   trace "prepare: build per-run openEuler initramfs image=$RUN_INITRAMFS_IMAGE"
