@@ -13,6 +13,18 @@ struct lingqu_shmem_pto_endpoint { unsigned id; };
 static struct mem_service_provider provider;
 static unsigned closed;
 
+int mem_service_provider_obmm_probe_device(const char *device_path,
+                                           const char *primary_cna_path,
+                                           char *detail,
+                                           size_t detail_len)
+{
+    assert(!device_path && !primary_cna_path);
+    assert(detail && detail_len >= 32);
+    snprintf(detail, detail_len,
+             "device=/dev/obmm primary_cna=0xc4c2 mapping_path=sim-dec");
+    return 0;
+}
+
 void mem_service_wire_client_options_init(
     struct mem_service_wire_client_options *options)
 {

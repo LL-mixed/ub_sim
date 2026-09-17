@@ -4,6 +4,7 @@
 #include "components/mem_service/providers/mem_service_provider_obmm.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,6 +29,7 @@ int w5_managed_runtime_open(
     struct mem_service_provider_obmm_config provider_config;
     struct mem_service_provider_registration registration;
     struct lingqu_shmem_pto_endpoint_info endpoint_info;
+    char probe_detail[256] = "";
     size_t connect_length, node_length;
     int rc;
     if (!config || !runtime_out || !config->connect_spec ||
@@ -58,27 +60,78 @@ int w5_managed_runtime_open(
         .max_remote_mappings = config->max_mappings,
         .required_peer_mappings = 1,
     };
+    rc = mem_service_provider_obmm_probe_device(
+        provider_config.device_path, provider_config.primary_cna_path,
+        probe_detail, sizeof(probe_detail));
+    if (rc != 0) {
+        fprintf(stderr,
+                "[w5_managed_runtime] open stage=obmm-probe rc=%d %s\n",
+                rc, probe_detail);
+        return rc;
+    }
     rc = mem_service_provider_registry_init(&runtime->registry);
-    if (!rc)
+    if (rc != 0)
+        fprintf(stderr,
+                "[w5_managed_runtime] open stage=registry-init rc=%d\n", rc);
+    if (!rc) {
         rc = mem_service_provider_obmm_endpoint_open(&runtime->provider,
                                                      &provider_config);
-    if (!rc)
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=obmm-endpoint rc=%d"
+                    " import_region=%llu max_mappings=%u required_peers=%u %s\n",
+                    rc, (unsigned long long)provider_config.import_region_bytes,
+                    provider_config.max_remote_mappings,
+                    provider_config.required_peer_mappings, probe_detail);
+    }
+    if (!rc) {
         rc = mem_service_provider_obmm_endpoint_registration(&runtime->provider,
                                                              &registration);
-    if (!rc)
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open"
+                    " stage=provider-registration rc=%d\n", rc);
+    }
+    if (!rc) {
         rc = mem_service_provider_registry_register(&runtime->registry,
                                                     &registration);
-    if (!rc)
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=provider-register rc=%d\n",
+                    rc);
+    }
+    if (!rc) {
         rc = mem_service_provider_channel_bind(&runtime->registry,
             registration.name, registration.instance,
             MEM_SERVICE_PROVIDER_CAP_PEER_MAPPING, &runtime->channel);
-    if (!rc)
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=channel-bind rc=%d\n", rc);
+    }
+    if (!rc) {
         rc = mem_service_access_domain_create(&runtime->client,
                                               &runtime->channel,
                                               &runtime->domain);
-    if (!rc) rc = lingqu_shmem_mem_service_open_managed(&runtime->compute);
-    if (!rc) rc = lingqu_shmem_pto_endpoint_open(&runtime->endpoint,
-                                                 &endpoint_info);
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=access-domain rc=%d\n",
+                    rc);
+    }
+    if (!rc) {
+        rc = lingqu_shmem_mem_service_open_managed(&runtime->compute);
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=compute-context rc=%d\n",
+                    rc);
+    }
+    if (!rc) {
+        rc = lingqu_shmem_pto_endpoint_open(&runtime->endpoint,
+                                            &endpoint_info);
+        if (rc != 0)
+            fprintf(stderr,
+                    "[w5_managed_runtime] open stage=pto-endpoint rc=%d\n",
+                    rc);
+    }
     return rc;
 }
 
