@@ -244,6 +244,8 @@ set -a
 source "$CONFIG_PATH"
 set +a
 
+export SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR="${SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR:-$SCRIPT_DIR}"
+
 if [[ -n "$OPEN_EULER_DISK_IMAGE_OVERRIDE" ]]; then
   if [[ "$OPEN_EULER_DISK_IMAGE_OVERRIDE" != /* ]]; then
     OPEN_EULER_DISK_IMAGE_OVERRIDE="$PWD/$OPEN_EULER_DISK_IMAGE_OVERRIDE"
@@ -502,6 +504,7 @@ print_w5_effective_env() {
   print_env_value SIM_W5_MANAGED_IMPORT_REGION_BYTES "${SIM_W5_MANAGED_IMPORT_REGION_BYTES:-268435456}"
   print_env_value SIM_W5_MANAGED_BOOTSTRAP_GENERATION "${SIM_W5_MANAGED_BOOTSTRAP_GENERATION:-${SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE:-1000000}}"
   print_env_value SIM_W5_MANAGED_MAX_MAPPINGS "${SIM_W5_MANAGED_MAX_MAPPINGS:-8}"
+  print_env_value SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR "$SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR"
 
   print_env_section "model"
   print_env_value SIM_UAPI_W4_CHIPBACKEND_PROFILE "${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}"
@@ -562,6 +565,19 @@ validate_w5_cluster_config() {
   local max_prune_candidates="${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   local max_prune_bytes="${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
   local cluster_node_count="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
+
+  if [[ "$SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR" != /* ]]; then
+    echo "SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR must be an absolute directory: $SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR" >&2
+    return 2
+  fi
+  if [[ ! -f "$SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR/prepare_simpler_host_artifacts.py" ]]; then
+    echo "SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR is missing prepare_simpler_host_artifacts.py: $SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR" >&2
+    return 2
+  fi
+  if [[ ! -f "$SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR/prepare_simpler_host_vector_artifacts.py" ]]; then
+    echo "SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR is missing prepare_simpler_host_vector_artifacts.py: $SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR" >&2
+    return 2
+  fi
 
   case "$profile" in
     qwen3_0_6b_decode|qwen3_14b_decode|qwen3_0_6b_engram_decode|qwen3_14b_engram_decode|deepseek_v4_flash_decode)

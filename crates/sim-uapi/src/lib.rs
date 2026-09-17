@@ -16917,6 +16917,23 @@ fn ensure_simpler_host_vector_manifest(manifest_path: &Path) -> Result<(), Strin
 }
 
 fn simpler_host_vector_artifact_producer_path() -> PathBuf {
+    simpler_host_artifact_producer_path_named("prepare_simpler_host_vector_artifacts.py")
+}
+
+fn simpler_host_artifact_producer_path_named(file_name: &str) -> PathBuf {
+    simpler_host_artifact_producer_path_named_from(
+        std::env::var_os("SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR"),
+        file_name,
+    )
+}
+
+fn simpler_host_artifact_producer_path_named_from(
+    script_dir: Option<std::ffi::OsString>,
+    file_name: &str,
+) -> PathBuf {
+    if let Some(script_dir) = script_dir.filter(|value| !value.is_empty()) {
+        return PathBuf::from(script_dir).join(file_name);
+    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -16925,7 +16942,7 @@ fn simpler_host_vector_artifact_producer_path() -> PathBuf {
     root.join("guest-linux")
         .join("aarch64")
         .join("scripts")
-        .join("prepare_simpler_host_vector_artifacts.py")
+        .join(file_name)
 }
 
 fn simpler_matmul_manifest_path() -> Result<PathBuf, String> {
@@ -17180,15 +17197,7 @@ fn simpler_engram_context_reuse_runtime_args() -> Result<Vec<std::ffi::OsString>
 }
 
 fn simpler_host_artifact_producer_path() -> PathBuf {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join("guest-linux")
-        .join("aarch64")
-        .join("scripts")
-        .join("prepare_simpler_host_artifacts.py")
+    simpler_host_artifact_producer_path_named("prepare_simpler_host_artifacts.py")
 }
 
 pub fn ensure_simpler_host_gemm_manifest(
@@ -45320,5 +45329,32 @@ outputs:
         assert!(super::pto_ub_gm_callable_from_manifest(&manifest_path).is_err());
 
         std::fs::remove_dir_all(&root).expect("remove fingerprint fixture directory");
+    }
+
+    #[test]
+    fn simpler_artifact_producer_names_share_the_portable_resolver() {
+        let script_dir = std::ffi::OsString::from("/opt/lingqu/simpler-scripts");
+        let generic = super::simpler_host_artifact_producer_path_named_from(
+            Some(script_dir.clone()),
+            "prepare_simpler_host_artifacts.py",
+        );
+        let vector = super::simpler_host_artifact_producer_path_named_from(
+            Some(script_dir),
+            "prepare_simpler_host_vector_artifacts.py",
+        );
+
+        assert_eq!(generic.parent(), vector.parent());
+        assert_eq!(
+            generic.parent().and_then(|path| path.to_str()),
+            Some("/opt/lingqu/simpler-scripts")
+        );
+        assert_eq!(
+            generic.file_name().and_then(|name| name.to_str()),
+            Some("prepare_simpler_host_artifacts.py")
+        );
+        assert_eq!(
+            vector.file_name().and_then(|name| name.to_str()),
+            Some("prepare_simpler_host_vector_artifacts.py")
+        );
     }
 }

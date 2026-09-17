@@ -50,6 +50,15 @@ class W5ClusterTopologyTest(unittest.TestCase):
             2,
         )
 
+    def test_cli_exports_portable_simpler_artifact_script_directory(self):
+        result = self.run_config("--print-env")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR={self.script_dir}\n",
+            result.stdout,
+        )
+
     def test_cli_selects_supported_cluster_sizes(self):
         for node_count in (2, 3, 4, 8):
             with self.subTest(node_count=node_count):
