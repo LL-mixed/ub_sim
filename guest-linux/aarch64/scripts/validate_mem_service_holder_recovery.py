@@ -122,7 +122,8 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     recovery_accepted = require_pattern(
         node_a,
         r"mem_service recover-allocation: status=ok\n"
-        r"status=ok\nstate=retiring$",
+        r"status=ok\nkey=holder-recovery-object\nstate=retiring\n"
+        r"generation=([1-9][0-9]*)$",
         "home recovery was not accepted after the holder receipt",
     )
     require(node_a.index(receipt_required.group(0)) <
@@ -452,6 +453,8 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
     home_retire = require_home_retire(node_a, qemu_a)
     require(int(receipt_required.group(1)) == home_retire["worker_generation"],
             "missing-receipt denial used the wrong allocation generation")
+    require(recovery_accepted.group(1) == receipt_required.group(1),
+            "accepted recovery used a different allocation generation")
     require(receipt_gate_retired.group(1) == receipt_required.group(1),
             "missing-receipt barrier used the wrong allocation generation")
     require(receipt_gate.groups() == (old_incarnation, current_incarnation),
