@@ -2892,6 +2892,7 @@ mem_service_object_share_guest_recovery() {
   /bin/busybox cat /tmp/guest-recovery-reconciled.log
   echo "mem_service guest-recovery: node=0 phase=reconciled status=retired fault=guest_crash key=$key generation=$generation old_incarnation=$incarnation new_incarnation=$replacement_incarnation holder_receipt=complete home_reclaim=complete"
 
+  bootstrap_generation=$((replacement_incarnation + 1048576))
   {
     echo "session_id=guest-recovery-rejoin-reader"
     echo "connect=$connect"
@@ -2901,7 +2902,7 @@ mem_service_object_share_guest_recovery() {
     echo "provider=obmm"
     echo "provider_node_id=0"
     echo "provider_node_count=2"
-    echo "provider_generation=$((incarnation + 2097152))"
+    echo "provider_generation=$bootstrap_generation"
     echo "provider_import_region_bytes=2097152"
     echo "op=wait_state key=$rejoin_ready_key state=active timeout_ms=60000 poll_ms=50"
     echo "op=acquire key=$rejoin_key idempotency_key=guest-recovery-rejoin-reader-acquire"

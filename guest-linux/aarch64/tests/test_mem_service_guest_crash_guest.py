@@ -203,6 +203,11 @@ class GuestCrashGuestTests(unittest.TestCase):
         self.assertIn("phase=reconciled status=retired", function)
         self.assertIn("phase=rejoin-write status=pass", function)
         self.assertIn("phase=rejoin-read status=pass", function)
+        self.assertEqual(
+            function.count("provider_generation=$bootstrap_generation"),
+            2,
+        )
+        self.assertNotIn("provider_generation=$((incarnation + 2097152))", function)
         self.assertIn("phase=rejoin-bootstrap status=start", function)
         self.assertIn('--generation "$incarnation"', function)
         self.assertIn(
