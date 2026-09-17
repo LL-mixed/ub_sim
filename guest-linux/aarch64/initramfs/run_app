@@ -2014,6 +2014,7 @@ mem_service_object_share_manager_recovery() {
   local after=""
   local backing_bytes=""
   local address_bytes=""
+  local quarantined_bytes=""
 
   attempt=0
   while [ "$attempt" -lt 1200 ]; do
@@ -2296,9 +2297,12 @@ mem_service_object_share_manager_recovery() {
     /tmp/manager-recovery-stats-2.log | /bin/busybox head -n 1)"
   address_bytes="$(/bin/busybox sed -n 's/^address_reserved_bytes=//p' \
     /tmp/manager-recovery-stats-2.log | /bin/busybox head -n 1)"
-  case "$backing_bytes" in ''|0|*[!0-9]*) return 1 ;; esac
-  case "$address_bytes" in ''|0|*[!0-9]*) return 1 ;; esac
-  echo "mem_service manager-recovery: node=0 phase=observation status=pass fault=manager_crash key=$key generation=$generation state=quarantined live_refs=1 backing_allocated_bytes=$backing_bytes address_reserved_bytes=$address_bytes restarts=2"
+  quarantined_bytes="$(/bin/busybox sed -n 's/^quarantined_bytes=//p' \
+    /tmp/manager-recovery-stats-2.log | /bin/busybox head -n 1)"
+  [ "$backing_bytes" = "0" ] || return 1
+  [ "$address_bytes" = "0" ] || return 1
+  case "$quarantined_bytes" in ''|0|*[!0-9]*) return 1 ;; esac
+  echo "mem_service manager-recovery: node=0 phase=observation status=pass fault=manager_crash key=$key generation=$generation state=quarantined live_refs=1 backing_allocated_bytes=$backing_bytes address_reserved_bytes=$address_bytes quarantined_bytes=$quarantined_bytes restarts=2"
   return 0
 }
 

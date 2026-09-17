@@ -142,8 +142,9 @@ def validate(node_a, node_b):
     })
     backing_bytes = int(home_observation["backing_allocated_bytes"])
     address_bytes = int(home_observation["address_reserved_bytes"])
-    require(backing_bytes > 0 and address_bytes > 0 and
-            len(home_observation) == 11 and len(peer_observation) == 9,
+    quarantined_bytes = int(home_observation["quarantined_bytes"])
+    require(backing_bytes == 0 and address_bytes == 0 and quarantined_bytes > 0 and
+            len(home_observation) == 12 and len(peer_observation) == 9,
             "isolated physical obligation was not reported")
 
     home_baseline, home_isolated = kernel_snapshots(node_a)
@@ -152,7 +153,8 @@ def validate(node_a, node_b):
             "unexpected baseline or peer kernel resources")
     exports = [size for kind, size in home_isolated.values() if kind == "export"]
     imports = [size for kind, size in home_isolated.values() if kind == "import"]
-    require(len(exports) == 1 and not imports and sum(exports) == address_bytes,
+    require(len(exports) == 1 and not imports and
+            sum(exports) == quarantined_bytes,
             "manager recovery did not preserve the exact home export obligation")
 
     return {
@@ -166,6 +168,7 @@ def validate(node_a, node_b):
         "managed_recovery_required": True,
         "backing_allocated_bytes": backing_bytes,
         "address_reserved_bytes": address_bytes,
+        "quarantined_bytes": quarantined_bytes,
         "node_a_sha256": hashlib.sha256(node_a.encode()).hexdigest(),
         "node_b_sha256": hashlib.sha256(node_b.encode()).hexdigest(),
     }

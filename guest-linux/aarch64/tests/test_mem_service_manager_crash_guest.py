@@ -49,8 +49,8 @@ def fixture():
         "reason=managed_reconciliation_required",
         f"mem_service manager-recovery: node=0 phase=observation status=pass "
         f"fault=manager_crash key={key} generation={generation} state=quarantined "
-        "live_refs=1 backing_allocated_bytes=2097152 "
-        "address_reserved_bytes=2097152 restarts=2",
+        "live_refs=1 backing_allocated_bytes=0 address_reserved_bytes=0 "
+        "quarantined_bytes=2097152 restarts=2",
         "mem_service kernel-regions: phase=isolated",
         "obmm-kernel-region: id=9 type=export bytes=2097152",
         "obmm-kernel-regions: version=1 scope=sysfs consistency=non_atomic "
@@ -90,7 +90,9 @@ class ManagerCrashGuestTests(unittest.TestCase):
         self.assertEqual(result["status"], "pass")
         self.assertEqual(result["manager_restarts"], 2)
         self.assertEqual(result["generation"], 5)
-        self.assertEqual(result["address_reserved_bytes"], 2097152)
+        self.assertEqual(result["backing_allocated_bytes"], 0)
+        self.assertEqual(result["address_reserved_bytes"], 0)
+        self.assertEqual(result["quarantined_bytes"], 2097152)
 
     def test_missing_or_unsafe_recovery_evidence_is_rejected(self):
         cases = (
@@ -99,6 +101,9 @@ class ManagerCrashGuestTests(unittest.TestCase):
             (0, "managed_recovery_required=1", "managed_recovery_required=0"),
             (0, "data_plane_ready=0", "data_plane_ready=1"),
             (0, "reason=managed_reconciliation_required", "reason=data_plane_not_ready"),
+            (0, "backing_allocated_bytes=0", "backing_allocated_bytes=1"),
+            (0, "address_reserved_bytes=0", "address_reserved_bytes=1"),
+            (0, "quarantined_bytes=2097152", "quarantined_bytes=0"),
             (0, "export_handles=1", "export_handles=0"),
             (1, "generation=5", "generation=6"),
             (1, "status=down restart=2", "status=up restart=2"),
@@ -151,6 +156,7 @@ class ManagerCrashGuestTests(unittest.TestCase):
         self.assertIn("phase=old-replay status=rejected", function)
         self.assertIn("phase=new-allocation status=rejected", function)
         self.assertIn("provider_active_count=(0|1)", function)
+        self.assertIn("quarantined_bytes", function)
         self.assertIn('mem_service_object_share_manager_recovery "$node"', run_app)
         self.assertIn('[ "$fault" != "manager_crash" ]; } ||', run_app)
         self.assertIn("validate_mem_service_manager_crash_guest.py", runner)
