@@ -27,6 +27,7 @@ static unsigned publishes;
 static unsigned waits;
 static unsigned stages;
 static unsigned releases;
+static uint8_t completion_status = 1;
 static const char *stage_suffixes[] = {
     "/result", "/hidden", "/kv", "/terminal", "/token",
 };
@@ -189,8 +190,10 @@ int w5_managed_model_poll(struct w5_managed_model_operation *operation,
     assert(operation && operation->pending);
     operation->pending = 0;
     *completion_out = (struct lingqu_shmem_pto_completion) {
-        .op_id = 41, .status = 1,
+        .op_id = 41, .source = 1, .status = completion_status,
     };
+    if (completion_status != 1)
+        strcpy(completion_out->error_code, "pto_ub_gm_access_denied");
     return 0;
 }
 
@@ -300,6 +303,13 @@ int main(void)
     assert(w5_managed_serving_finish(operation, &result, &status) == 0);
     assert(result.reference_count == 5 && result.decoded.terminal.sampled_token == 99);
     assert(writer.sealed && waits == 1 && stages == 5 && releases == 1);
+    assert(w5_managed_serving_release(&operation) == 0 && !operation);
+    completion_status = 3;
+    assert(w5_managed_serving_prepare(&request, &operation) == 0 && operation);
+    assert(w5_managed_serving_submit(operation) == 0);
+    assert(w5_managed_serving_poll(operation, &completion) == 0);
+    assert(completion.status == 3 &&
+           !strcmp(completion.error_code, "pto_ub_gm_access_denied"));
     assert(w5_managed_serving_release(&operation) == 0 && !operation);
     puts("w5_managed_serving_guest=pass callable=4 inputs=2 outputs=5 terminal_v2=1 token_v2=1");
     return 0;

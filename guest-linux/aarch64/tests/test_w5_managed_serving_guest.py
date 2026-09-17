@@ -39,6 +39,10 @@ class W5ManagedServingGuestTest(unittest.TestCase):
                 result.stdout.strip(),
                 "w5_managed_serving_guest=pass callable=4 inputs=2 outputs=5 "
                 "terminal_v2=1 token_v2=1")
+            self.assertEqual(
+                result.stderr.strip(),
+                "[w5_managed_serving] stage=completion op=41 source=1 "
+                "status=3 code=pto_ub_gm_access_denied")
 
 
 if __name__ == "__main__":

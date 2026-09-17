@@ -125,6 +125,15 @@ int w5_managed_serving_poll(
     if (rc) return rc;
     operation->completed = true;
     *completion_out = operation->result.completion;
+    if (!lingqu_shmem_pto_completion_succeeded(completion_out)) {
+        fprintf(stderr,
+                "[w5_managed_serving] stage=completion op=%llu"
+                " source=%u status=%u code=%s\n",
+                (unsigned long long)completion_out->op_id,
+                completion_out->source, completion_out->status,
+                completion_out->error_code[0] ?
+                    completion_out->error_code : "none");
+    }
     return 0;
 }
 
