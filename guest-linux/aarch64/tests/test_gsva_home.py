@@ -240,6 +240,33 @@ int main(int argc, char **argv) {
         self.assertIn("route->backing_token_id ?", unmap)
         self.assertIn("route->backing_token_id : route->token.token_id", unmap)
 
+    def test_legacy_export_retire_removes_route_before_export_record(self):
+        source = (QEMU / "hw/ub/ub_ubc.c").read_text()
+        helper = source.split(
+            "static int sim_dec_retire_obmm_export_route("
+            "const ObmmExportEntry *entry)\n{", 1
+        )[1].split(
+            "/* Helper for sim_dec_gva_tcg_translate", 1
+        )[0]
+        self.assertIn("SIM_DEC_MAP_SOURCE_LEGACY_OBMM", helper)
+        self.assertIn("route->backing_token_id != 0", helper)
+        self.assertIn("route->state = GSVA_ROUTE_STALE;", helper)
+        self.assertIn("obmm_coh_send_fence(", helper)
+        self.assertIn("gsva_coh_object_remove(&g_gsva_coh, &route->key)",
+                      helper)
+        self.assertIn("gsva_route_unmap(&g_gsva_routes, map_id, false)",
+                      helper)
+        handler = source.split(
+            "static int sim_dec_handle_obmm_export_retire(\n", 1
+        )[1].split(
+            "static int sim_dec_handle_obmm_bootstrap_publish(", 1
+        )[0]
+        cleanup = handler.index("sim_dec_retire_obmm_export_route(entry)")
+        marker = handler.index("g_file_set_contents(tmp_path, data")
+        removal = handler.index("QTAILQ_REMOVE(&g_obmm_exports, entry, next)")
+        self.assertLess(cleanup, marker)
+        self.assertLess(marker, removal)
+
     def test_device_reset_closes_bindings_preserves_pins_and_denies_reactivation(self):
         self.run_case("reset")
         source = (QEMU / "hw/ub/ub_ubc.c").read_text()
