@@ -6983,3 +6983,80 @@ backing/address bytes、export/import mappings、live refs、in-flight 和 quara
 
 r88 关闭 DeepSeek 3-node/4-step 子项。M2 仍缺 DeepSeek 8-node/4-step、核心
 8-step、Qwen 4-node 定点回归和完整身份/故障矩阵；M4、M5 和总目标状态不变。
+
+### n4-910c1 DeepSeek 8-node/8-step（失败 r89/r90；修复 r91/r92）
+
+r89 首次进入 DeepSeek 8-node/8-step 后，CEQ 在处理完单次预算后停止前进。
+QEMU 对 ERS1 offset 0 的 consumer doorbell 更新只保存 consumer index；当 CEQ
+仍非空时，没有重新调度中断处理。QEMU 提交
+`02d214fe84b6b7402d428dbadb5f2a6e90498463` 在 consumer 更新后检查未消费条目并
+rearm CEQ；父仓库 `044e20d5` 同步 gitlink。定向 doorbell contract 测试 2/2
+通过，n4-910c1 上 QEMU 完整构建通过。
+
+r90 越过 CEQ 故障后，在 step 2 node D 读取 generation 20 时收到
+`stale_ref`。当时 8 个常驻 worker 每 100 ms 各自执行 provider refresh 和
+allocation poll，两项操作都新建 TCP 连接，单线程 daemon 的 listen backlog
+只有 16，负载约为 160 个新连接/秒。日志在 node D worker 停止前同时出现
+connect timeout 和内核 SYN flooding；worker deregister 使已发布的 generation
+20 进入 quarantine，随后 reference stage 返回 stale。
+
+独立服务提交 `3592080ca7173940e378ea35be223d8c7d653a51` 完成三项收敛：
+
+- 空闲 worker 的 provider refresh/allocation poll 频率限制为每秒一次；
+- TCP daemon listen backlog 从 16 扩到 128；
+- worker stop 记录保留首次失败的 stage、result 和 wire status，deregister 不再
+  覆盖原始故障信息。
+
+父仓库 `dcbd0b4f` 同步 mem_service gitlink 与 lock。三个定向 contract 测试、
+既有 timeout retry contract 和 `git diff --check` 通过；只推送了用户授权的
+mem_service `origin/codex/gva-managed-service-completion` 分支。
+
+r91 只执行 8-node/3-step 定点复验，覆盖 r90 的 step 2 node D 失败位置：
+
+```text
+run             2026-09-18_02-43-51_w5_deepseek_v4_flash_decode_14300_headless8
+passed_nodes    8/8
+steps           3/3
+worker_records  24
+handoff_records 24
+tokens          260,6646,5217
+text            " a leading global"
+```
+
+8 条 cleanup 各核对 24 个 allocation 及全部资源归零；fatal stop 和 SYN
+flooding 都为零。该定点结果确认两项修复跨过原始故障，随后才执行正式 case。
+
+r92 的实际组合和唯一一次 8-node/8-step 正式运行是：
+
+```text
+parent source dcbd0b4f（父仓库未推送）
+mem_service  3592080ca7173940e378ea35be223d8c7d653a51
+qemu         02d214fe84b6b7402d428dbadb5f2a6e90498463
+model        DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf
+command      run_w5_cluster_config.sh --managed-serving --nodes 8 --steps 8
+run          2026-09-18_03-02-38_w5_deepseek_v4_flash_decode_264_headless8
+```
+
+runner exit 0，报告器返回 `status=pass`：
+
+```text
+decode_steps_expected 8
+decode_steps_observed 8
+passed_nodes          8/8
+worker_records        64
+handoff_records       64
+tokens                260,6646,5217,1951,305,18128,4807,343
+text                  " a leading global information and communications technology ("
+round_ms              616582,557593,191967,192385,195234,206709,208532,211948
+```
+
+8 个节点各完成 8/8 step。每节点记录 6 次 completed-step rolling retirement，
+总计 48 次；8 条 cleanup 各核对 `allocations=64`、`final_generation=64`，对象、
+backing/address bytes、export/import mappings、live refs、in-flight 和 quarantine
+全部归零。运行中 56 次控制请求 timeout 全部由既有重试恢复；fatal stop、SYN
+flooding、`stale_ref`、quarantine failure 均为零。summary SHA-256 为
+`9f3e3f4b7b3a144668aed0ab32f29b638157009424914388e33551c7c55bdf3b`；精确进程
+查询无遗留 QEMU。
+
+r92 同时关闭 DeepSeek 8-node/4-step 与 DeepSeek 核心 8-step。M2 只剩 Qwen
+4-node 定点回归和计划列明的完整身份/故障矩阵；M4、M5 和总目标继续进行。

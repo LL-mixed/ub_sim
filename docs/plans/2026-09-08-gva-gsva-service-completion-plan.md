@@ -1620,7 +1620,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `1107b067`；n4-910c1 r81/r82 完成 Qwen 2/3-node 4-step；r84 完成 Qwen 8-node/8-step callable 4 连续 decode、64 条 worker completion、每节点滚动退役 6 个历史 allocation 和终态资源归零；r87/r88 完成 DeepSeek 2/3-node 4-step、长候选 result decode、holder-only 终态屏障和资源归零 | DeepSeek 8-node 的 4-step 与核心 8-step、Qwen 4-node 定点回归，以及完整身份/故障矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `3592080c`、QEMU `02d214fe`；n4-910c1 r81/r82 完成 Qwen 2/3-node 4-step；r84 完成 Qwen 8-node/8-step callable 4 连续 decode、64 条 worker completion、每节点滚动退役 6 个历史 allocation 和终态资源归零；r87/r88 完成 DeepSeek 2/3-node 4-step；r92 完成 DeepSeek 8-node/8-step、64 条 worker/handoff completion、48 次滚动退役和终态资源归零 | Qwen 4-node 定点回归和完整身份/故障矩阵未完成 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成；A16 的 2/3/8-node 每节点 home 与三轮冷启动、A18 独立包跨机复现仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
@@ -1660,6 +1660,51 @@ layer range `[0,15)`、`[15,29)`、`[29,43)` 完成每步两次 handoff，3/3 �
 各核对 12 个 allocation，全部资源计数归零，报告 `status=pass`，终态无 QEMU。
 该结果关闭 DeepSeek 3-node/4-step；剩余模型矩阵为 DeepSeek 8-node/4-step、
 核心 8-step 和 Qwen 4-node 定点回归。
+
+2026-09-18 M2 补记：DeepSeek 8-node/8-step 首次运行 r89 在 CEQ 单次预算
+耗尽后停止。QEMU 对 ERS1 offset 0 的 consumer doorbell 更新只保存 consumer
+index，没有在队列仍非空时重新调度 CEQ。QEMU
+`02d214fe84b6b7402d428dbadb5f2a6e90498463` 增加非空 CEQ rearm，父仓库
+`044e20d5` 同步 gitlink；定向 doorbell 测试 2/2 通过，远端 QEMU 构建通过。
+
+r90 越过该故障后，在 step 2 node D 读取 generation 20 时收到 `stale_ref`。
+运行期间单线程 daemon 的 TCP backlog 为 16，8 个 worker 每 100 ms 分别新建
+provider refresh 和 allocation poll 连接，形成约 160 个新连接/秒；日志同时出现
+connect timeout 与内核 SYN flooding。node D worker 停止并 deregister，已发布的
+generation 20 随之进入 quarantine。独立服务
+`3592080ca7173940e378ea35be223d8c7d653a51` 将 worker 空闲控制轮询限制为每秒
+一次、TCP backlog 扩至 128，并在停止记录中保留首次失败的 stage/result/status；
+父仓库 `dcbd0b4f` 同步 gitlink 与 lock。三个定向 contract 测试和原 timeout retry
+测试通过，只推送了已授权的 mem_service 分支。
+
+n4-910c1 r91 使用相同 DeepSeek 模型执行 8-node/3-step 定点复验，跨过 r90 的
+step 2 node D 故障点。8 个节点完成 3/3 step，共 24 条 worker/handoff record，
+token 为 `260,6646,5217`；8 条 cleanup 均核对 24 个 allocation 及全部资源归零，
+fatal stop 和 SYN flooding 均为零。
+
+r92 是该源码组合唯一一次 8-node/8-step 正式运行：
+
+```text
+mem_service 3592080ca7173940e378ea35be223d8c7d653a51
+qemu        02d214fe84b6b7402d428dbadb5f2a6e90498463
+run         2026-09-18_03-02-38_w5_deepseek_v4_flash_decode_264_headless8
+steps       8/8
+nodes       8/8
+records     worker=64 handoff=64 rolling_retire=48 cleanup=8
+tokens      260,6646,5217,1951,305,18128,4807,343
+text        " a leading global information and communications technology ("
+round_ms    616582,557593,191967,192385,195234,206709,208532,211948
+```
+
+runner exit 0，报告 `status=pass`。每条 cleanup 均核对
+`allocations=64`、`final_generation=64`，对象、backing/address bytes、
+export/import mappings、live refs、in-flight 和 quarantine 全部为零。56 次 QEMU
+调度导致的控制请求 timeout 均由既有重试恢复；fatal stop、SYN flooding、
+`stale_ref` 和 quarantine failure 均为零，终态无 QEMU。summary SHA-256 为
+`9f3e3f4b7b3a144668aed0ab32f29b638157009424914388e33551c7c55bdf3b`。
+
+r92 同时关闭 DeepSeek 8-node/4-step 与核心 8-step 子项。M2 只剩 Qwen 4-node
+定点回归和计划列明的完整身份/故障矩阵；M4、M5 和总目标状态不变。
 
 ## 9. Review 意见处置
 
