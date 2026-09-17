@@ -6075,3 +6075,66 @@ nodeB 037c271c79b6a1df634558d00c5b2418e1f3737646dfcf5ee4dff1b228ba5707
 两轮结束后均通过精确进程查询确认没有 `qemu-system-aarch64` 遗留。该结果关闭
 M3 的裸 reserve-intent 与 torn ledger 实际隔离子项。管理进程故障、整个 guest
 故障、其他事务注入阶段及重复故障矩阵仍未完成；M3 与总目标继续保持进行中。
+
+### n4 双 guest manager-crash r21-r30：管理进程重复重启隔离
+
+父仓库 `097f9b4` 在既有 `cpu-recovery-fault` profile 中增加
+`manager_crash`。node A 创建真实 provider-backed allocation，node B 获取一个
+holder；随后 node A 对实际 daemon 连续执行两次 `SIGKILL`。每次 daemon 消失后，
+两个 provider worker 必须非零退出；同一持久 store 重启后，allocation 的
+generation、descriptor、地址、长度、home/provider 身份和 live ref 必须保持，
+对象进入 quarantined。第一次重启严格要求 runtime provider directory 为空；第二次
+重启允许 peer 已经重新注册。所有 provider 恢复注册后，directory 可以 ready，
+`data_plane_ready` 仍必须为 0，旧 acquire replay 与新 allocation 都必须以
+`managed_reconciliation_required` 拒绝。
+
+r24 首次运行在 guest 入口以 `unsupported_config` 失败，确认 OBMM backend 的第二层
+allowlist 未接通。`9db4350` 修正该入口。r26 越过配置校验并完成两次 daemon 重启，
+但第二次重启时 peer 比 node A 更早注册，旧检查错误要求目录仍为空；`1b0ba60`
+允许该合法顺序并保留第一次重启的严格空目录证明。r29 越过全部重启、身份和拒绝
+检查后发现隔离统计契约假设错误：服务正确报告
+`backing_allocated_bytes=0 address_reserved_bytes=0 quarantined_bytes=2097152`，kernel
+仍保留唯一 2097152-byte export。`285321f` 改为要求活跃计数归零，并将 kernel
+export 与隔离容量精确对应。每个修复批次只运行一次本地轻量门禁；最终批次为脚本
+语法、Python 编译、11 个相关测试和差异检查全部通过。
+
+r30 的实际运行组合为：
+
+```text
+parent      285321ff4c7938d94788d706110b84a5e44b6f39
+mem_service 0313f1f8da991431487d05d7425f74e4020665ae
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   333669291029e5e40a87d857c24cfceedaeda6fa2fc822d43dadba4ca1b62828
+```
+
+runner exit 0，1/1 PASS。专用机器报告记录：
+
+```text
+scope                    actual-manager-sigkill-repeat-restart-isolation
+generation               1
+manager_restarts          2
+manager_exit_code         137
+provider_state            isolated
+managed_recovery_required true
+backing_allocated_bytes   0
+address_reserved_bytes    0
+quarantined_bytes         2097152
+```
+
+node B 完整观察 `down/up/down/up`；node A 在两次重启后均报告
+`identity_preserved=1 managed_recovery_required=1`，provider directory 最终为
+`active=2 ready=1`，data plane 保持 0。两类不安全请求均被拒绝。四份原始日志及
+机器报告的 SHA-256 为：
+
+```text
+nodeA guest 7f36e0ce3d7ff998300205d30318d8653a0bf78fe28667d923f84f1c64b444cf
+nodeB guest 6e10cb94e8070139ab9772cc627aa66bf049cfbfc1583474d79f01364b98d2c5
+nodeA qemu  521f85dccae3234c8cf9957a7e77e04866fbbef6e79c2ad8e0888eb9496ea6b7
+nodeB qemu  3f9f349988f5ac7f6a01b3016901f94b67b48812f93b5ebe9dad20eae48c3116
+report      4d5639b62955a41bde8a699f8e773e306b91046c1a0c8522bfaeefc2c1c9de6c
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭 M3 管理进程故障的
+重复重启隔离子项。整个 guest 故障、其他事务注入阶段及重复故障矩阵仍未完成；
+M3 与总目标继续保持进行中。
