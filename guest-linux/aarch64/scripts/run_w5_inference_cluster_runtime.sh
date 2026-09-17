@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
+source "$SCRIPT_DIR/w5_model_timeout_common.sh"
 
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}"
 
@@ -152,6 +153,12 @@ if [[ -n "$SIM_LLM_INFER_PROMPT" ]]; then
   esac
 fi
 SIM_LLM_INFER_PROMPT_TOKEN_IDS="${SIM_LLM_INFER_PROMPT_TOKEN_IDS:-81378,37585,374}"
+
+w5_resolve_managed_timeout_status=0
+w5_resolve_managed_timeout_ms || w5_resolve_managed_timeout_status=$?
+if (( w5_resolve_managed_timeout_status != 0 )); then
+  exit "$w5_resolve_managed_timeout_status"
+fi
 
 case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
   deepseek-v4-flash-simpler|deepseek_v4_flash_simpler|deepseek-v4-flash-official|deepseek_v4_flash_official)

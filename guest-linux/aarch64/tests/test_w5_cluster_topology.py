@@ -98,6 +98,55 @@ class W5ClusterTopologyTest(unittest.TestCase):
             "SIM_W5_MANAGED_IMPORT_REGION_BYTES=268435456\n", result.stdout
         )
 
+    def test_cli_managed_deepseek_timeout_scales_to_largest_range(self):
+        expected_by_nodes = {2: 2940000, 3: 2100000, 4: 1620000, 8: 1020000}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sim_cli = Path(temp_dir) / "sim-cli"
+            sim_cli.write_text(
+                "#!/bin/sh\n"
+                "[ \"$1\" = managed-model-provider-fingerprint ] || exit 2\n"
+                "echo 424242\n",
+                encoding="utf-8",
+            )
+            sim_cli.chmod(0o755)
+            env = os.environ.copy()
+            env["SIM_CLI_BIN"] = str(sim_cli)
+            env.pop("SIM_W5_MANAGED_TIMEOUT_MS", None)
+            for node_count, expected_timeout in expected_by_nodes.items():
+                with self.subTest(node_count=node_count):
+                    result = subprocess.run(
+                        [
+                            str(self.config_runner),
+                            "--print-env",
+                            "--managed-serving",
+                            "--nodes",
+                            str(node_count),
+                            str(self.deepseek_config),
+                        ],
+                        cwd=self.repo,
+                        check=False,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=env,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(
+                        f"SIM_W5_MANAGED_TIMEOUT_MS={expected_timeout}\n",
+                        result.stdout,
+                    )
+
+    def test_managed_timeout_is_separate_from_pto_timeout(self):
+        runner = self.guest_runner.read_text(encoding="utf-8")
+        infer = self.infer_source.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'SIM_W5_MANAGED_TIMEOUT_MS="${SIM_W5_MANAGED_TIMEOUT_MS:-300000}"',
+            runner,
+        )
+        self.assertIn('"SIM_W5_MANAGED_TIMEOUT_MS", 300000ULL', infer)
+        self.assertIn(".timeout_ms = w5_managed_timeout_ms", infer)
+
     def test_cli_rejects_unsupported_cluster_size(self):
         result = self.run_config("--print-env", "--nodes", "5")
         self.assertEqual(result.returncode, 2)

@@ -10777,6 +10777,7 @@ int main(int argc, char **argv)
     bool w5_pto_ub_gm_pipeline_double = false;
     uint64_t w5_pto_ub_gm_artifact_fingerprint = 0;
     uint64_t w5_pto_ub_gm_timeout_ms = 0;
+    uint64_t w5_managed_timeout_ms = 0;
     uint32_t w5_pto_ub_gm_requester_cna = 0;
     struct w5_pto_ub_gm_hidden_result w5_pto_ub_gm_hidden_result;
     struct mem_service_object_payload_view qwen3_pre_resolved_range_input_view;
@@ -10856,6 +10857,8 @@ int main(int argc, char **argv)
         "SIM_W5_MANAGED_ARTIFACT_FINGERPRINT", 0);
     w5_pto_ub_gm_timeout_ms = env_u64_or_default(
         "SIM_W5_PTO_UB_GM_TIMEOUT_MS", 300000ULL);
+    w5_managed_timeout_ms = env_u64_or_default(
+        "SIM_W5_MANAGED_TIMEOUT_MS", 300000ULL);
     if (w5_pto_ub_gm_probe_enabled || w5_qwen3_pto || w5_managed_serving) {
         char requester_cna_text[64];
         char direct_enabled_text[16];
@@ -10868,7 +10871,8 @@ int main(int argc, char **argv)
             (w5_pto_ub_gm_publish_output && !is_qwen3_profile()) ||
             (w5_managed_serving ? w5_managed_artifact_fingerprint :
                                   w5_pto_ub_gm_artifact_fingerprint) == 0 ||
-            w5_pto_ub_gm_timeout_ms == 0 ||
+            (w5_managed_serving ? w5_managed_timeout_ms :
+                                  w5_pto_ub_gm_timeout_ms) == 0 ||
             !cmdline_get_value("linqu_shmem_pto_direct",
                                direct_enabled_text,
                                sizeof(direct_enabled_text)) ||
@@ -10885,7 +10889,8 @@ int main(int argc, char **argv)
                     env_nonempty("SIM_UAPI_W5_PROFILE") ? 1U : 0U,
                     w5_managed_serving ? w5_managed_artifact_fingerprint :
                                          w5_pto_ub_gm_artifact_fingerprint,
-                    w5_pto_ub_gm_timeout_ms,
+                    w5_managed_serving ? w5_managed_timeout_ms :
+                                         w5_pto_ub_gm_timeout_ms,
                     w5_pto_ub_gm_publish_output ? 1U : 0U,
                     direct_enabled_text[0] ? direct_enabled_text : "missing",
                     requester_cna_text[0] ? requester_cna_text : "missing");
@@ -10917,7 +10922,8 @@ int main(int argc, char **argv)
                w5_managed_serving ? w5_managed_artifact_fingerprint :
                                     w5_pto_ub_gm_artifact_fingerprint,
                w5_pto_ub_gm_requester_cna,
-               w5_pto_ub_gm_timeout_ms,
+               w5_managed_serving ? w5_managed_timeout_ms :
+                                    w5_pto_ub_gm_timeout_ms,
                w5_pto_ub_gm_publish_output ? 1U : 0U,
                w5_pto_ub_gm_program);
     }
@@ -11240,7 +11246,7 @@ int main(int argc, char **argv)
             .connect_spec = w5_managed_connect,
             .client_node_id = managed_client_node,
             .client_provider_incarnation = client_provider_incarnation,
-            .timeout_ms = w5_pto_ub_gm_timeout_ms,
+            .timeout_ms = w5_managed_timeout_ms,
             .import_region_bytes = w5_managed_import_region_bytes,
             .allocation_granularity_bytes =
                 w5_managed_allocation_granularity_bytes,
@@ -13055,7 +13061,7 @@ decode_round_start:
         managed_rc = w5_managed_load_previous_token(w5_managed_runtime,
             &w5_managed_round, w5_managed_run, w5_managed_request,
             local_node, cluster_node_count, guest_decode_step,
-            w4_runtime_vocab_size(), w5_pto_ub_gm_timeout_ms,
+            w4_runtime_vocab_size(), w5_managed_timeout_ms,
             &previous_token);
         if (managed_rc != 0) {
             fprintf(stderr,
@@ -14031,7 +14037,7 @@ decode_round_start:
             w4_runtime_handoff_hidden_bytes(guest_decode_step),
             guest_decode_step, w4_runtime_vocab_size(),
             w5_managed_artifact_fingerprint, w5_pto_ub_gm_requester_cna,
-            w5_pto_ub_gm_timeout_ms, w5_managed_output_capacity,
+            w5_managed_timeout_ms, w5_managed_output_capacity,
             &runtime_forward, &w5_managed_terminal_token,
             &w5_managed_terminal_ready);
         if (managed_rc != 0 ||
@@ -14154,7 +14160,7 @@ decode_round_start:
                     llm_infer_managed_object_key,
                     w5_managed_run, w5_managed_request,
                     round_dispatch_node, retired_step,
-                    w5_pto_ub_gm_timeout_ms, &retired);
+                    w5_managed_timeout_ms, &retired);
                 if (managed_rc != 0) {
                     fprintf(stderr,
                             "[w4_guest] fail managed completed-step retire"
@@ -15393,7 +15399,7 @@ qwen3_after_service_coverage:
             .request = w5_managed_request,
             .first_step = guest_decode_step_limit - guest_decode_steps,
             .step_count = guest_decode_steps,
-            .timeout_ms = w5_pto_ub_gm_timeout_ms,
+            .timeout_ms = w5_managed_timeout_ms,
             .local_node = round_dispatch_node,
             .node_count = cluster_node_count,
             .pin_limit = 8,

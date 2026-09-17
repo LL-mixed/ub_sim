@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/w5_memory_reuse_common.sh"
+source "$SCRIPT_DIR/w5_model_timeout_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -494,6 +495,7 @@ print_w5_effective_env() {
   print_env_value SIM_W5_MANAGED_SERVING "${SIM_W5_MANAGED_SERVING:-0}"
   print_env_value SIM_W5_MANAGED_ARTIFACT_FINGERPRINT "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
   print_env_value SIM_W5_MANAGED_CONNECT "${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
+  print_env_value SIM_W5_MANAGED_TIMEOUT_MS "${SIM_W5_MANAGED_TIMEOUT_MS:-}"
   print_env_value SIM_W5_MANAGED_APERTURE_SIZE "${SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000}"
   print_env_value SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES "${SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES:-67108864}"
   print_env_value SIM_W5_MANAGED_IMPORT_REGION_BYTES "${SIM_W5_MANAGED_IMPORT_REGION_BYTES:-268435456}"
@@ -954,6 +956,12 @@ bootstrap_w5_memory_service_infra() {
     return 2
   fi
 }
+
+resolve_w5_managed_timeout_status=0
+w5_resolve_managed_timeout_ms || resolve_w5_managed_timeout_status=$?
+if (( resolve_w5_managed_timeout_status != 0 )); then
+  exit "$resolve_w5_managed_timeout_status"
+fi
 
 resolve_w5_managed_fingerprint_status=0
 resolve_w5_managed_fingerprint || resolve_w5_managed_fingerprint_status=$?
