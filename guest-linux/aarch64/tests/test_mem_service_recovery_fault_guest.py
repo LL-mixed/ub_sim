@@ -160,12 +160,14 @@ class RecoveryFaultGuestTests(unittest.TestCase):
             ("cpu-recovery-fault", "obmm", "65536", "1", "reserve_intent_crash", True),
             ("cpu-recovery-fault", "obmm", "65536", "1", "torn_ledger_crash", True),
             ("cpu-recovery-fault", "obmm", "65536", "1", "manager_crash", True),
+            ("cpu-recovery-fault", "obmm", "65536", "1", "guest_crash", True),
             ("cpu-recovery-fault", "loopback", "65536", "1", "reserve_intent_crash", False),
             ("cpu-recovery-fault", "obmm", "4096", "1", "reserve_intent_crash", False),
             ("cpu-recovery-fault", "obmm", "65536", "2", "reserve_intent_crash", False),
             ("cpu-recovery-fault", "obmm", "65536", "1", "none", False),
             ("cpu", "obmm", "65536", "1", "reserve_intent_crash", False),
             ("cpu", "obmm", "65536", "1", "manager_crash", False),
+            ("cpu", "obmm", "65536", "1", "guest_crash", False),
             ("cpu-holder-recovery", "obmm", "65536", "1", "torn_ledger_crash", False),
         )
         for access, backend, size, iterations, fault, valid in profiles:

@@ -1182,13 +1182,15 @@ if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" ]]; then
         "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
         ( "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "reserve_intent_crash" &&
           "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "torn_ledger_crash" &&
-          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "manager_crash" ) ]]; then
+          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "manager_crash" &&
+          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "guest_crash" ) ]]; then
     echo "cpu-recovery-fault requires OBMM, 65536 bytes, one round and a supported recovery fault" >&2
     exit 2
   fi
 elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "reserve_intent_crash" ||
         "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "torn_ledger_crash" ||
-        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "manager_crash" ]]; then
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "manager_crash" ||
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "guest_crash" ]]; then
   echo "recovery faults require cpu-recovery-fault access" >&2
   exit 2
 fi
@@ -2959,6 +2961,9 @@ run_iteration() {
   local nodeb_guest_log="$iter_log_dir/nodeB_guest.log"
   local nodea_qemu_log="$iter_log_dir/nodeA_qemu.log"
   local nodeb_qemu_log="$iter_log_dir/nodeB_qemu.log"
+  local nodeb_before_guest_log="$iter_log_dir/nodeB_before_guest.log"
+  local nodeb_before_qemu_log="$iter_log_dir/nodeB_before_qemu.log"
+  local guest_crash_host_log="$iter_log_dir/guest-crash-host.log"
   local nodea_log_link="$OUT_DIR/ub_nodeA.apps.${iter}.log"
   local nodeb_log_link="$OUT_DIR/ub_nodeB.apps.${iter}.log"
   local nodea_qemu_log_link="$OUT_DIR/ub_nodeA.apps.${iter}.qemu.log"
@@ -3005,6 +3010,8 @@ run_iteration() {
   local nodea_app_append=""
   local nodeb_app_append=""
   local wait_status=0
+  local guest_pid=""
+  local guest_exit_status=0
   local stale_files=()
 
   if [[ "$APPEND_EXTRA" == *"linqu_ub_chat=1"* ]]; then
@@ -3188,7 +3195,9 @@ run_iteration() {
   if (( ${#stale_files[@]} )); then
     rm -f "${stale_files[@]}"
   fi
-  rm -f "$nodea_guest_log" "$nodeb_guest_log" "$nodea_qemu_log" "$nodeb_qemu_log"
+  rm -f "$nodea_guest_log" "$nodeb_guest_log" "$nodea_qemu_log" \
+    "$nodeb_qemu_log" "$nodeb_before_guest_log" "$nodeb_before_qemu_log" \
+    "$guest_crash_host_log"
   ln -sfn "$nodea_guest_log" "$nodea_log_link"
   ln -sfn "$nodeb_guest_log" "$nodeb_log_link"
   ln -sfn "$nodea_qemu_log" "$nodea_qemu_log_link"
@@ -3268,6 +3277,65 @@ run_iteration() {
   if ! kill -0 "$(cat "$nodeb_pid_file" 2>/dev/null)" 2>/dev/null; then
     echo "iteration ${iter}: nodeB died after resume" >&2
     return 1
+  fi
+
+  if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" &&
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "guest_crash" ]]; then
+    if ! wait_for_log_pattern "$nodeb_guest_log" \
+         'mem_service guest-recovery: node=1 phase=crash-ready status=ready' \
+         "$RUN_SECS"; then
+      echo "iteration ${iter}: nodeB did not reach the guest crash barrier" >&2
+      return 31
+    fi
+    guest_pid="$(cat "$nodeb_pid_file")"
+    printf 'mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 pid=%s\n' \
+      "$guest_pid" >"$guest_crash_host_log"
+    kill -9 "$guest_pid" 2>/dev/null || return 31
+    guest_exit_status=0
+    wait "$guest_pid" 2>/dev/null || guest_exit_status=$?
+    if [[ "$guest_exit_status" -ne 137 ]]; then
+      printf 'mem_service guest-recovery-host: phase=guest-exit node=1 status=unexpected exit_code=%s\n' \
+        "$guest_exit_status" >>"$guest_crash_host_log"
+      return 31
+    fi
+    printf 'mem_service guest-recovery-host: phase=guest-exit node=1 status=expected signal=9 exit_code=137\n' \
+      >>"$guest_crash_host_log"
+    rm -f "$nodeb_pid_file"
+    mv "$nodeb_guest_log" "$nodeb_before_guest_log"
+    mv "$nodeb_qemu_log" "$nodeb_before_qemu_log"
+
+    if ! wait_for_log_pattern "$nodea_guest_log" \
+         'mem_service guest-recovery: node=0 phase=guest-down status=isolated' \
+         30; then
+      echo "iteration ${iter}: nodeA did not isolate the lost guest" >&2
+      return 31
+    fi
+    rm -f "$SHARED_DIR/nodeB_ubcdev0__1.status"
+    printf 'mem_service guest-recovery-host: phase=guest-restart node=1 old_incarnation=%s new_incarnation=%s\n' \
+      "$MEM_SERVICE_OBJECT_SHARE_INCARNATION" \
+      "$((MEM_SERVICE_OBJECT_SHARE_INCARNATION + 1))" \
+      >>"$guest_crash_host_log"
+    start_node "nodeB" "nodeB" "$nodeb_guest_log" "$nodeb_qemu_log" \
+      "$nodeb_pid_file" "$nodeb_qmp" "$nodeb_serial" \
+      "$nodeb_app_append mem_service.object_share_guest_restart=1"
+    sleep 1
+    if ! kill -0 "$(cat "$nodeb_pid_file" 2>/dev/null)" 2>/dev/null; then
+      echo "iteration ${iter}: replacement nodeB died after restart" >&2
+      return 31
+    fi
+    if ! wait_for_log_pattern "$nodeb_qemu_log" \
+         'ub_link: connected to remote server' 30; then
+      echo "iteration ${iter}: replacement nodeB did not reconnect UB link" >&2
+      return 31
+    fi
+    if ! wait_for_fm_links_ready "$nodea_qemu_log" "$nodeb_qemu_log" 30; then
+      echo "iteration ${iter}: replacement nodeB links did not become ready" >&2
+      return 31
+    fi
+    if ! check_entity_ready "nodeB-replacement" "$nodeb_qemu_log" 30 "$ENTITY_COUNT"; then
+      echo "iteration ${iter}: replacement nodeB entities not ready" >&2
+      return 31
+    fi
   fi
 
   if [[ "$lingqu_shmem_pto_enabled" -eq 1 ]]; then
@@ -4045,6 +4113,15 @@ run_iteration() {
         python3 "${SCRIPT_DIR}/validate_mem_service_manager_crash_guest.py" \
           --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
           --output "${nodea_guest_log:h}/managed-manager-crash-validation.json" \
+          || return 1
+      elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "guest_crash" ]]; then
+        python3 "${SCRIPT_DIR}/validate_mem_service_guest_crash_guest.py" \
+          --node-a "$nodea_guest_log" \
+          --node-b-before "$nodeb_before_guest_log" \
+          --node-b-after "$nodeb_guest_log" \
+          --qemu-b-before "$nodeb_before_qemu_log" \
+          --host-log "$guest_crash_host_log" \
+          --output "${nodea_guest_log:h}/managed-guest-crash-validation.json" \
           || return 1
       else
         python3 "${SCRIPT_DIR}/validate_mem_service_recovery_fault_guest.py" \
