@@ -68,8 +68,9 @@ def fixture():
         "reason=holder_provider_mismatch",
         "mem_service holder-recovery: node=1 phase=rejoin-stale-identity status=rejected old_incarnation=7 current_incarnation=8 reason=holder_provider_mismatch",
         "mem_service object-session: session=holder-recovery-rejoin-writer peer_canary=ok peers=1",
-        "mem_service object-session: session=holder-recovery-rejoin-writer op=3 action=write key=holder-recovery-rejoin-object status=ok state=active generation=2",
-        "mem_service object-session: session=holder-recovery-rejoin-writer op=4 action=publish_data key=holder-recovery-rejoin-object status=ok state=active generation=2",
+        "mem_service object-session: session=holder-recovery-rejoin-writer op=1 action=acquire key=holder-recovery-rejoin-object status=ok state=active generation=2",
+        "mem_service object-session: session=holder-recovery-rejoin-writer op=3 action=write key=holder-recovery-rejoin-object status=ok offset=0 len=65536 checksum=0xed87efe0aa520383",
+        "mem_service object-session: session=holder-recovery-rejoin-writer op=4 action=publish_data key=holder-recovery-rejoin-object status=ok offset=0 len=65536 checksum=0xed87efe0aa520383",
         "obmm-worker work key=holder-recovery-rejoin-object generation=2 state=allocating",
         "obmm-worker generation=2 phase=published segment=14177894576915742722 export=2",
         "obmm-worker generation=2 phase=reclaimed segment=14177894576915742722 export=0",
@@ -142,6 +143,7 @@ class HolderRecoveryGuestTests(unittest.TestCase):
             (1, "obmm-holder-rejoin: status=prepared"),
             (1, "phase=rejoin-worker"),
             (1, "phase=rejoin-stale-identity"),
+            (1, "action=acquire key=holder-recovery-rejoin-object"),
             (1, "action=write key=holder-recovery-rejoin-object"),
             (1, "phase=rejoin-write"),
             (0, "action=acquire key=holder-recovery-rejoin-object"),
@@ -205,10 +207,26 @@ class HolderRecoveryGuestTests(unittest.TestCase):
 
         logs = fixture()
         logs[1] = logs[1].replace(
-            "phase=rejoin-allocation status=active key=holder-recovery-rejoin-object generation=2",
-            "phase=rejoin-allocation status=active key=holder-recovery-rejoin-object generation=3",
+            "phase=rejoin-write status=pass key=holder-recovery-rejoin-object generation=2",
+            "phase=rejoin-write status=pass key=holder-recovery-rejoin-object generation=3",
         )
         with self.assertRaisesRegex(ValueError, "write identity"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        logs[1] = logs[1].replace(
+            "action=acquire key=holder-recovery-rejoin-object status=ok state=active generation=2",
+            "action=acquire key=holder-recovery-rejoin-object status=ok state=active generation=3",
+        )
+        with self.assertRaisesRegex(ValueError, "writer acquire identity"):
+            validator.validate(*logs)
+
+        logs = fixture()
+        logs[0] = logs[0].replace(
+            "action=read key=holder-recovery-rejoin-object status=ok offset=0 len=65536 checksum=0xed87efe0aa520383",
+            "action=read key=holder-recovery-rejoin-object status=ok offset=0 len=65536 checksum=0x1",
+        )
+        with self.assertRaisesRegex(ValueError, "payload checksum"):
             validator.validate(*logs)
 
         logs = fixture()

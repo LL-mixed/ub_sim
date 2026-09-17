@@ -298,16 +298,22 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"peer_canary=ok peers=1",
         "replacement writer did not establish its peer mapping",
     )
-    require_pattern(
+    rejoin_writer_acquire = require_pattern(
+        node_b,
+        r"action=acquire key=holder-recovery-rejoin-object status=ok "
+        r"state=active generation=([1-9][0-9]*)",
+        "replacement writer did not acquire the rejoined allocation",
+    )
+    rejoin_writer_write = require_pattern(
         node_b,
         r"action=write key=holder-recovery-rejoin-object status=ok "
-        r"state=active generation=[1-9][0-9]*",
+        r"offset=([0-9]+) len=([1-9][0-9]*) checksum=(0x[0-9a-f]+)",
         "replacement writer did not write the rejoined allocation",
     )
-    require_pattern(
+    rejoin_writer_publish = require_pattern(
         node_b,
         r"action=publish_data key=holder-recovery-rejoin-object status=ok "
-        r"state=active generation=[1-9][0-9]*",
+        r"offset=([0-9]+) len=([1-9][0-9]*) checksum=(0x[0-9a-f]+)",
         "replacement writer did not publish the rejoined allocation",
     )
     require_pattern(
@@ -343,10 +349,10 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
         r"state=active generation=([1-9][0-9]*)",
         "remote reader did not acquire the rejoined allocation",
     )
-    require_pattern(
+    rejoin_reader_read = require_pattern(
         node_a,
         r"action=read key=holder-recovery-rejoin-object status=ok "
-        r"offset=0 len=[1-9][0-9]* checksum=0x[0-9a-f]+",
+        r"offset=([0-9]+) len=([1-9][0-9]*) checksum=(0x[0-9a-f]+)",
         "remote reader did not read the rejoined allocation",
     )
     rejoin_read = require_pattern(
@@ -368,6 +374,11 @@ def validate(node_a: str, node_b: str, qemu_a: str, qemu_b: str) -> dict:
             "new allocation was not bound to the replacement incarnation")
     require(stale_identity.groups() == (old_incarnation, current_incarnation),
             "stale-identity rejection did not match the provider replacement")
+    require(rejoin_writer_acquire.group(1) == rejoin_generation,
+            "replacement writer acquire identity does not match the new allocation")
+    require(rejoin_writer_write.groups() == rejoin_writer_publish.groups() ==
+            rejoin_reader_read.groups(),
+            "rejoin payload checksum does not match across write, publish, and read")
     require(rejoin_write.groups() == (rejoin_generation, current_incarnation),
             "replacement write identity does not match the new allocation")
     require(rejoin_done.groups() ==
