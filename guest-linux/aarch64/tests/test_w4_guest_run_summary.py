@@ -98,6 +98,37 @@ def idle_engram_timing(node_id, node_index, step, terminal_wait_ms):
 
 
 class W4GuestRunSummaryTest(unittest.TestCase):
+    def test_counts_managed_terminal_observations_as_decode_tokens(self):
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "w4_guest_run_summary.py"
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "[w4_guest] stage model_terminal_logits_observation "
+                "local=node1 step=0 token=264 runner_up=279 margin_milli=1205 "
+                "text_checksum=0x11 piece_word0=0x000000000061a0c4 "
+                "piece_word1=0x0 source=managed_callable4_logits status=ok\n"
+                "[w4_guest] stage model_terminal_logits_observation "
+                "local=node1 step=1 token=3644 runner_up=2813 margin_milli=33 "
+                "text_checksum=0x22 piece_word0=0x6c61626f6c67a0c4 "
+                "piece_word1=0x0 source=managed_callable4_logits status=ok\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(script), str(run_dir), "2", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("decode_steps_expected=2 decode_steps_observed=2", result.stdout)
+        self.assertIn("decode_output: token_ids=[264, 3644]", result.stdout)
+        self.assertIn("decode_token: step=1 node=nodeA token=3644", result.stdout)
+
     def test_counts_deepseek_runtime_input_marker(self):
         script = Path(__file__).resolve().parents[1] / "scripts" / "w4_guest_run_summary.py"
 

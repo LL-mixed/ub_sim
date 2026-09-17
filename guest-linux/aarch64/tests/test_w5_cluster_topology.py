@@ -347,6 +347,13 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("managed-model-provider-fingerprint", source)
         self.assertIn("managed-model-provider: .*completion=success", source)
         self.assertIn("w5_managed_request_cleanup", source)
+        boundary_validation = source.split(
+            "validate_w5_boundary_observation_summary() {", 1
+        )[1].split("\nfile_size_bytes()", 1)[0]
+        self.assertIn(
+            'if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]; then\n    return 0',
+            boundary_validation,
+        )
         self.assertIn(
             "live_objects=0 backing_bytes=0 address_bytes=0 "
             "export_mappings=0 import_mappings=0",

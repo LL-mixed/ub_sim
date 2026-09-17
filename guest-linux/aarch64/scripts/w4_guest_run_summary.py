@@ -146,7 +146,13 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
                 if clean_line.startswith("[mem_service] stage "):
                     latest_status[node_id] = clean_line[len("[mem_service] ") :]
 
-                if "model_terminal_token_result_publish" in clean_line:
+                if (
+                    "model_terminal_token_result_publish" in clean_line
+                    or (
+                        "model_terminal_logits_observation" in clean_line
+                        and "source=managed_callable4_logits" in clean_line
+                    )
+                ):
                     fields = parse_pairs(clean_line)
                     step = parse_int(fields.get("step"), None)
                     if step is not None:

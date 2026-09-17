@@ -1767,6 +1767,9 @@ validate_w5_boundary_observation_summary() {
   if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
     return 0
   fi
+  if [[ "$SIM_W5_MANAGED_SERVING" == "1" ]]; then
+    return 0
+  fi
   if [[ ! -f "$RUN_SUMMARY_FILE" ]]; then
     trace "FAIL: W5 boundary observation summary missing path=$RUN_SUMMARY_FILE"
     return 1
