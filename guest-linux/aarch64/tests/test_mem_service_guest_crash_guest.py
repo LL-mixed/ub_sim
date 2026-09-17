@@ -160,6 +160,15 @@ class GuestCrashGuestTests(unittest.TestCase):
         self.assertIn("managed_reconciliation_required", function)
         self.assertIn('kill -9 "$guest_pid"', runner)
         self.assertIn("mem_service.object_share_guest_restart=1", runner)
+        restart_block = runner.split(
+            "phase=guest-restart", 1
+        )[1].split("if ! wait_for_fm_links_ready", 1)[0]
+        self.assertNotIn("ub_link: connected to remote server", restart_block)
+        self.assertIn(
+            "ub_link: apply nodeA\\.ubcdev0:1 <-> ubcdev0:1 "
+            "\\(shmem=1 sock=1 guid=1 snap=1",
+            restart_block,
+        )
         self.assertIn("validate_mem_service_guest_crash_guest.py", runner)
         self.assertIn("managed-guest-crash-validation.json", runner)
 

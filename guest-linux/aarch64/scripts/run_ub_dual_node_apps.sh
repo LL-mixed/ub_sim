@@ -3324,8 +3324,9 @@ run_iteration() {
       return 31
     fi
     if ! wait_for_log_pattern "$nodeb_qemu_log" \
-         'ub_link: connected to remote server' 30; then
-      echo "iteration ${iter}: replacement nodeB did not reconnect UB link" >&2
+         'ub_link: apply nodeA\.ubcdev0:1 <-> ubcdev0:1 \(shmem=1 sock=1 guid=1 snap=1' \
+         30; then
+      echo "iteration ${iter}: replacement nodeB did not reconcile UB link" >&2
       return 31
     fi
     if ! wait_for_fm_links_ready "$nodea_qemu_log" "$nodeb_qemu_log" 30; then
