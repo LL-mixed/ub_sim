@@ -447,17 +447,25 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   while true; do
     producer_count=0
     consumer_count=0
+    consumer_failure_count=0
     if [[ -f "$producer_log" ]]; then
       producer_count="$(grep -c '^OBMM_ASYNC_LOAD_EXPORT .*status=ready' "$producer_log" || true)"
     fi
     if [[ -f "$consumer_log" ]]; then
       if (( MAPPING_REUSE_ADVERSARIAL )); then
         consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_MAPPING_REUSE_SUMMARY .*status=pass' "$consumer_log" || true)"
+        consumer_failure_count="$(grep -c '^OBMM_ASYNC_LOAD_MAPPING_REUSE_SUMMARY .*status=fail' "$consumer_log" || true)"
       elif (( KERNEL_TASK_REPLAY )); then
         consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_KERNEL_TASK_SUMMARY .*status=pass' "$consumer_log" || true)"
       else
         consumer_count="$(grep -c '^OBMM_ASYNC_LOAD_SUMMARY .*status=pass' "$consumer_log" || true)"
       fi
+    fi
+    if (( MAPPING_REUSE_ADVERSARIAL && consumer_failure_count > 0 )); then
+      echo "ASYNC_LOAD mapping-reuse guest reported failure" >&2
+      grep '^OBMM_ASYNC_LOAD_\(KERNEL_THREAD\|MAPPING_REUSE_SUMMARY\)' \
+        "$consumer_log" >&2 || true
+      exit 1
     fi
     if (( producer_count == 1 && consumer_count == 1 )); then
       break
@@ -503,6 +511,9 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
     late_drop_count="$(grep -c '^UB_VOID_RESPONSE_LATE_DROP ' "$RUN_DIR/nodeB_qemu.log" || true)"
     duplicate_drop_count="$(grep -c '^UB_VOID_RESPONSE_DUPLICATE_DROP ' "$RUN_DIR/nodeB_qemu.log" || true)"
     duplicate_schedule_count="$(grep -c '^UB_VOID_RESPONSE_DUPLICATE_SCHEDULE ' "$RUN_DIR/nodeA_qemu.log" || true)"
+    identity_route_count="$(grep -c '^SIM_DEC_OBMM_EXPORT_IDENTITY_ROUTE ' "$RUN_DIR/nodeA_qemu.log" || true)"
+    identity_route_tokens="$(grep '^SIM_DEC_OBMM_EXPORT_IDENTITY_ROUTE ' "$RUN_DIR/nodeA_qemu.log" | sed -n 's/.* token=\([0-9][0-9]*\) .*/\1/p' | sort -u | wc -l | tr -d ' ' || true)"
+    identity_reject_count="$(grep -c '^SIM_DEC_OBMM_EXPORT_IDENTITY_REJECT ' "$RUN_DIR/nodeA_qemu.log" || true)"
     cache_fill_count="$(grep -c '^ASYNC_LOAD_CACHEABLE_FILL ' "$RUN_DIR/nodeB_qemu.log" || true)"
     kernel_block_count="$(grep -c 'remote-load block path=.* pid=' "$consumer_log" || true)"
     kernel_wake_count="$(grep -c 'remote-load wake path=.* pid=' "$consumer_log" || true)"
@@ -530,6 +541,8 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
           "$guard_arm_count" -lt 1 || "$stale_mapping_count" != "1" ||
           "$late_drop_count" -lt 1 || "$duplicate_drop_count" -lt 1 ||
           "$duplicate_schedule_count" -lt 1 || "$cache_fill_count" != "0" ||
+          "$identity_route_count" != "2" || "$identity_route_tokens" != "2" ||
+          "$identity_reject_count" != "0" ||
           "$kernel_block_count" != "0" || "$kernel_wake_count" != "0" ]]; then
       echo "ASYNC_LOAD mapping-reuse lifetime evidence is incomplete" >&2
       exit 1
@@ -980,7 +993,7 @@ if (( ASYNC_LOAD_PRODUCER_CONSUMER )); then
   print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeA role=producer export_mem_id=$async_load_export_mem_id writes=$async_load_coroutines status=ready"
   if (( MAPPING_REUSE_ADVERSARIAL )); then
     print -r -- "OBMM_ASYNC_LOAD_NODE_EVIDENCE node=nodeB role=consumer source_export_mem_id=$async_load_source_mem_id threads=1 completed=1 event_log=$ASYNC_LOAD_EVENT_LOG status=pass"
-    print -r -- "OBMM_ASYNC_LOAD_MAPPING_REUSE_EVIDENCE guard_arms=$guard_arm_count stale_mapping_rejections=$stale_mapping_count late_drops=$late_drop_count duplicate_drops=$duplicate_drop_count duplicate_schedules=$duplicate_schedule_count cache_fills=$cache_fill_count blocks=$kernel_block_count wakes=$kernel_wake_count status=pass"
+    print -r -- "OBMM_ASYNC_LOAD_MAPPING_REUSE_EVIDENCE guard_arms=$guard_arm_count stale_mapping_rejections=$stale_mapping_count late_drops=$late_drop_count duplicate_drops=$duplicate_drop_count duplicate_schedules=$duplicate_schedule_count identity_routes=$identity_route_count identity_tokens=$identity_route_tokens identity_rejects=$identity_reject_count cache_fills=$cache_fill_count blocks=$kernel_block_count wakes=$kernel_wake_count status=pass"
     grep '^OBMM_ASYNC_LOAD_\(WRITE\|EXPORT\|REPLACEMENT_WRITE\|REPLACEMENT_EXPORT\)' "$producer_log"
     grep '^OBMM_ASYNC_LOAD_\(KERNEL_THREAD\|MAPPING_REUSE_SUMMARY\)' "$consumer_log"
   elif (( KERNEL_TASK_REPLAY )); then

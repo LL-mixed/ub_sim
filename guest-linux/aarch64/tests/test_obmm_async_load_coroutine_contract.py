@@ -576,6 +576,10 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     assert "UB_VOID_RESPONSE_LATE_DROP" in ubc
     assert "UB_VOID_RESPONSE_DUPLICATE_DROP" in ubc
     assert "UB_VOID_RESPONSE_DUPLICATE_SCHEDULE" in ubc
+    assert "SIM_DEC_OBMM_EXPORT_IDENTITY_ROUTE" in ubc
+    assert "SIM_DEC_OBMM_EXPORT_IDENTITY_REJECT" in ubc
+    assert "obmm_export_read_exact" in ubc
+    assert "obmm_export_write_exact" in ubc
     assert "voided_tombstones" in ubc
     assert "ubc_obmm_async_child_try_void" in ubc
     assert "UBC_VOID_TRIGGER_SOURCE_POLICY" in ubc
@@ -622,6 +626,8 @@ def test_void_response_policy_controls_wire_fault_and_tokenless_retry():
     assert "OBMM_ASYNC_LOAD_MAPPING_REUSE_SUMMARY" in app
     assert "obmm_async_mapping_reuse_adversarial=1" in run_app
     assert "OBMM_ASYNC_LOAD_MAPPING_REUSE_EVIDENCE" in runner
+    assert "consumer_failure_count" in runner
+    assert "identity_route_tokens" in runner
 
 
 def test_normal_cacheable_void_response_uses_fill_replay_without_nc_plt():
