@@ -151,6 +151,7 @@ class ManagerCrashGuestTests(unittest.TestCase):
         self.assertIn("phase=old-replay status=rejected", function)
         self.assertIn("phase=new-allocation status=rejected", function)
         self.assertIn('mem_service_object_share_manager_recovery "$node"', run_app)
+        self.assertIn('[ "$fault" != "manager_crash" ]; } ||', run_app)
         self.assertIn("validate_mem_service_manager_crash_guest.py", runner)
         self.assertIn("managed-manager-crash-validation.json", runner)
 

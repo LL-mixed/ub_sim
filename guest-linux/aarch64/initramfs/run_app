@@ -2863,7 +2863,8 @@ run_mem_service_object_share() {
           [ "$fault" != "capacity" ] && [ "$fault" != "address_capacity" ] &&
           [ "$fault" != "backing_capacity" ] && [ "$fault" != "allocation_pressure" ] &&
           [ "$fault" != "reserve_intent_crash" ] &&
-          [ "$fault" != "torn_ledger_crash" ]; } ||
+          [ "$fault" != "torn_ledger_crash" ] &&
+          [ "$fault" != "manager_crash" ]; } ||
         { { [ "$fault" = "capacity" ] || [ "$fault" = "address_capacity" ] ||
             [ "$fault" = "backing_capacity" ] || [ "$fault" = "allocation_pressure" ]; } &&
           [ "$iterations" != "1" ]; }; then
