@@ -637,6 +637,25 @@ reference/import mapping、一项 quarantined/in-flight 义务、目录 data pla
 down/up，终态无遗留 QEMU。该结果关闭管理进程故障的重复重启隔离子项；整个
 guest 故障、其他事务阶段及重复故障矩阵继续待验收，M3 与总目标保持进行中。
 
+同日 M3 整个 guest 故障续作：父仓库 r31-r36 增加 node B 实际 `SIGKILL`、
+replacement guest 启动、存量对象隔离和双端重新加入。逐轮修正 holder 等待上限、
+replacement peer 配对、UB/FM link 判定、存活 node 的重新握手，以及把稳定 GSVA
+aperture generation 与本轮 bootstrap/provider incarnation 分离。n4-910c1 r36 使用
+父仓库 `8a4061d5`、服务 `0313f1f`、QEMU `5809bc8a1a`、kernel
+`dd07fe43c50d` 和 initramfs
+`7e1e9179bc239b4af9e3457924c6e48ecc5e8beddbd1b76f92edbdc91fe74380`
+完成实际 guest 退出码 137 及 incarnation 7→8 的替换。两端以 bootstrap
+generation 8 重建 manager/provider 通道；存活 node 复用 generation 7 的既有
+kernel aperture，replacement node 以同一稳定 aperture generation 注册。双方
+provider conformance 均通过。旧对象保持 1 个 live ref、1 个 import mapping 与
+2097152 bytes 隔离义务，旧 replay 和新 allocation 均以
+`managed_reconciliation_required` 拒绝，data plane 保持未就绪。原 runner 因把
+QEMU `cpu_window` 诊断行当成结构化 `GSVA_MAP` 而记录失败；`e6f91ecb` 限定映射
+记录解析后直接复核原始日志，得到
+`scope=actual-guest-sigkill-restart-isolation status=pass`，未重跑 guest。终态无
+遗留 QEMU。该结果关闭单次整个 guest 杀死、替换和隔离子项；其他事务阶段、
+重复 guest 故障与完整重复故障矩阵继续待验收，M3 与总目标保持进行中。
+
 ## 1. 范围与依据
 
 2026-09-15 W5 前置续作：两份指定模型完整权重 SHA 已固定，当前 Rust parser

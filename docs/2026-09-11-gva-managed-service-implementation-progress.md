@@ -6138,3 +6138,89 @@ report      4d5639b62955a41bde8a699f8e773e306b91046c1a0c8522bfaeefc2c1c9de6c
 精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭 M3 管理进程故障的
 重复重启隔离子项。整个 guest 故障、其他事务注入阶段及重复故障矩阵仍未完成；
 M3 与总目标继续保持进行中。
+
+### n4 双 guest guest-crash r31-r36：整个 guest 替换隔离
+
+父仓库 r31 增加 `guest_crash` 场景：node A 创建真实 provider-backed allocation，
+node B 持有实际 import mapping；宿主确认 crash-ready 后向 node B QEMU 发送
+`SIGKILL`，等待退出码 137，再以 provider incarnation 8 启动 replacement guest。
+恢复目标要求 node A 保留 incarnation 7 的旧对象身份和物理 export，同时把旧对象
+隔离；replacement 加入后，旧 replay 和新 allocation 必须继续失败关闭。
+
+r31-r35 逐项暴露并修正启动编排中的独立缺口：
+
+- `cc2e4768` 将 holder 等待上限从 600 秒恢复为 60 秒，避免失败场景占满 runner
+  生命周期。
+- `e9223db1` 为 replacement object-session canary 补齐对端，使真实跨 guest
+  mapping 能建立。
+- `871876fe` 以 replacement UB/FM/entity 状态作为重新连通判据，停止等待新 guest
+  不会生成的旧日志文本。
+- `a4652171` 让存活 node A 参与新一轮 manager/provider 握手，消除只有 node B
+  发布新代 descriptor 的单边状态。
+- `8a4061d5` 分离稳定 aperture generation 与 bootstrap generation。node A 保留并
+  查询复用 kernel aperture generation 7，node B replacement 注册同一 aperture
+  generation；两端以 bootstrap/provider generation 8 完成 descriptor exchange、
+  manager queues、HELLO 与 provider conformance。
+
+最后一个代码批次的本地轻量门禁为 shell 语法、15 个相关 Python 测试和差异检查；
+执行项全部通过，另有 5 项按平台条件跳过。r36 的实际运行组合为：
+
+```text
+parent guest run 8a4061d5
+validator        e6f91ecb
+mem_service      0313f1f8da991431487d05d7425f74e4020665ae
+qemu             5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel           dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs        7e1e9179bc239b4af9e3457924c6e48ecc5e8beddbd1b76f92edbdc91fe74380
+```
+
+真实运行完成以下行为：
+
+- 宿主记录 node B `SIGKILL`、预期退出码 137 和 incarnation 7→8 的重启回执。
+- node A 以 aperture generation 7、bootstrap generation 8、`reuse_aperture=1`
+  完成重新握手；node B 以 aperture generation 7、bootstrap generation 8 注册。
+- 两端 OBMM provider conformance 均报告 `status=ok`，replacement provider
+  directory 恢复到两个 active provider；故障对象的 data plane 保持 0。
+- node A 和 replacement node B 均观察故障对象为 quarantined；node A 保留
+  `live_refs=1 import_mappings=1 quarantined_bytes=2097152`，kernel 中保留唯一
+  2097152-byte home export。
+- 旧 acquire replay 和新 allocation 均以
+  `managed_reconciliation_required` 拒绝，最终 observation 为 `status=pass`。
+
+原 r36 runner 报告为 0/1。唯一失败来自验证器将以下 QEMU 诊断行按结构化 mapping
+记录解析：
+
+```text
+GSVA_MAP: cpu_window registered at pa=40000200000 size=200000
+```
+
+`e6f91ecb` 只接收以 `map_id=` 开头的 `GSVA_MAP/GSVA_UNMAP` 记录，并增加上述真实
+诊断行夹具。定向测试 4/4 通过。提交后的验证器直接复核 r36 原始日志，无需重建
+initramfs 或重跑 QEMU，结果为：
+
+```text
+status                    pass
+scope                     actual-guest-sigkill-restart-isolation
+generation                1
+guest_exit_code            137
+old/new incarnation       7 / 8
+provider_state            isolated
+managed_recovery_required true
+live_refs                 1
+import_mappings           1
+quarantined_bytes         2097152
+```
+
+原始证据 SHA-256：
+
+```text
+nodeA guest       55dbab6964ab8751d578de1c928a209a9bc354a0a2b7a972012796799346881f
+nodeB before      ad0d07b73dd2864dfa66c36576b22e18a3b519e6d90e39e55eb327e445d99278
+nodeB replacement 4823784a4dc68faca3a22af790fd4f4568d1316ff8fd64e1422d29323c975c08
+nodeB QEMU before ee53036ada8fee95f71beac1797255432afd341e2b8857a8e4a606041d65d0a5
+host log          2599bb31f8016887653982e5eb0a585b104baa2008bf75466219a3390a455d95
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭 M3 的单次整个 guest
+杀死、replacement 启动、存活 peer 重新握手和故障对象隔离子项。它不覆盖重复
+guest 故障、其他事务注入阶段或完整重复故障矩阵；M3 与总目标继续保持进行中。
