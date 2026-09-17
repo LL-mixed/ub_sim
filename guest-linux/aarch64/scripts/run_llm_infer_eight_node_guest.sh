@@ -614,7 +614,7 @@ validate_w5_managed_serving() {
     trace "FAIL: managed serving output/allocator/import/mapping capacity is invalid"
     return 1
   fi
-  trace "prepare: managed serving connect=$SIM_W5_MANAGED_CONNECT nodes=$SIM_W5_CLUSTER_NODE_COUNT aperture_base=$SIM_W5_MANAGED_APERTURE_BASE aperture_size=$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=kernel-selected-noncontiguous"
+  trace "prepare: managed serving connect=$SIM_W5_MANAGED_CONNECT nodes=$SIM_W5_CLUSTER_NODE_COUNT aperture_base=$SIM_W5_MANAGED_APERTURE_BASE aperture_size=$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=node-partitioned-kernel-probed"
   return 0
 }
 
@@ -1358,7 +1358,7 @@ start_w5_managed_service() {
     log "FAIL: managed OBMM provider worker exited node=\$node"
     return 1
   fi
-  log "managed_service ready node=\$node incarnation=\$incarnation bootstrap_generation=\$SIM_W5_MANAGED_BOOTSTRAP_GENERATION connect=\$SIM_W5_MANAGED_CONNECT aperture_base=\$SIM_W5_MANAGED_APERTURE_BASE aperture_size=\$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=kernel-selected-noncontiguous"
+  log "managed_service ready node=\$node incarnation=\$incarnation bootstrap_generation=\$SIM_W5_MANAGED_BOOTSTRAP_GENERATION connect=\$SIM_W5_MANAGED_CONNECT aperture_base=\$SIM_W5_MANAGED_APERTURE_BASE aperture_size=\$SIM_W5_MANAGED_APERTURE_SIZE allocation_policy=node-partitioned-kernel-probed"
   return 0
 }
 

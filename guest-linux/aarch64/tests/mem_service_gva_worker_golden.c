@@ -9,7 +9,8 @@ enum failure_mode {
     UNEXPORT_FAIL, RETIRE_FAIL, RECLAIM_FAIL, BAD_RECLAIM_REPLY,
     CANCEL_FAIL, BAD_CANCEL_REPLY, BAD_CANCEL_BINDING, BACKED_CANCEL_REPLY,
     BACKING_EMPTY, ADDRESS_FULL, ADDRESS_FULL_WITH_DESC, ALLOC_COPY_LOST,
-    ALLOC_EMPTY_IO_ERROR, ALLOC_OUTSIDE_APERTURE, ADDRESS_FULL_JOURNAL_FAIL
+    ALLOC_EMPTY_IO_ERROR, ALLOC_OUTSIDE_APERTURE, ADDRESS_FULL_JOURNAL_FAIL,
+    ADDRESS_BUSY_ONCE
 };
 static enum failure_mode mode;
 static unsigned allocated, exports, publishes;
@@ -35,6 +36,7 @@ static uint64_t resume_service_mem_id, resume_service_token_id;
 static bool rollback_empty;
 static unsigned cancellations, loop_polls;
 static uint64_t kernel_address = 0x700000000000ULL;
+static unsigned busy_rejections;
 static bool fail_next_sync;
 static const struct mem_service_client_allocation *direct_work;
 static struct mem_service_client_allocation polled_work;
@@ -435,8 +437,13 @@ int __wrap_mem_service_client_provider_deregister(const struct mem_service_clien
 
 int __wrap_gva_manager_allocate_segment(int fd, struct obmm_cmd_gsva_alloc_segment_v1 *cmd)
 {
-    assert(fd == 42 && cmd->requested_home_va == 0);
+    assert(fd == 42 && cmd->requested_home_va != 0);
     allocated++;
+    if (mode == ADDRESS_BUSY_ONCE && busy_rejections == 0) {
+        busy_rejections++;
+        errno = EBUSY;
+        return -1;
+    }
     if (mode == ADDRESS_FULL || mode == ADDRESS_FULL_JOURNAL_FAIL ||
         mode == ALLOC_COPY_LOST || mode == ALLOC_EMPTY_IO_ERROR) {
         fail_next_sync = mode == ADDRESS_FULL_JOURNAL_FAIL;
@@ -446,7 +453,7 @@ int __wrap_gva_manager_allocate_segment(int fd, struct obmm_cmd_gsva_alloc_segme
     }
     cmd->desc = (struct obmm_gsva_segment_desc_v1){
         .version = 1, .flags = 7, .segment_id = 9 + allocated,
-        .home_va = kernel_address,
+        .home_va = cmd->requested_home_va,
         .size = cmd->size, .epoch = 1, .home_cna = 7, .owner_node_id = 0,
         .node_count = 2, .cache_policy = cmd->cache_policy, .access_flags = 3,
         .token_id = 2 + allocated, .token_value = 3 + allocated,
@@ -817,6 +824,30 @@ int main(void)
         work.alignment_bytes = 65536;
     }
     {
+        unsigned before;
+
+        work.size_bytes = 65536;
+        mode = GOOD;
+        aperture.node_id = 1;
+        memset(&reservation, 0, sizeof(reservation));
+        assert(!allocate_work(42, fileno(journal), &config, &client,
+                              &aperture, &work, &reservation));
+        assert(reservation.segment.home_va ==
+               aperture.base + aperture.size / aperture.node_count);
+
+        aperture.node_id = 0;
+        mode = ADDRESS_BUSY_ONCE;
+        busy_rejections = 0;
+        before = allocated;
+        memset(&reservation, 0, sizeof(reservation));
+        assert(!allocate_work(42, fileno(journal), &config, &client,
+                              &aperture, &work, &reservation));
+        assert(busy_rejections == 1 && allocated == before + 2);
+        assert(reservation.segment.home_va ==
+               aperture.base + config.allocation_granularity_bytes);
+        mode = GOOD;
+    }
+    {
         unsigned before = allocated;
         memset(&reservation, 0, sizeof(reservation));
         work.size_bytes = 17;
@@ -894,9 +925,9 @@ int main(void)
         }
     }
     {
-        /* Kernel selection may return a released address. The worker must
-         * keep the new identity and reject old cleanup, without a high-water
-         * cursor. This boundary fixture does not simulate actual OBMM I/O. */
+        /* The generation rotates the first candidate within the local node
+         * slice. The kernel remains authoritative for reuse, while stale
+         * cleanup stays identity-bound. */
         struct mem_service_client_allocation previous = {0};
         struct obmm_gsva_segment_desc_v1 old_segment = {0};
         mode = GOOD;
@@ -909,7 +940,12 @@ int main(void)
             work.size_bytes = 65536;
             assert(!allocate_work(42, fileno(journal), &config, &client,
                                   &aperture, &work, &reservation));
-            assert(reservation.segment.home_va == kernel_address);
+            assert(reservation.segment.home_va ==
+                   aperture.base +
+                       ((work.generation - 1) %
+                        (aperture.size / aperture.node_count /
+                         config.allocation_granularity_bytes)) *
+                           config.allocation_granularity_bytes);
             assert(reservation.segment.segment_id != old_segment.segment_id);
             assert(reservation.segment.token_id != old_segment.token_id);
             assert(reservation.segment.token_value != old_segment.token_value);

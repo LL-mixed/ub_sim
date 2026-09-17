@@ -326,7 +326,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn(
             "/bin/linqu_mem_service_provider_obmm serve-allocations", source
         )
-        self.assertIn("allocation_policy=kernel-selected-noncontiguous", source)
+        self.assertIn("allocation_policy=node-partitioned-kernel-probed", source)
         self.assertIn("SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000", source)
         self.assertIn("SIM_W5_MANAGED_MAX_MAPPINGS:-8", source)
         self.assertIn("SIM_W5_MANAGED_MAX_MAPPINGS > 8", source)
