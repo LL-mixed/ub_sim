@@ -264,6 +264,35 @@ int main(int argc, char **argv) {
         self.assertLess(local.index("ubc_dma_read_local_data_tid_strict("),
                         local.index("memory_region_add_subregion_overlap("))
 
+    def test_routine_cpu_window_hits_are_page_scoped(self):
+        source = (QEMU / "hw/ub/ub_ubc.c").read_text()
+        translate = source.split(
+            "int gsva_arm_mmu_translate_full(", 1
+        )[1].split(
+            "int gsva_arm_mmu_translate(", 1
+        )[0]
+        self.assertIn("gsva_tlb_stable_matches(page_va", translate)
+        self.assertIn("gsva_tlb_stable_set(page_va", translate)
+        self.assertIn("if (!tlb_hit || ubc_trace_data_path_enabled())", translate)
+
+        coherence = (QEMU / "hw/ub/gsva_coherence.c").read_text()
+        read_acquire = coherence.split(
+            "int gsva_coh_read_acquire_tx(", 1
+        )[1].split(
+            "int gsva_coh_write_acquire_tx(", 1
+        )[0]
+        write_acquire = coherence.split(
+            "int gsva_coh_write_acquire_tx(", 1
+        )[1].split(
+            "int gsva_coh_retire(", 1
+        )[0]
+        self.assertIn("bool existing_sharer", read_acquire)
+        self.assertIn(
+            "if (!existing_sharer || gsva_coh_trace_hits_enabled())",
+            read_acquire,
+        )
+        self.assertIn("if (gsva_coh_trace_hits_enabled())", write_acquire)
+
     def test_legacy_export_retire_removes_route_before_export_record(self):
         source = (QEMU / "hw/ub/ub_ubc.c").read_text()
         helper = source.split(
