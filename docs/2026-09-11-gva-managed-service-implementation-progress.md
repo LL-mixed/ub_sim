@@ -6224,3 +6224,56 @@ host log          2599bb31f8016887653982e5eb0a585b104baa2008bf75466219a3390a455d
 精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭 M3 的单次整个 guest
 杀死、replacement 启动、存活 peer 重新握手和故障对象隔离子项。它不覆盖重复
 guest 故障、其他事务注入阶段或完整重复故障矩阵；M3 与总目标继续保持进行中。
+
+### n4 双 guest worker-transaction r37：七个可续作边界
+
+独立服务 `48a542e20b6ab6f81f5c072d2d743c4922e6eac1` 将 OBMM allocation
+worker 的确定性 `sync-exit` allowlist 扩展到 `reserved`、`exported`、
+`published`、`release-intent`、`unexported`、`retired` 和 `reclaimed`。
+恢复状态机自身已覆盖这些 ledger phase；本批补齐可配置注入入口、Linux C
+allowlist 测试及 provider 源码契约测试。n4-910c1 上 worker ledger 5/5 通过，
+实际 managed OBMM worker 完整构建成功。该提交已只推送用户授权的
+`origin/codex/gva-managed-service-completion`；父仓库只更新本地 gitlink/lock，
+没有推送。
+
+父仓库 `01cda3aa326f79909d757bac1c6edf92e121a9d5` 为同一组 phase 增加实际
+双 guest profile。node A 在精确 ledger phase 收到 exit 86 后，以无故障配置
+重新启动 worker。allocation-side 恢复到 active 后由独立控制 session 核对、
+retire 并等待 retired；release-side 直接继续未完成的 unexport、retire 和
+reclaim。两端观察器都要求最终对象为 retired、全部资源统计为零、provider
+directory 为 `active=2 ready=1`，同时保持 `data_plane_ready=0`。验证器还区分
+allocation-side 的 `reservations=1` 和 release-side 的 `reservations=0`，并检查
+最终 kernel region 回到基线。
+
+本地轻量门禁只执行一次：shell 语法与 Python 编译通过；transaction recovery
+7/7、manager-crash 5/5、guest-crash 4/4 通过；`git diff --check` 通过。没有在
+本地启动 QEMU、模型、workload 或完整测试集合。远端运行组合为：
+
+```text
+parent      01cda3aa326f79909d757bac1c6edf92e121a9d5
+mem_service 48a542e20b6ab6f81f5c072d2d743c4922e6eac1
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   9cd35c36dcbd6fdbedc8214a705753bac5cf750b4174f20df7ab662ae3823d0d
+```
+
+同一 validation initramfs 分别运行七个 case，每个 case 只执行一次，runner 均
+exit 0、1/1 PASS。机器报告统一记录 generation 1、worker exit 86、
+`recovery=resumed`、`final_state=retired`、`provider_state=ready` 和
+`resource_reconciliation_required=false`。报告 SHA-256 为：
+
+| fault | ledger phase | resume reservations | validation JSON SHA-256 |
+| --- | --- | ---: | --- |
+| `address_reserved_crash` | `reserved` | 1 | `00d8eee298433372c14dc3fa09c57e93c0b21d0639161ce9e7a21f308273196f` |
+| `backing_exported_crash` | `exported` | 1 | `7d49107de510a82527e558014c3e5914dc127dfd1908a3973d7a2160b22a387c` |
+| `published_crash` | `published` | 1 | `486f4495c234b65cded24b85bfa59664d329ed9a133fb6161325ad4bd52147ca` |
+| `release_intent_crash` | `release-intent` | 0 | `5759d2b7dab00e9812e8d56bf603f66626942fc09c49ea8fc368d57b54f11bf6` |
+| `unexported_crash` | `unexported` | 0 | `20634ed092a148cc706fd6064f4fa129f304ef9648621bc8916447cddad1557f` |
+| `retired_crash` | `retired` | 0 | `6e42cdd4ba5ac53e1a3ad94665a5adf62bb2f06a6a51d5f22554f224fa4274c5` |
+| `reclaimed_crash` | `reclaimed` | 0 | `7a0395b29a5292f7083775c96645c64460c4405511aa0de7159b94c4572dd102` |
+
+每轮最终 `live_objects`、backing/address、refs、in-flight、quarantine 和 import
+mapping 全部为 0；kernel export/import inventory 也归零。精确进程查询确认七轮
+结束后没有遗留 `qemu-system-aarch64`。该结果关闭七个可续作事务 phase 的单次
+实际 worker 杀死/重启子项。ACK 缺失、重复事务故障、重复 guest 故障和完整重复
+故障矩阵继续待验收；M3 与总目标保持进行中。
