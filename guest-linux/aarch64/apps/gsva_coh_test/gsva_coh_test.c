@@ -2141,7 +2141,8 @@ static void test_coh_remote_fence(int obmm_fd, uint32_t local_cna,
 
 /* ---- Test: coh_remote_retire ---- */
 static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
-                                   int node_idx, int node_count)
+                                   int node_idx, int node_count,
+                                   bool expect_missing_ack)
 {
     const uint64_t metadata_generation = 0x475356410608ULL;
     const uint64_t token_generation = 0x475356410609ULL;
@@ -2175,7 +2176,9 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
     bool retire_already_complete = false;
     int rc;
 
-    TEST("GSVA remote retire drains a physical holder before ACK");
+    TEST(expect_missing_ack ?
+         "GSVA remote retire remains isolated without holder ACK" :
+         "GSVA remote retire drains a physical holder before ACK");
     if (node_count < 2) {
         FAIL("remote retire requires at least two nodes");
         return;
@@ -2341,6 +2344,18 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                                ready_generation, metas, got);
     CHECK(rc == 0, "retire ready barrier should complete");
 
+    if (expect_missing_ack) {
+        printf("%s   coh_remote_retire_timeout peer_loss_ready node=%d\n",
+               TAG, node_idx);
+        fflush(stdout);
+        if (node_idx == 1) {
+            for (;;) {
+                pause();
+            }
+        }
+        usleep(3000000);
+    }
+
     if (node_idx == 0) {
         rc = gsva_send_tagged_event_epoch(
             obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, peer_cna,
@@ -2354,8 +2369,13 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
             token_id, token_value, segment_id, home_base, GSVA_SIZE,
             home_p_tag, home_epoch, &ev_error);
         CHECK(rc == 0, "Retire should reach QEMU");
-        CHECK(ev_error == GSVA_ERR_COH_PENDING || ev_error == GSVA_OK,
-              "retire should wait for or consume remote RetireAck");
+        if (expect_missing_ack) {
+            CHECK(ev_error == GSVA_ERR_COH_PENDING,
+                  "retire without peer must remain pending");
+        } else {
+            CHECK(ev_error == GSVA_ERR_COH_PENDING || ev_error == GSVA_OK,
+                  "retire should wait for or consume remote RetireAck");
+        }
 
         struct obmm_cmd_gsva_query_v1 query = {0};
         struct {
@@ -2395,10 +2415,51 @@ static void test_coh_remote_retire(int obmm_fd, uint32_t local_cna,
                     home_base, GSVA_SIZE, home_p_tag, home_epoch,
                     &ev_error);
                 CHECK(rc == 0, "Retry should reach QEMU");
-                if (ev_error == GSVA_OK)
+                if (ev_error == GSVA_OK ||
+                    (expect_missing_ack &&
+                     ev_error == GSVA_ERR_COH_TIMEOUT))
                     break;
                 usleep(100000);
             }
+        }
+        if (expect_missing_ack) {
+            struct obmm_cmd_gsva_query_v1 timeout_query = {0};
+            struct {
+                uint32_t version;
+                int32_t error;
+                uint8_t data[240];
+            } *timeout_resp = (void *)timeout_query.resp_data;
+
+            printf("%s   coh_remote_retire_timeout Retry error=%d\n",
+                   TAG, ev_error);
+            CHECK(ev_error == GSVA_ERR_COH_TIMEOUT,
+                  "missing RETIRE_ACK must reach terminal timeout");
+
+            timeout_query.version = OBMM_GSVA_ABI_VERSION;
+            timeout_query.query_type = GSVA_QUERY_COHERENCE;
+            timeout_query.segment_id = segment_id;
+            timeout_query.home_va = home_base;
+            rc = ioctl(obmm_fd, OBMM_CMD_GSVA_QUERY_V1, &timeout_query);
+            CHECK(rc == 0, "timeout coherence query should reach QEMU");
+            printf("%s   coh_remote_retire_timeout Query error=%d\n",
+                   TAG, timeout_resp->error);
+            CHECK(timeout_resp->error == GSVA_ERR_COH_TIMEOUT,
+                  "missing RETIRE_ACK must remain terminal in query");
+
+            rc = gsva_send_tagged_event_epoch(
+                obmm_fd, OBMM_GSVA_EVENT_READ_ACQUIRE, local_cna,
+                token_id, token_value, segment_id, home_base, GSVA_SIZE,
+                home_p_tag, home_epoch, &ev_error);
+            CHECK(rc == 0,
+                  "ReadAcquire after missing ACK should reach QEMU");
+            printf("%s   coh_remote_retire_timeout ReadAcquire error=%d\n",
+                   TAG, ev_error);
+            CHECK(ev_error == GSVA_ERR_COH_TIMEOUT,
+                  "timeout object must reject subsequent access");
+            printf("%s   coh_remote_retire_timeout status=pass "
+                   "home_retired=0 resource_isolated=1\n", TAG);
+            PASS();
+            return;
         }
         printf("%s   coh_remote_retire Retry error=%d\n", TAG, ev_error);
         CHECK(ev_error == GSVA_OK,
@@ -2501,6 +2562,7 @@ static void usage(const char *prog)
         "  coh_remote_token_revoke Validate UB Link remote token revoke/ACK\n"
         "  coh_remote_fence       Validate UB Link remote fence/ACK\n"
         "  coh_remote_retire      Validate UB Link remote retire/ACK\n"
+        "  coh_remote_retire_timeout Validate missing remote retire ACK\n"
         "  all                    Run all tests (default)\n",
         prog);
 }
@@ -2604,7 +2666,11 @@ int main(int argc, char **argv)
     } else if (strcmp(mode, "coh_remote_fence") == 0) {
         test_coh_remote_fence(obmm_fd, local_cna, node_idx, node_count);
     } else if (strcmp(mode, "coh_remote_retire") == 0) {
-        test_coh_remote_retire(obmm_fd, local_cna, node_idx, node_count);
+        test_coh_remote_retire(obmm_fd, local_cna, node_idx, node_count,
+                               false);
+    } else if (strcmp(mode, "coh_remote_retire_timeout") == 0) {
+        test_coh_remote_retire(obmm_fd, local_cna, node_idx, node_count,
+                               true);
     } else if (strcmp(mode, "all") == 0) {
         test_cross_node_write_read(obmm_fd, local_cna, node_idx, node_count);
         usleep(200000);

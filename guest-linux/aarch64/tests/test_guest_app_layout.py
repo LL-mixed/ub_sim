@@ -3478,7 +3478,7 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "if (import_active)" in retire_case
     assert "home_p_tag = home_meta.export_cna & 0x00ffffffu;" in retire_case
     assert "0, 0, 0, home_p_tag, 0, segment_id" in retire_case
-    assert retire_case.count("gsva_send_tagged_event_epoch(") == 7
+    assert retire_case.count("gsva_send_tagged_event_epoch(") == 8
     assert "home_base, GSVA_SIZE, home_p_tag" in retire_case
     assert "token_id, token_value" in retire_case
     assert "home_p_tag, home_epoch" in retire_case
@@ -3487,6 +3487,10 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "obmm_map_region(my_meta.export_mem_id" not in retire_case
     assert "gsva_probe_revoked_cpu_read(import_region.addr" in source
     assert "coh_remote_retire revoked_cpu signal=" in source
+    assert "coh_remote_retire_timeout" in source
+    assert "coh_remote_retire_timeout peer_loss_ready node=%d" in source
+    assert "missing RETIRE_ACK must reach terminal timeout" in source
+    assert "home_retired=0 resource_isolated=1" in source
     assert "GSVA_COH: rx RETIRE local drained" in runner
     assert "GSVA_TLB: flush reason=remote_retire_quarantine" in runner
     assert "GSVA_TLB: flush reason=remote_retire_drained" in runner
@@ -3497,6 +3501,15 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
     assert "OBMM_COH_WB" not in runner
     assert "coh_remote_retire writeback_verified" in runner
     assert "coh_remote_retire revoked_cpu signal=" in runner
+    assert "inject_remote_retire_peer_loss" in runner
+    assert 'kill -9 "$nodeb_pid"' in runner
+    assert "phase=peer-loss-complete node=nodeB exit_code=137" in runner
+    assert "GSVA_COH: TIMEOUT" in runner
+    assert "missing ACK path finalized the home route" in runner
+    assert "coh_remote_retire_timeout Retry error=-7" in runner
+    assert "coh_remote_retire_timeout Query error=-7" in runner
+    assert "coh_remote_retire_timeout ReadAcquire error=-7" in runner
+    assert "missing RETIRE_ACK remained isolated" in runner
     assert "--validate-only" in runner
     assert runner.index('if [[ "$VALIDATE_ONLY" == "1" ]]') < runner.index(
         'source "$SCRIPT_DIR/qemu_ub_common.sh"'
@@ -3515,6 +3528,7 @@ def test_gsva_remote_retire_requires_physical_holder_drain_evidence():
         "coh_remote_token_revoke",
         "coh_remote_fence",
         "coh_remote_retire",
+        "coh_remote_retire_timeout",
     ):
         assert mode in transport_default
     assert "GSVA_COH_UB_LINK_TX=1" in transport_default

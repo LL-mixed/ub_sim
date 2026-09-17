@@ -39,7 +39,8 @@ GSVA_COH_TIMEOUT_MS="${GSVA_COH_TIMEOUT_MS:-5000}"
 if [[ -z "${GSVA_COH_UB_LINK_TX+x}" ]]; then
   case "$GSVA_TEST_MODE" in
     coh_remote_inv|coh_remote_wb|coh_remote_downgrade|\
-      coh_remote_token_revoke|coh_remote_fence|coh_remote_retire)
+      coh_remote_token_revoke|coh_remote_fence|coh_remote_retire|\
+      coh_remote_retire_timeout)
       GSVA_COH_UB_LINK_TX=1
       ;;
     *)
@@ -54,6 +55,7 @@ NODEA_QEMU_LOG="$LOG_DIR/${RUN_ID}/nodeA_qemu.log"
 NODEB_QEMU_LOG="$LOG_DIR/${RUN_ID}/nodeB_qemu.log"
 NODEA_PID_FILE="$OUT_DIR/ub_nodeA.gsva_coh.${RUN_ID}.pid"
 NODEB_PID_FILE="$OUT_DIR/ub_nodeB.gsva_coh.${RUN_ID}.pid"
+PEER_LOSS_LOG="$LOG_DIR/${RUN_ID}/peer_loss_host.log"
 
 cleanup() {
   local pid_file
@@ -141,6 +143,47 @@ wait_for_fm_links_ready() {
     sleep 0.2
   done
   return 1
+}
+
+inject_remote_retire_peer_loss() {
+  local deadline=$((SECONDS + 60))
+  local nodeb_pid=""
+  local nodeb_status=0
+
+  while (( SECONDS < deadline )); do
+    if [[ -f "$NODEA_GUEST_LOG" && -f "$NODEB_GUEST_LOG" ]] &&
+       grep -q 'coh_remote_retire_timeout peer_loss_ready node=0' \
+         "$NODEA_GUEST_LOG" &&
+       grep -q 'coh_remote_retire_timeout peer_loss_ready node=1' \
+         "$NODEB_GUEST_LOG"; then
+      break
+    fi
+    sleep 0.05
+  done
+  if (( SECONDS >= deadline )); then
+    echo "[gsva_coh] FAIL: missing peer-loss readiness markers" >&2
+    return 1
+  fi
+
+  nodeb_pid="$(cat "$NODEB_PID_FILE" 2>/dev/null || true)"
+  if [[ -z "$nodeb_pid" ]] || ! kill -0 "$nodeb_pid" 2>/dev/null; then
+    echo "[gsva_coh] FAIL: nodeB QEMU unavailable before peer loss" >&2
+    return 1
+  fi
+  echo "phase=peer-loss-ready node=nodeB pid=$nodeb_pid" >"$PEER_LOSS_LOG"
+  kill -9 "$nodeb_pid"
+  if wait "$nodeb_pid"; then
+    nodeb_status=0
+  else
+    nodeb_status=$?
+  fi
+  echo "phase=peer-loss-complete node=nodeB exit_code=$nodeb_status" \
+    >>"$PEER_LOSS_LOG"
+  if [[ "$nodeb_status" != "137" ]]; then
+    echo "[gsva_coh] FAIL: nodeB QEMU exit code $nodeb_status, expected 137" >&2
+    return 1
+  fi
+  echo "[gsva_coh] injected nodeB peer loss exit_code=137"
 }
 
 validate_coh_logs() {
@@ -458,6 +501,44 @@ validate_coh_logs() {
       fi
     fi
   fi
+  if [[ "$GSVA_TEST_MODE" == "coh_remote_retire_timeout" ]]; then
+    if ! grep -q 'phase=peer-loss-complete node=nodeB exit_code=137' \
+        "$PEER_LOSS_LOG"; then
+      echo "[gsva_coh] FAIL: missing host peer-loss receipt" >&2
+      return 1
+    fi
+    if ! grep -q 'GSVA_COH: tx RETIRE' "$NODEA_QEMU_LOG" ||
+       ! grep -q 'GSVA_COH: TIMEOUT' "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: missing pending RETIRE timeout evidence" >&2
+      return 1
+    fi
+    if grep -qE 'GSVA_COH: rx RETIRE_ACK applied|GSVA_COH: RetireAck recovery retire|GSVA_COH: home retire route finalized' \
+        "$NODEA_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: missing ACK path finalized the home route" >&2
+      return 1
+    fi
+    if grep -q 'GSVA_COH: rx RETIRE from' "$NODEB_QEMU_LOG"; then
+      echo "[gsva_coh] FAIL: killed peer received RETIRE" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_retire dirty_write' "$NODEB_GUEST_LOG" ||
+       ! grep -q 'coh_remote_retire_timeout peer_loss_ready node=1' \
+         "$NODEB_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: peer loss preceded the live holder state" >&2
+      return 1
+    fi
+    if ! grep -q 'coh_remote_retire_timeout Retry error=-7' \
+        "$NODEA_GUEST_LOG" ||
+       ! grep -q 'coh_remote_retire_timeout Query error=-7' \
+         "$NODEA_GUEST_LOG" ||
+       ! grep -q 'coh_remote_retire_timeout ReadAcquire error=-7' \
+         "$NODEA_GUEST_LOG" ||
+       ! grep -q 'coh_remote_retire_timeout status=pass home_retired=0 resource_isolated=1' \
+         "$NODEA_GUEST_LOG"; then
+      echo "[gsva_coh] FAIL: home did not retain terminal timeout isolation" >&2
+      return 1
+    fi
+  fi
 }
 
 if [[ "$VALIDATE_ONLY" == "1" ]]; then
@@ -498,10 +579,23 @@ if ! wait_for_fm_links_ready "$NODEA_QEMU_LOG" "$NODEB_QEMU_LOG" "$LINK_WAIT_SEC
 fi
 echo "[gsva_coh] FM links ready"
 
+if [[ "$GSVA_TEST_MODE" == "coh_remote_retire_timeout" ]]; then
+  inject_remote_retire_peer_loss
+fi
+
 echo "[gsva_coh] waiting for test completion (timeout ${RUN_SECS}s)..."
 deadline=$((SECONDS + RUN_SECS))
 while (( SECONDS < deadline )); do
-  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -q 'verdict=PASS' "$NODEA_GUEST_LOG" && \
+  if [[ "$GSVA_TEST_MODE" == "coh_remote_retire_timeout" &&
+        -f "$NODEA_GUEST_LOG" ]] &&
+     grep -q 'verdict=PASS' "$NODEA_GUEST_LOG"; then
+    cleanup
+    sleep 0.5
+    validate_coh_logs
+    echo "[gsva_coh] PASS: missing RETIRE_ACK remained isolated"
+    exit 0
+  fi
+  if [[ -f "$NODEA_GUEST_LOG" ]] && grep -q 'verdict=PASS' "$NODEA_GUEST_LOG" &&
      [[ -f "$NODEB_GUEST_LOG" ]] && grep -q 'verdict=PASS' "$NODEB_GUEST_LOG"; then
     cleanup
     sleep 0.5
