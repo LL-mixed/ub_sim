@@ -6497,3 +6497,78 @@ runner report     99c7731f2a6753a5659b0ef8147836c2f5f83e1c9495a8cc7b3d18fce9371e
 RETIRE ACK 前消失后的 service-managed fencing、旧 home 对账/reclaim 和
 replacement rejoin 子项。重复 guest 故障、重复事务故障和完整重复故障矩阵仍待
 验收；M3 与总目标继续保持进行中。
+
+### n4 双 guest managed-guest-recovery r44-r46：同一服务生命周期内重复 guest 故障
+
+父仓库 `df911c09eb1645832df9265da705296e40a46858` 为既有实际 guest recovery
+入口增加 `MEM_SERVICE_OBJECT_SHARE_GUEST_CRASH_CYCLES=1..8`。node A 的 daemon、
+home worker 和控制连接在全部周期中保持存活；runner 按周期杀死 node B QEMU、
+等待退出码 137、记录终止 kernel identity，再以递增 incarnation 启动 replacement。
+对象 key、session、idempotency key 和重新加入对象均按周期隔离，验证器同时要求
+前一周期 replacement kernel identity 成为下一周期精确的 terminated identity。
+
+r44 在分配前失败，服务统计为 `allocate_ok_count=0`。原因是新增 shell role 校验用
+`&&/||` 串联，左结合规则错误拒绝合法的 node A `home` role。作业被终止后定点清理
+两个已核对命令行的 QEMU；`b1304ff849e6ee78719211de30f8dea1a6fc25a5`
+改为显式 `if/elif` 分支，并加入静态契约断言。
+
+r45 成功完成两个 replacement guest 的启动及两个 holder fencing receipt；第二周期
+node A 的 `recover-allocation` 返回 `invalid_recovery_identity`。故障对象的 home
+provider 仍为 `guest-node-0/incarnation 7`，已终止的 remote holder 为 incarnation
+8；请求错误地把后者填入服务定义的 home-fencing 字段。第一周期两端 incarnation
+同为 7，因而没有暴露该混用。`9c89e26be6d4436a4fb739eea5e4336618e1e3ba`
+改为传入对象 home incarnation，并增加正反断言。最终轻量门禁为 `run_app` shell
+语法、guest-crash 契约测试 8/8 和 `git diff --check` 全部通过；本地没有启动 QEMU、
+模型、workload 或完整测试集。
+
+n4-910c1 r46 只运行一次修复后的双周期实际 case，运行组合为：
+
+```text
+parent      9c89e26be6d4436a4fb739eea5e4336618e1e3ba
+mem_service 62ccd379986ee8da62c3e3711a7fcd1271e6e236
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   248414a7e071fd1279ca22ebd3249f5e6eef5d90b8f5187ac3faff10b1528c06
+```
+
+runner exit 0、1/1 PASS，验证 JSON 报告 `cycles=2`。实际状态链为：
+
+```text
+cycle 1 incarnation       7 -> 8
+cycle 1 object generation 1
+cycle 1 rejoin generation 2
+cycle 1 kernel            2578f94b774120ca968131f5f85b714d
+cycle 1 replacement       c1ba4351c1aa1b6d7139eaf5fa79afc1
+cycle 2 incarnation       8 -> 9
+cycle 2 object generation 5
+cycle 2 rejoin generation 6
+cycle 2 kernel            c1ba4351c1aa1b6d7139eaf5fa79afc1
+cycle 2 replacement       83941c88d79d0a8e6ae3afef6ff14257
+guest exit code           137 / 137
+```
+
+两个周期均完成 `holder-fenced`、`reconciled state=retired`、旧 incarnation
+`holder_provider_mismatch`、replacement writer/reader 校验和一致、CPU unmap probe、
+对象退役和物理 reclaim。第二周期 checksum 为 `0x076bc416d0d70383`。最终两端
+`live_objects`、backing/address bytes、export/import mappings、refs、in-flight、
+quarantine 和 kernel region 全部为零，`managed_recovery_required=0`。
+
+原始文件及报告 SHA-256：
+
+```text
+nodeA guest             45b81ce25a9777aea538d2e757265722a65258c08b5efa84511a1a9b9994e51f
+nodeA QEMU              93d4228e13202660031bd910ea5a18d9c707764b49a346da41994cfcea4247d2
+nodeB cycle1 guest      e49ef15bb59e38f65fff04a915c1b1773145e7535bf6be565a5e821863fc3f00
+nodeB cycle1 QEMU       bde13666e6a7e1e3a38ce213a2f5db68a6efa734c95afc17cc1f6651c166ae15
+nodeB cycle2 guest      08a46af55148181793055d8d7c04a452208eb7047e1873204d5af7deb0df8978
+nodeB cycle2 QEMU       ccf7aed83bb68c8e33099a3e71db90578259726bd20b40c231ed5d44320ba40f
+nodeB replacement      61c17112bcd32f2e51cd1c9038d36d4e57fde6eb3233e25a1ce97f6587deb2cd
+nodeB replacement QEMU 8741b8a0644a7b34058d30eb94cf87bac6c7b65c0052613ff1a1b6829b4665f0
+host receipt           eb2de8c0a5613d92b0fb3100a620923a7a9e5224867775cdf64ef7e8e76d9cd3
+validation JSON        fb8963ea977050885e40270c63d91ce5147627e741854e96a8e14854d9053adc
+runner report          5a5af72961edf945cbf757d19c065c100fa27af59d6287583160aae17199cd31
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭同一 node A 服务生命
+周期内连续两次整个 holder guest 终止、fencing、reclaim 与 rejoin 子项。重复事务
+故障及完整重复故障矩阵仍待验收；M3 与总目标继续保持进行中。
