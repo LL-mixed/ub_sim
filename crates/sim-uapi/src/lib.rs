@@ -6578,6 +6578,14 @@ fn run_deepseek_v4_flash_simpler_range_runtime(
     )
 }
 
+fn deepseek_v4_flash_range_input_checksum(
+    contract: ModelRangeComputeContract,
+    guest_input: &[u8],
+    operands: Option<&ModelRangeDispatchOperands>,
+) -> Result<u64, String> {
+    qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)
+}
+
 fn run_deepseek_v4_flash_range_runtime_with_engine(
     topology: &SimTopology,
     task: &TaskKey,
@@ -6820,17 +6828,7 @@ fn run_deepseek_v4_flash_range_runtime_with_engine(
             output_tensor_payload.len()
         ));
     }
-    let input_checksum = if contract.layer_start > 0 {
-        let payload = guest_input
-            .get(
-                QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET
-                    ..QWEN3_DENSE_PROFILE_RANGE_INPUT_PAYLOAD_OFFSET + expected_hidden_len,
-            )
-            .ok_or_else(|| "deepseek_v4_flash_hidden_input_checksum_missing".to_string())?;
-        qwen3_dense_reference_range_object_payload_checksum(payload)
-    } else {
-        qwen3_dense_profile_range_input_checksum_with_operands(contract, guest_input, operands)?
-    };
+    let input_checksum = deepseek_v4_flash_range_input_checksum(contract, guest_input, operands)?;
     let output_tensor_checksum =
         qwen3_dense_reference_range_object_payload_checksum(&output_tensor_payload);
     let selected_text = engine_output

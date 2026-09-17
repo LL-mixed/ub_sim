@@ -562,6 +562,10 @@ int main(void) {
             .unwrap(),
             qwen3_dense_reference_range_object_payload_checksum(&bytes)
         );
+        assert_eq!(
+            deepseek_v4_flash_range_input_checksum(contract, &segment, Some(&operands)).unwrap(),
+            qwen3_dense_reference_range_object_payload_checksum(&bytes)
+        );
         // No inline payload exists: DeepSeek must consume the same managed bytes.
         assert_eq!(
             deepseek_input(
