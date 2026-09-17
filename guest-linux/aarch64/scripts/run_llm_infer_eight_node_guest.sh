@@ -1320,7 +1320,8 @@ start_w5_managed_service() {
       --node-count "\$LINQU_UB_NODE_COUNT" \
       --generation "\$SIM_W5_MANAGED_BOOTSTRAP_GENERATION" \
       --aperture-base "\$SIM_W5_MANAGED_APERTURE_BASE" \
-      --aperture-size "\$SIM_W5_MANAGED_APERTURE_SIZE"; then
+      --aperture-size "\$SIM_W5_MANAGED_APERTURE_SIZE" \
+      --manager-region-size "\$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES"; then
     log "FAIL: managed GVA bootstrap node=\$node"
     return 1
   fi

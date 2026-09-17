@@ -308,6 +308,10 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn('echo "required_provider=guest-node-\\$i"', source)
         self.assertIn('/bin/linqu_gva_manager --bootstrap --node-id "\\$node"', source)
         self.assertIn(
+            '--manager-region-size "\\$SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES"',
+            source,
+        )
+        self.assertIn(
             'SIM_W5_MANAGED_BOOTSTRAP_GENERATION="${SIM_W5_MANAGED_BOOTSTRAP_GENERATION:-$SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE}"',
             source,
         )

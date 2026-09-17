@@ -32,6 +32,15 @@ def compile_golden(compiler, output):
 
 
 class GvaManagerLibraryTest(unittest.TestCase):
+    def test_bootstrap_region_size_is_configurable(self):
+        source = (
+            GUEST / "apps" / "gva_manager" / "gva_manager.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"--manager-region-size"', source)
+        self.assertIn('"GVA_MANAGER_REGION_SIZE"', source)
+        self.assertIn("cfg.manager_region_size", source)
+        self.assertNotIn("GVA_MGR_REGION_SIZE", source)
+
     @unittest.skipUnless(platform.system() == "Linux", "requires Linux UAPI")
     def test_kernel_allocation_capacity_precedes_reservation(self):
         source = (ROOT / "guest-linux/kernel_ub/drivers/ub/obmm/obmm_core.c").read_text()

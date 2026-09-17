@@ -32,7 +32,7 @@
 #define MAX_NODES OBMM_POOL_HELPERS_MAX_NODES
 #define GVA_MGR_MAGIC 0x4756414dU
 #define GVA_MGR_VERSION 1U
-#define GVA_MGR_REGION_SIZE (2UL * 1024UL * 1024UL)
+#define GVA_MGR_DEFAULT_REGION_SIZE (2UL * 1024UL * 1024UL)
 #define GVA_MGR_QUEUE_DEPTH OBMM_QUEUE_MIN_DEPTH
 #define GVA_MGR_DEFAULT_APERTURE_BASE 0x700000000000ULL
 #define GVA_MGR_DEFAULT_APERTURE_SIZE (16UL * 1024UL * 1024UL)
@@ -119,6 +119,7 @@ struct gva_mgr_config {
     bool reuse_aperture;
     uint64_t aperture_base;
     uint64_t aperture_size;
+    uint64_t manager_region_size;
     uint64_t segment_size;
     uint64_t segment_alignment;
     int home_node_id;
@@ -427,6 +428,12 @@ static void config_from_env_cmdline(struct gva_mgr_config *cfg)
         parse_u64_str(value, &parsed64)) {
         cfg->aperture_size = parsed64;
     }
+    if (obmm_env_or_cmdline("GVA_MANAGER_REGION_SIZE",
+                            "gva_manager_region_size",
+                            value, sizeof(value)) &&
+        parse_u64_str(value, &parsed64)) {
+        cfg->manager_region_size = parsed64;
+    }
     if (obmm_env_or_cmdline("GVA_MANAGER_ALLOCATE_SEGMENT",
                             "gva_manager_allocate_segment",
                             value, sizeof(value)) &&
@@ -605,6 +612,7 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
     cfg->generation = default_generation();
     cfg->aperture_base = GVA_MGR_DEFAULT_APERTURE_BASE;
     cfg->aperture_size = GVA_MGR_DEFAULT_APERTURE_SIZE;
+    cfg->manager_region_size = GVA_MGR_DEFAULT_REGION_SIZE;
     cfg->segment_size = GVA_MGR_DEFAULT_SEGMENT_SIZE;
     cfg->segment_alignment = GVA_MGR_DEFAULT_SEGMENT_ALIGNMENT;
     cfg->home_node_id = 0;
@@ -697,6 +705,11 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
             if (!parse_u64_str(argv[++i], &parsed64))
                 return -EINVAL;
             cfg->aperture_size = parsed64;
+        } else if (strcmp(argv[i], "--manager-region-size") == 0 &&
+                   i + 1 < argc) {
+            if (!parse_u64_str(argv[++i], &parsed64))
+                return -EINVAL;
+            cfg->manager_region_size = parsed64;
         } else if (strcmp(argv[i], "--segment-size") == 0 && i + 1 < argc) {
             if (!parse_u64_str(argv[++i], &parsed64))
                 return -EINVAL;
@@ -749,6 +762,7 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
                     "usage: gva_manager --bootstrap --node-id N --node-count C "
                     "[--generation G] [--bootstrap-generation G] "
                     "[--aperture-base A] [--aperture-size S] "
+                    "[--manager-region-size S] "
                     "[--reuse-aperture] [--conflict]\n"
                     "       gva_manager --alloc --node-id N --node-count C "
                     "[--aperture-base A] [--aperture-size S] [--requested-home-va VA] "
@@ -842,6 +856,10 @@ static int parse_args(int argc, char **argv, struct gva_mgr_config *cfg)
         (cfg->aperture_base & (4096ULL - 1)) != 0 ||
         (cfg->aperture_size & (4096ULL - 1)) != 0)
         return -EINVAL;
+    if (cfg->manager_region_size < GVA_MGR_DEFAULT_REGION_SIZE ||
+        cfg->manager_region_size > SIZE_MAX ||
+        (cfg->manager_region_size & (4096ULL - 1)) != 0)
+        return -EINVAL;
     if (cfg->allocate_segment &&
         (cfg->home_node_id < 0 || cfg->home_node_id >= cfg->node_count ||
          cfg->segment_size == 0 || cfg->segment_alignment == 0 ||
@@ -879,28 +897,29 @@ static uint64_t layout_tx_arena_offset(int node_count)
     return obmm_align_up_u64(queues_end, 64);
 }
 
-static uint64_t layout_tx_arena_size(int node_count)
+static uint64_t layout_tx_arena_size(int node_count, uint64_t region_size)
 {
     uint64_t off = layout_tx_arena_offset(node_count);
 
-    if (off >= GVA_MGR_REGION_SIZE)
+    if (off >= region_size)
         return 0;
-    return GVA_MGR_REGION_SIZE - off;
+    return region_size - off;
 }
 
-static int init_manager_region(void *base, int node_id, int node_count)
+static int init_manager_region(void *base, uint64_t region_size,
+                               int node_id, int node_count)
 {
     struct obmm_pool_header *hdr = (struct obmm_pool_header *)base;
     struct obmm_region_dirent *dir;
     int di = 0;
     int peer;
 
-    memset(base, 0, GVA_MGR_REGION_SIZE);
+    memset(base, 0, region_size);
     hdr->magic = OBMM_POOL_MAGIC;
     hdr->layout_version = OBMM_POOL_LAYOUT_VERSION;
     hdr->node_id = (uint16_t)node_id;
     hdr->node_count = (uint16_t)node_count;
-    hdr->region_size = GVA_MGR_REGION_SIZE;
+    hdr->region_size = region_size;
     hdr->directory_offset = 64;
     hdr->directory_count = (uint32_t)node_count;
     hdr->default_queue_depth = GVA_MGR_QUEUE_DEPTH;
@@ -930,7 +949,7 @@ static int init_manager_region(void *base, int node_id, int node_count)
     dir[di].kind = OBMM_REGION_TX_ARENA;
     dir[di].peer_node_id = (uint16_t)node_id;
     dir[di].offset = layout_tx_arena_offset(node_count);
-    dir[di].size = layout_tx_arena_size(node_count);
+    dir[di].size = layout_tx_arena_size(node_count, region_size);
     if (dir[di].size < GVA_MGR_PAYLOAD_SLOTS *
         sizeof(struct gva_mgr_aperture_msg)) {
         log_msg("manager region too small for tx arena");
@@ -944,7 +963,8 @@ static int init_manager_region(void *base, int node_id, int node_count)
     return 0;
 }
 
-static int resolve_peer_region(struct node_slot *slot, int local_idx)
+static int resolve_peer_region(struct node_slot *slot, uint64_t region_size,
+                               int local_idx)
 {
     const struct obmm_pool_header *hdr =
         (const struct obmm_pool_header *)slot->region.addr;
@@ -956,7 +976,7 @@ static int resolve_peer_region(struct node_slot *slot, int local_idx)
     if (hdr->magic != OBMM_POOL_MAGIC ||
         hdr->layout_version != OBMM_POOL_LAYOUT_VERSION ||
         hdr->node_id != (uint16_t)slot->owner_idx ||
-        hdr->region_size != GVA_MGR_REGION_SIZE)
+        hdr->region_size != region_size)
         return -EINVAL;
     if (hdr->directory_offset < sizeof(*hdr) ||
         hdr->directory_count == 0 ||
@@ -2927,11 +2947,13 @@ int main(int argc, char **argv)
 
     log_msg("start node=%d count=%d generation=%#" PRIx64
             " aperture_base=%#" PRIx64 " aperture_size=%#" PRIx64
+            " manager_region_size=%#" PRIx64
             " bootstrap_generation=%#" PRIx64
             " conflict=%d reuse_aperture=%d allocate_segment=%d"
             " retire_segment=%d reuse_segment=%d",
             cfg.node_id, cfg.node_count, cfg.generation,
-            cfg.aperture_base, cfg.aperture_size, cfg.bootstrap_generation,
+            cfg.aperture_base, cfg.aperture_size, cfg.manager_region_size,
+            cfg.bootstrap_generation,
             cfg.inject_conflict ? 1 : 0,
             cfg.reuse_aperture ? 1 : 0,
             cfg.allocate_segment ? 1 : 0, cfg.retire_segment ? 1 : 0,
@@ -2963,7 +2985,7 @@ int main(int argc, char **argv)
         goto out;
     }
 
-    if (obmm_do_export(obmm_fd, &local_meta, GVA_MGR_REGION_SIZE) != 0) {
+    if (obmm_do_export(obmm_fd, &local_meta, cfg.manager_region_size) != 0) {
         log_msg("export manager region failed errno=%d", errno);
         goto out;
     }
@@ -2971,19 +2993,21 @@ int main(int argc, char **argv)
     slots[cfg.node_id].is_local = true;
     slots[cfg.node_id].mem_id = local_meta.export_mem_id;
 
-    if (obmm_map_region(local_meta.export_mem_id, GVA_MGR_REGION_SIZE,
+    if (obmm_map_region(local_meta.export_mem_id, cfg.manager_region_size,
                         false, &slots[cfg.node_id].region) != 0) {
         log_msg("map local manager region failed errno=%d", errno);
         goto out;
     }
     if (init_manager_region(slots[cfg.node_id].region.addr,
+                            cfg.manager_region_size,
                             cfg.node_id, cfg.node_count) != 0) {
         log_msg("init manager region failed");
         goto out;
     }
     obmm_publish_payload_for_remote_read(slots[cfg.node_id].region.addr,
-                                         GVA_MGR_REGION_SIZE);
-    if (resolve_peer_region(&slots[cfg.node_id], cfg.node_id) != 0) {
+                                         cfg.manager_region_size);
+    if (resolve_peer_region(&slots[cfg.node_id], cfg.manager_region_size,
+                            cfg.node_id) != 0) {
         log_msg("resolve local manager region failed");
         goto out;
     }
@@ -3005,7 +3029,7 @@ int main(int argc, char **argv)
         bool import_osync[MAX_NODES] = {false};
         int import_idx = 0;
 
-        if (!obmm_alloc_import_pas(cfg.node_count - 1, GVA_MGR_REGION_SIZE,
+        if (!obmm_alloc_import_pas(cfg.node_count - 1, cfg.manager_region_size,
                                    import_pas, import_osync,
                                    obmm_parse_import_cache_mode())) {
             log_msg("alloc import PA failed");
@@ -3030,7 +3054,7 @@ int main(int argc, char **argv)
                 goto out;
             }
             slots[i].mem_id = mem_id;
-            if (obmm_map_region(mem_id, GVA_MGR_REGION_SIZE,
+            if (obmm_map_region(mem_id, cfg.manager_region_size,
                                 import_osync[import_idx],
                                 &slots[i].region) != 0) {
                 log_msg("map peer manager region failed peer=%d errno=%d",
@@ -3039,7 +3063,8 @@ int main(int argc, char **argv)
             }
             import_idx++;
             if (wait_peer_ready(&slots[i]) != 0 ||
-                resolve_peer_region(&slots[i], cfg.node_id) != 0) {
+                resolve_peer_region(&slots[i], cfg.manager_region_size,
+                                    cfg.node_id) != 0) {
                 log_msg("peer manager layout invalid peer=%d", i);
                 goto out;
             }
