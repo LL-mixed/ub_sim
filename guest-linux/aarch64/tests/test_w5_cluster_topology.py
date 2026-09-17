@@ -193,6 +193,15 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("SIM_DEEPSEEK_V4_FLASH=", config)
         self.assertNotIn("SIM_DEEPSEEK_V4_FLASH_GGUF", config)
 
+    def test_deepseek_env_locks_plain_huawei_prompt_tokens(self):
+        config = self.deepseek_config.read_text(encoding="utf-8")
+        self.assertIn(
+            "SIM_LLM_INFER_PROMPT_TOKEN_IDS=42,5207,24063,344",
+            config,
+        )
+        self.assertNotIn("SIM_LLM_INFER_PROMPT=", config)
+        self.assertIn('plain-text "Huawei is" acceptance prompt', config)
+
     def test_launcher_derives_topology_scenario_and_active_nodes(self):
         source = self.launcher.read_text(encoding="utf-8")
         self.assertIn("SIM_W5_CLUSTER_NODE_COUNT", source)
