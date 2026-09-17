@@ -6277,3 +6277,60 @@ mapping 全部为 0；kernel export/import inventory 也归零。精确进程查
 结束后没有遗留 `qemu-system-aarch64`。该结果关闭七个可续作事务 phase 的单次
 实际 worker 杀死/重启子项。ACK 缺失、重复事务故障、重复 guest 故障和完整重复
 故障矩阵继续待验收；M3 与总目标保持进行中。
+
+### n4 双 guest remote-retire-timeout r38：实际 RETIRE ACK 缺失
+
+父仓库 `384d99d9da1867fc976c9ebc954752e94c1eb2d2` 增加
+`coh_remote_retire_timeout` CLI mode。node A/B 先建立真实 managed home、严格
+GSVA import、CPU VMA 和远端 holder；node B 写入脏值后双方进入专用 barrier。
+runner 收到两个 barrier 回执后对 node B QEMU 发送 `SIGKILL` 并要求退出码 137。
+node A 延迟发送 RETIRE，验证缺少精确 RETIRE_ACK 时事务进入 terminal timeout，
+后续 RETRY、coherence query 和 ReadAcquire 均继续失败关闭。验证器同时拒绝任何
+RETIRE_ACK apply、home route finalize 或 home retire 完成证据。
+
+本地轻量门禁执行一次：runner zsh 语法、AArch64 静态链接和 `git diff --check`
+通过。系统 Python 缺少 pytest，因此 pytest 命令没有执行测试；随后直接加载并
+执行同一个 `test_gsva_remote_retire_requires_physical_holder_drain_evidence` 契约
+函数，结果通过。没有在本地启动 QEMU、模型、workload 或完整测试集合。
+
+n4-910c1 使用以下组合运行：
+
+```text
+parent      384d99d9da1867fc976c9ebc954752e94c1eb2d2
+mem_service 48a542e20b6ab6f81f5c072d2d743c4922e6eac1
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   40f6dae6ef8ec804d86341e59b21f1e7087de23369bcbe2e69fe1fc0daabc7d7
+```
+
+显式 initramfs-only 作业先生成一份镜像；runner 的既有 artifact preparation 随后
+又打包一次，实际 QEMU 使用上表第二份镜像。case 本身只运行一次，没有重复验证。
+运行结果为：
+
+```text
+nodeB dirty value       0x5a17e4d000000001
+nodeB exit code         137
+RETIRE transport rc     0
+RETIRE timeout          1011 ms
+RETRY                    -7 / GSVA_ERR_COH_TIMEOUT
+coherence query          -7 / GSVA_ERR_COH_TIMEOUT
+subsequent ReadAcquire   -7 / GSVA_ERR_COH_TIMEOUT
+home_retired             0
+resource_isolated        1
+nodeA verdict            PASS
+```
+
+node A QEMU 日志中没有 `rx RETIRE_ACK applied`、`RetireAck recovery retire` 或
+`home retire route finalized`。五份原始证据 SHA-256 为：
+
+```text
+nodeA guest c7004619ac04c01bb18d04b72fd5a5a0e2c72384d10e42f7bdc67cdf27f10946
+nodeB guest b0008284ccae77a9c650d186206477d08d72c1c1e8152ee71834d0174cb1704a
+nodeA qemu  374c6d39c4f68bf5be48b99043b2f23bbd7e7b6c7b4f2aff6e895e1f92d432f1
+nodeB qemu  8f317f1d8558de33b475a7577c10c3a3a9cb70dc6ecc7a725e3d0f5bcbbe7b36
+host receipt 3d04bb5b74ba88e4799ad5e71dbf7977691f979fbdaf96ecc6851a5f1f625b7e
+```
+
+精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭跨 guest RETIRE ACK
+缺失的物理 fail-closed 子项。ACK 缺失后的服务层对账/重新加入、重复事务故障、
+重复 guest 故障和完整重复故障矩阵继续待验收；M3 与总目标保持进行中。
