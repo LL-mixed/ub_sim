@@ -1620,7 +1620,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | 里程碑 | 当前状态 | 执行基线与证据 | 未完成判据 |
 | --- | --- | --- | --- |
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
-| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `3592080c`、QEMU `02d214fe`；n4-910c1 r81/r82 完成 Qwen 2/3-node 4-step；r84 完成 Qwen 8-node/8-step callable 4 连续 decode、64 条 worker completion、每节点滚动退役 6 个历史 allocation 和终态资源归零；r87/r88 完成 DeepSeek 2/3-node 4-step；r92 完成 DeepSeek 8-node/8-step、64 条 worker/handoff completion、48 次滚动退役和终态资源归零 | Qwen 4-node 定点回归和完整身份/故障矩阵未完成 |
+| M2 动态身份与 W5 | 进行中 | r322 百轮旧 V2 拒绝、r381 旧 descriptor CPU 拒绝、r384 正常 PTO v2、r540 实际单层 result/hidden/KV 发布与只读消费通过；PP/TP 已解耦并通过 PP3/TP8 准入测试；当前锁定服务 `3592080c`、QEMU `02d214fe`；n4-910c1 r81/r82/r93 完成 Qwen 2/3/4-node 4-step；r84 完成 Qwen 8-node/8-step callable 4 连续 decode、64 条 worker completion、每节点滚动退役 6 个历史 allocation 和终态资源归零；r87/r88 完成 DeepSeek 2/3-node 4-step；r92 完成 DeepSeek 8-node/8-step、64 条 worker/handoff completion、48 次滚动退役和终态资源归零 | 完整身份/故障矩阵未完成 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
 | M4 压力与收益 | 进行中 | r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过，旧失败保留 | 混合尺寸/对齐/交错释放及重复性能样本未完成；A16 的 2/3/8-node 每节点 home 与三轮冷启动、A18 独立包跨机复现仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
@@ -1705,6 +1705,18 @@ export/import mappings、live refs、in-flight 和 quarantine 全部为零。56 
 
 r92 同时关闭 DeepSeek 8-node/4-step 与核心 8-step 子项。M2 只剩 Qwen 4-node
 定点回归和计划列明的完整身份/故障矩阵；M4、M5 和总目标状态不变。
+
+n4-910c1 r93 复用相同锁定服务、QEMU 和 Qwen3-0.6B 权重，唯一执行
+4-node/4-step 定点回归。4/4 节点完成 4/4 step，worker/handoff record 均为 16；
+token 为 `264,3644,7653,304`，文本为 `" a global leader in"`，与既有 2/3/8
+节点 oracle 一致。四轮 round time 为 12942、13017、11097、12815 ms。四条
+cleanup 各核对 16 个 allocation 和 generation，全部对象、backing/address、
+mapping、reference、in-flight 与 quarantine 归零；fatal marker 和 QEMU 残留为
+零，报告 `status=pass`。summary SHA-256 为
+`521e70b8a1f7859a07134f6fb269352f3c9c51985ab4611d13043899372b3a3c`。
+
+r93 关闭 Qwen 4-node 定点回归。M2 的模型/拓扑运行矩阵已经完成，只剩计划列明
+的完整身份/故障矩阵；M4、M5 和总目标状态不变。
 
 ## 9. Review 意见处置
 

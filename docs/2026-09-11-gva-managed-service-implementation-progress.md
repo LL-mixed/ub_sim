@@ -7060,3 +7060,41 @@ flooding、`stale_ref`、quarantine failure 均为零。summary SHA-256 为
 
 r92 同时关闭 DeepSeek 8-node/4-step 与 DeepSeek 核心 8-step。M2 只剩 Qwen
 4-node 定点回归和计划列明的完整身份/故障矩阵；M4、M5 和总目标继续进行。
+
+### n4-910c1 Qwen 4-node/4-step（r93）
+
+r93 复用 r92 已验证的服务、QEMU 和 initramfs 源码，只执行一次剩余的 Qwen
+4-node 定点回归：
+
+```text
+mem_service  3592080ca7173940e378ea35be223d8c7d653a51
+qemu source  02d214fe84b6b7402d428dbadb5f2a6e90498463
+model        /home/ll/models/Qwen3-0.6B
+command      run_w5_cluster_config.sh --managed-serving --nodes 4 --steps 4
+run          2026-09-18_03-43-16_w5_qwen3_0_6b_decode_7804_headless8
+```
+
+runner exit 0，报告器返回 `status=pass`：
+
+```text
+decode_steps_expected 4
+decode_steps_observed 4
+passed_nodes          4/4
+worker_records        16
+handoff_records       16
+tokens                264,3644,7653,304
+text                  " a global leader in"
+round_ms              12942,13017,11097,12815
+```
+
+四个节点各完成 4/4 step，token、piece、runner-up、margin 和 checksum 与既有
+Qwen 2/3/8-node oracle 一致。四条 cleanup 各核对 `allocations=16`、
+`final_generation=16`，对象、backing/address bytes、export/import mappings、
+live refs、in-flight 和 quarantine 全部归零。日志中没有 fatal worker stop、
+`stale_ref`、quarantine failure 或 SYN flooding；精确进程查询无遗留 QEMU。
+summary SHA-256 为
+`521e70b8a1f7859a07134f6fb269352f3c9c51985ab4611d13043899372b3a3c`。
+
+r93 关闭 Qwen 4-node 定点回归。M2 的 2/3/4/8-node Qwen 与 2/3/8-node
+DeepSeek 模型运行矩阵全部完成；M2 只剩计划列明的完整身份/故障矩阵。M4、M5
+和总目标继续进行。
