@@ -6631,3 +6631,44 @@ runner report   d1001a699865dbec026b6e7cfe0e5025349e1dbff4eef7925eb28c924ad4e06d
 精确进程查询确认终态无 `qemu-system-aarch64`。该结果关闭同一 node A
 daemon/guest 生命周期内连续两次可续作 worker 事务故障子项。七个可续作 phase
 全部重复的完整矩阵仍待验收；M3 与总目标继续保持进行中。
+
+### n4 双 guest managed-transaction-repeat r50-r55：重复事务完整矩阵
+
+r50-r55 复用 r49 的同一组不可变产物，没有重新构建 guest artifact，也没有重跑
+已通过的 `published_crash × 2`：
+
+```text
+parent      5a1d75a33531387f05379442cf812c0aaa9c7e3c
+mem_service 62ccd379986ee8da62c3e3711a7fcd1271e6e236
+qemu        5809bc8a1aad04ceb997ac5778b2b79ebf18ca6e
+kernel      dd07fe43c50de0432a9d363bcb6205ff29abab7e
+initramfs   da75dff7d8831e771642a803be49b55f2e09f934213be01b625a1348f041b692
+```
+
+每个 run 只执行一次实际双 QEMU case，并在首个失败时停止。实际没有失败或重试，
+矩阵 6/6 通过：
+
+| run | fault | phase | cycles/generations | validation JSON SHA-256 |
+| --- | --- | --- | --- | --- |
+| r50 | `address_reserved_crash` | `reserved` | 2 / 1,2 | `0f10cec0bfa01633695e6296b0448946ccb9a508175f7adedb5ddffde1b4620e` |
+| r51 | `backing_exported_crash` | `exported` | 2 / 1,2 | `1a5fa615b2d7407fc90e4d506faa9a2706303fbfb33751fd2800920ab2a9d49a` |
+| r52 | `release_intent_crash` | `release-intent` | 2 / 1,2 | `5d02dd26441e7f5916d44d767d37f34ed1baa0ea1db70648baa5131f8c2b0e49` |
+| r53 | `unexported_crash` | `unexported` | 2 / 1,2 | `70ce226ddf2b6105a053c266871f3c36a2b674abd096641c1dd9b7f906e9a289` |
+| r54 | `retired_crash` | `retired` | 2 / 1,2 | `3f2ea305993890e42b39a602d985c6cca9b16abd8e5dc372dad9de53e9fad11e` |
+| r55 | `reclaimed_crash` | `reclaimed` | 2 / 1,2 | `2d2a6191aa29e645f0caf4b8dd38120554b3bb37208c51eba4ea879a92fdee46` |
+
+六个验证 JSON 均报告 `status=pass`、完整 ledger、worker exit 86、
+`recovery=resumed`、`provider_state=ready`、`final_state=retired` 和
+`resource_reconciliation_required=false`。每个 phase 的两个对象均使用严格递增
+且不复用的 generation 1、2；逐周期 provider 重注册后 directory ready。每次结束
+时 `live_objects`、backing/address bytes、export/import mappings、refs、in-flight、
+quarantine 和 kernel region 全部为零，`managed_recovery_required=0`。矩阵控制台
+记录 SHA-256 为
+`17c71d921528122b97a41709919e56437e4f8ebc3c7080b47213ddcaa4f60a01`；精确进程
+查询确认矩阵终态无 `qemu-system-aarch64`。
+
+r49 已覆盖同版本 `published × 2`。r49-r55 合并形成七个可续作 phase 的完整重复
+事务故障矩阵。此前 r19-r20、r30、r38、r41、r46 已分别关闭无法续作 ledger 隔离、
+daemon 双次退出、ACK/receipt 缺失、旧访问拒绝、整 guest 连续退出和 replacement
+incarnation 重新加入。由此 M3“回收及 GSVA 状态恢复”阶段验收通过；M1、M2、M4、
+M5 和总目标继续保持原状态。
