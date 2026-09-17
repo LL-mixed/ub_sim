@@ -50,6 +50,12 @@ static void wait_tick(void)
     (void)nanosleep(&delay, NULL);
 }
 
+static bool waitable_status(enum mem_service_wire_status status)
+{
+    return status == MEM_SERVICE_WIRE_STATUS_NOT_FOUND ||
+           status == MEM_SERVICE_WIRE_STATUS_TIMEOUT;
+}
+
 static int copy_text(char *out, size_t capacity, const char *text)
 {
     size_t length;
@@ -163,7 +169,7 @@ static int wait_allocation_active(struct w5_managed_object_guest *object,
             if (!strcmp(allocation.state, "active")) return 0;
             if (!strcmp(allocation.state, "quarantined") ||
                 !strcmp(allocation.state, "retired")) return -ESTALE;
-        } else if (*status_out != MEM_SERVICE_WIRE_STATUS_NOT_FOUND) {
+        } else if (!waitable_status(*status_out)) {
             return rc;
         }
         wait_tick();
@@ -298,7 +304,7 @@ int w5_managed_reader_open(
         rc = transition(object, MEM_SERVICE_REFERENCE_RESOLVE,
             config->reference_key, NULL, &result, status_out);
         if (!rc) break;
-        if (*status_out != MEM_SERVICE_WIRE_STATUS_NOT_FOUND &&
+        if (!waitable_status(*status_out) &&
             *status_out != MEM_SERVICE_WIRE_STATUS_STALE_REF) return rc;
         wait_tick();
     } while (now_ms() - start < object->timeout_ms);

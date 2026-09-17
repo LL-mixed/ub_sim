@@ -24,7 +24,8 @@ class W5ManagedObjectGuestTest(unittest.TestCase):
             self.assertEqual(
                 result.stdout.strip(),
                 "w5_managed_object_guest=pass writer_lifecycle=1 "
-                "reader_lifecycle=1 writer_abort=1 owner_cleanup=1")
+                "reader_lifecycle=1 reader_timeout_retry=2 writer_abort=1 "
+                "owner_cleanup=1")
             self.assertIn(
                 "[w5_managed_object] role=writer stage=map rc=-5 status=10 ",
                 result.stderr)

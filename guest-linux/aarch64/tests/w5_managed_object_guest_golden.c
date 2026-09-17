@@ -35,6 +35,7 @@ static unsigned releases;
 static unsigned closes;
 static unsigned destroys;
 static unsigned retires;
+static unsigned resolve_timeouts_remaining;
 static unsigned char backing[65536];
 static struct lingqu_object_ref_wire_v2 published;
 static int map_result;
@@ -168,6 +169,11 @@ int mem_service_client_reference_transition(
     case MEM_SERVICE_REFERENCE_RESOLVE:
         assert(strstr(request->key, "/hidden") != NULL);
         ++resolves;
+        if (resolve_timeouts_remaining) {
+            --resolve_timeouts_remaining;
+            *status_out = MEM_SERVICE_WIRE_STATUS_TIMEOUT;
+            return -ETIMEDOUT;
+        }
         fill_allocation(&result_out->allocation, "reader-session");
         result_out->reference = published;
         break;
@@ -506,6 +512,7 @@ int main(void)
         .holder_node_id = "guest-node-3", .holder_provider_incarnation = 11,
         .operation_prefix = "reader-op", .timeout_ms = 1000, .pin_limit = 8,
     };
+    resolve_timeouts_remaining = 2;
     assert(w5_managed_reader_open(&client, &channel, &domain, &reader_config,
                                   &reader, &status) == 0);
     assert(reader && w5_managed_object_reference(reader));
@@ -522,12 +529,14 @@ int main(void)
            !aborted_writer);
 
     assert(allocations == 2 && begins == 2 && stages == 1 && seals == 1);
-    assert(resolves == 1 && acquires == 1 && holder_acquires == 2 &&
+    assert(resolves == 3 && acquires == 1 && holder_acquires == 2 &&
            maps == 3 && adopts == 3);
     assert(closes == 3 && destroys == 3 && releases == 3 && retires == 1);
     map_result = -EIO;
     assert(w5_managed_writer_open(&client, &channel, &domain, &writer_config,
                                   &writer, &status) == -EIO);
-    puts("w5_managed_object_guest=pass writer_lifecycle=1 reader_lifecycle=1 writer_abort=1 owner_cleanup=1");
+    puts("w5_managed_object_guest=pass writer_lifecycle=1 "
+         "reader_lifecycle=1 reader_timeout_retry=2 writer_abort=1 "
+         "owner_cleanup=1");
     return 0;
 }

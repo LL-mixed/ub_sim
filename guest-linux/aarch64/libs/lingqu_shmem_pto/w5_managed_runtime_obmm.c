@@ -11,6 +11,7 @@
 #define W5_MANAGED_MIN_ALLOCATION_GRANULARITY_BYTES (2U * 1024U * 1024U)
 #define W5_MANAGED_CANARY_VISIBLE_BYTES 256U
 #define W5_MANAGED_CANARY_SEED_BASE 41U
+#define W5_MANAGED_WIRE_ATTEMPT_TIMEOUT_MS 5000U
 
 struct w5_managed_runtime_guest {
     struct mem_service_client client;
@@ -78,7 +79,16 @@ int w5_managed_runtime_open(
         config->client_provider_incarnation;
     runtime->client.connect_spec = runtime->connect_spec;
     mem_service_wire_client_options_init(&runtime->client.wire_options);
-    runtime->client.wire_options.timeout_ms = config->timeout_ms;
+    /* Keep one transport attempt short enough for the object layer to retry
+     * read-only discovery while a compute-bound guest temporarily cannot
+     * accept TCP connections. The operation-wide deadline stays in the
+     * managed object config. Mutating wire operations remain single-shot. */
+    runtime->client.wire_options.timeout_ms =
+        config->timeout_ms < W5_MANAGED_WIRE_ATTEMPT_TIMEOUT_MS ?
+        config->timeout_ms : W5_MANAGED_WIRE_ATTEMPT_TIMEOUT_MS;
+    runtime->client.wire_options.max_attempts = 1;
+    runtime->client.wire_options.retry_backoff_ms = 0;
+    runtime->client.wire_options.retry_on_timeout = 0;
     provider_config = (struct mem_service_provider_obmm_config) {
         .instance = "w5-managed-serving",
         .import_region_bytes = config->import_region_bytes,
