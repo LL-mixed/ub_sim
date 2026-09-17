@@ -1622,7 +1622,7 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | M1 独立分配与访问 | 通过 | r306 同一基础设施生命周期完成百个独立 session 与双 guest 直接数据闭环；r19-r20/r30 验证 readiness fail-closed；r121/r118/r297 覆盖并发、不同 size/alignment 及 backing/address 耗尽恢复；r126/r124/r321/r381 覆盖固定 VA 冲突、畸形 descriptor、旧引用与退役 descriptor 拒绝 | 无；本文定义的两节点、单 home A01-A06 与 CPU A09 子集已满足。A16/A18 继续由 M2/M4 和最终验收承担 |
 | M2 动态身份与 W5 | 通过 | r123/r124 覆盖 home 与 consumer 的 token/epoch/owner/descriptor 身份拒绝；r274/r38/r41 覆盖错误、重复、迟到和缺失 ACK、恢复回执及旧 CPU/PTO 拒绝；r286/r384 覆盖正常 PTO drain；r322 百轮拒绝旧 key/V2 并读取新代；r381 拒绝退役 descriptor 的 CPU 访问并验证新映射；当前锁定服务 `3592080c`、QEMU `02d214fe`；r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node，两个核心配置均完成 8-step 和终态资源归零 | 无；本文 M2 的身份、故障和模型/拓扑矩阵已满足。M4 压力/收益与 M5 tokenless replay 继续独立验收 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
-| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零 | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成；A16 的 2/3/8-node 每节点 home、8-node 全部有向节点对与三轮冷启动、A18 独立包跨机复现仍待验收 |
+| M4 压力与收益 | 进行中 | r121 已覆盖三个并发客户端、1/2097153/4194305-byte 对象、2/4/8-MiB alignment、交错释放和 3-MiB replacement，原对象持续可读且池占用回到基线；r297 地址耗尽/复用、r306/r307 两种窗口百轮、r322 含旧引用拒绝的百轮通过；Qwen 4-node 冷 cache 基线完成 1 轮功能核对、2 轮预热和 5 轮正式重复，正式样本 TTFT/TPOT/E2E 中位数为 12103/11760.7/47369 ms，7 轮共 28 条 cleanup 全部归零；A16 以 managed W5 的 2/3/4/8-node 每节点 home 记录和 `a8787024` 的 2/3/4/8-node 全有向矩阵共同关闭，8-node 56 个有向节点对各执行 10 轮数据核对并完成三次同源码冷启动 | prefix/decode-KV/hidden 的语义化混合压力、热 prefix 和不同 suffix 独立重复组未完成；A18 独立包跨机复现仍待验收 |
 | M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
 
 2026-09-17 M2 补记：Qwen 8-node/8-step 的首次 r83 在 32 个历史
@@ -1760,6 +1760,36 @@ cleanup 均核对 16 个 allocation 且所有资源计数归零，终态无 QEMU
 启用 prefix cache，`gsva_lookup_ms` 和 `gsva_map_read_ms` 均为 0，因此只关闭
 冷 cache/无 prefix 基线的重复性门槛。热 prefix 和不同 suffix 必须分别取样，
 不得与本组混算。完整 run ID、summary SHA-256 和统计输出见实施进度记录。
+
+2026-09-18 A16 补记：提交 `a8787024` 将 OBMM GSVA 全有向矩阵扩展为
+`--nodes 2|3|4|8 --iterations N`，默认验收轮数为 10。每一轮使用包含轮次、
+writer 和 owner 的不同数据值；所有节点完成当轮全矩阵核对后通过共享 phase 屏障
+进入下一轮。CLI 配置解析、initramfs 参数传递和成功记录均有定向测试；本地与
+n4-910c1 均为 5/5 通过，AArch64 静态编译通过。
+
+n4-910c1 使用同一份源码和 initramfs 完成以下实际矩阵：
+
+| 拓扑 | run ID | 有向节点对 | 每对轮数 | 结果 |
+| --- | --- | ---: | ---: | --- |
+| 2-node | `2026-09-18_04-26-15_obmm_gsva_matrix2_25586` | 2 | 10 | 2/2 节点通过 |
+| 3-node | `2026-09-18_04-26-27_obmm_gsva_matrix3_8573` | 6 | 10 | 3/3 节点通过 |
+| 4-node | `2026-09-18_04-26-40_obmm_gsva_matrix4_19137` | 12 | 10 | 4/4 节点通过 |
+| 8-node cold 1 | `2026-09-18_04-26-53_obmm_gsva_matrix8_23273` | 56 | 10 | 8/8 节点通过 |
+| 8-node cold 2 | `2026-09-18_04-27-08_obmm_gsva_matrix8_3746` | 56 | 10 | 8/8 节点通过 |
+| 8-node cold 3 | `2026-09-18_04-27-23_obmm_gsva_matrix8_29181` | 56 | 10 | 8/8 节点通过 |
+
+每个节点分别导出自己的固定 GSVA slice，所有节点映射所有 peer slice；成功前逐项
+核对全部 writer/owner 数据，因此 owner 集合等于 home 集合。三次 8-node 运行均
+从全新 QEMU 进程冷启动，失败标记为 0，终态无 QEMU。raw GSVA 矩阵用于证明物理
+全有向数据路径；managed service 的控制面与每节点 home 由 r81/r82/r93/r84、
+r87/r88/r92 以及
+`2026-09-18_04-16-13_w5_qwen3_0_6b_decode_12234_headless8` 证明。最后一次
+managed run 为 8/8 节点、1/1 step、8 个 worker/handoff，8 条 cleanup 各回收
+8 个 allocation，live object、backing/address bytes 和 quarantine 均归零；
+summary SHA-256 为
+`dcbc37158b098f9850270ac4062aebafc369267e8785c2494a62e9e1147fba87`。
+两组证据共同关闭 A16；raw 机制结果没有被当作 managed service 控制面结果。
+A18 和 M4 的 prefix 语义压力仍保持未完成。
 
 ## 9. Review 意见处置
 

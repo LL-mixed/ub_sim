@@ -523,7 +523,7 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | AM1 | 通过 | 两节点、单 home 的 A01-A06 与 CPU A09 子集已满足；多 home、拓扑、冷启动和独立发布保留在 AM4/A16/A18 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r306 百个独立 session；r19-r20/r30 readiness fail-closed；r121/r118/r297 区间、并发与容量；r126/r124/r321/r381 冲突、descriptor、旧引用拒绝 |
 | AM2 | 进行中：四种读写组合、四线程 owner、只读双对象、大尺寸、home 互换及共享会话双请求子集通过；完整阶段未完成 | 多请求故障恢复、现有全局对象引用绑定、tail 反向 home 及设备并行性独立验收 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r176/r177b/r178 与 r186c/r191-r194 的既有证据保留；r207/r208 的双方向 cross-page、r209 的反向 ND、r210 的原方向 tail 双请求整轮通过，大尺寸两轮各核对 102 个分片；r204 的重复打开会话失败及既有启动/解析失败原记录保留；A07-A11 整项仍未关闭 |
 | AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
-| AM4 | 未完成 | 多 home、多拓扑、独立部署与 W5 全部通过 | 待填写 A01-A18 汇总 |
+| AM4 | 进行中：A16 通过 | A18 独立发布包跨机复现及总计划 M4 的语义化 cache 压力 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：managed W5 已覆盖 2/3/4/8-node 每节点 home；`a8787024` 在 2/3/4/8-node 对每个有向节点对执行 10 轮数据核对，8-node 同源码三次冷启动通过，4-node 无回归 |
 
 ### 2026-09-09 首次实现记录
 

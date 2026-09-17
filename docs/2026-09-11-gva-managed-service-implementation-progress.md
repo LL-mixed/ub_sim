@@ -7170,3 +7170,46 @@ quarantine，远端终态无 QEMU。该配置未启用 prefix cache，GSVA 两�
 只说明此组未走 cache mapping；本组关闭冷 cache/无 prefix 基线的重复测量门槛。
 热 prefix、不同 suffix、A16 多 home 全矩阵/三轮冷启动和 A18 独立包跨机复现
 继续按计划单独验收。
+
+## 2026-09-18：A16 多拓扑、全有向 home 与冷启动矩阵
+
+原 OBMM GSVA matrix 已能为每个节点建立独立 home slice，并让所有节点写入所有
+owner，但每个有向节点对只核对一个数据值。固定验收矩阵还要求每种组合至少十次
+发布/获取，因此没有沿用早先的单轮结果关闭 A16。
+
+父仓库提交 `a8787024` 增加 `--iterations` CLI，runner 默认执行 10 轮。guest
+程序把 iteration、writer、owner 一起编码到值中；每轮核对完整 N×N 值后，全节点
+通过共享 phase 屏障再进入下一轮。initramfs 将
+`obmm_gsva_matrix_iterations=` 明确传到 guest CLI，成功记录输出实际 iterations。
+本地定向 Python 5/5、zsh 语法、AArch64 `-Wall -Wextra -static` 构建与
+`git diff --check` 通过。n4-910c1 的文件 SHA-256 与本地一致，禁用旧 pyc 后同一
+Python 测试 5/5 通过；initramfs SHA-256 为
+`b6284619733acdd9c517203e4a3ce811809aabbafc74a33ec1aea63b38cf5729`。
+
+实际运行结果如下。manifest SHA 是按排序后的该 run 全部日志 SHA-256 再计算的
+汇总指纹：
+
+| topology / cold start | run ID | pairs × iterations | result lines | manifest SHA-256 |
+| --- | --- | ---: | ---: | --- |
+| 2-node | `2026-09-18_04-26-15_obmm_gsva_matrix2_25586` | 2 × 10 | 2 | `986892cf17e80f195fbf18acccf9aa5c4a411c487dd0d982432f24b356a32e9e` |
+| 3-node | `2026-09-18_04-26-27_obmm_gsva_matrix3_8573` | 6 × 10 | 3 | `4c9f2e49fc039d0e5ac9a8e70367c6b8080fecb3028d5cf2e4d227535dd29835` |
+| 4-node regression | `2026-09-18_04-26-40_obmm_gsva_matrix4_19137` | 12 × 10 | 4 | `6b32c448a99bd0b26bb8739ccfa757a102ad8bbe5ffe9f2335b24a505831e481` |
+| 8-node cold 1 | `2026-09-18_04-26-53_obmm_gsva_matrix8_23273` | 56 × 10 | 8 | `0431559a1e68f193ab7904586656e524b9c82e92869fccfc2024f23adc0f19c5` |
+| 8-node cold 2 | `2026-09-18_04-27-08_obmm_gsva_matrix8_3746` | 56 × 10 | 8 | `4f0292d907aace4e773e6f6724812ac0e2914563e3e1f407879747f8bc22c92f` |
+| 8-node cold 3 | `2026-09-18_04-27-23_obmm_gsva_matrix8_29181` | 56 × 10 | 8 | `f15dc64685d01f4a6313fc7e0c404bdd165342af913f98a19b02f5788c3e46df` |
+
+全部节点成功记录都包含相应 `directed_pairs`、`iterations=10`、固定 slice base
+与最终轮次数据；失败标记合计为 0，终态没有 QEMU。该矩阵证明 OBMM/GSVA 物理
+路径及拓扑没有固定 home 假设。managed control plane 与 SDK 的每节点 home 证据
+继续使用已通过的 Qwen r81/r82/r93/r84、DeepSeek r87/r88/r92；这些运行中每个
+PP 节点都通过同一 SDK 创建并发布本节点 stage allocation。
+
+为核对当前 `3592080c` 服务与 `02d214fe` QEMU 组合，另执行一次最小 8-node
+managed cold start：
+`2026-09-18_04-16-13_w5_qwen3_0_6b_decode_12234_headless8`。该 run 为
+8/8 节点、1/1 step、8 个 worker/handoff，token 264、文本 `" a"`；8 条 cleanup
+各回收 8 个 allocation，非零 live object、backing/address byte 和 quarantine
+记录为 0。summary SHA-256 为
+`dcbc37158b098f9850270ac4062aebafc369267e8785c2494a62e9e1147fba87`，终态无
+QEMU。raw 全有向矩阵与 managed W5 证据分工明确，合并满足 A16；A18、prefix/
+decode-KV/hidden 语义压力、热 prefix 和不同 suffix 重复组继续保留。
