@@ -182,6 +182,21 @@ static int stage_next(struct w5_managed_serving_operation *operation,
     return rc;
 }
 
+static int report_finish_failure(
+    const struct w5_managed_serving_operation *operation,
+    const char *stage,
+    int rc,
+    enum mem_service_wire_status status)
+{
+    fprintf(stderr,
+            "[w5_managed_serving] stage=%s rc=%d status=%u op=%llu"
+            " staged=%u\n",
+            stage, rc, (unsigned)status,
+            (unsigned long long)(operation ? operation->request.op_id : 0),
+            operation ? operation->staged : 0);
+    return rc;
+}
+
 int w5_managed_serving_finish(
     struct w5_managed_serving_operation *operation,
     struct w5_managed_serving_result *result_out,
@@ -195,7 +210,9 @@ int w5_managed_serving_finish(
         return -EINVAL;
     if (!operation->model_released) {
         rc = w5_managed_model_release(operation->model);
-        if (rc) return rc;
+        if (rc)
+            return report_finish_failure(operation, "model-release", rc,
+                                         *status_out);
         operation->model = NULL;
         operation->model_released = true;
     }
@@ -206,27 +223,37 @@ int w5_managed_serving_finish(
             (size_t)operation->request.output_capacity,
             operation->request.output_offset, &operation->request.expected,
             &operation->result.decoded);
-        if (rc) return rc;
+        if (rc)
+            return report_finish_failure(operation, "result-decode", rc,
+                                         *status_out);
         rc = w5_managed_object_wait_range(operation->request.writer,
             operation->cpu, operation->request.output_offset,
             operation->result.decoded.serialized_bytes,
             operation->result.decoded.serialized_checksum);
-        if (rc) return rc;
+        if (rc)
+            return report_finish_failure(operation, "result-visible", rc,
+                                         *status_out);
         operation->output_visible = true;
     }
     required = operation->result.decoded.terminal_present ? 5U : 3U;
     while (operation->staged < required) {
         rc = stage_next(operation, status_out);
-        if (rc) return rc;
+        if (rc)
+            return report_finish_failure(operation, "reference-stage", rc,
+                                         *status_out);
     }
     operation->result.reference_count = required;
     if (operation->cpu) {
         rc = mem_service_mapping_lease_release(operation->cpu);
-        if (rc) return rc;
+        if (rc)
+            return report_finish_failure(operation, "cpu-release", rc,
+                                         *status_out);
         operation->cpu = NULL;
     }
     rc = w5_managed_writer_seal(operation->request.writer, status_out);
-    if (rc) return rc;
+    if (rc)
+        return report_finish_failure(operation, "writer-seal", rc,
+                                     *status_out);
     operation->sealed = true;
     *result_out = operation->result;
     return 0;
