@@ -81,14 +81,23 @@ def validate(node_a, node_b_before, node_b_after, qemu_b_before, host_log):
     crash_ready = one_record(node_b_before, "mem_service guest-recovery:", {
         "node": "1", "phase": "crash-ready", "status": "ready",
         "fault": FAULT, "key": KEY, "generation": str(generation),
-        "incarnation": "7", "live_refs": "1", "mapping": "active",
+        "incarnation": "7", "live_refs": "1", "import_mappings": "1",
+        "mapping": "active",
     })
-    require(len(crash_ready) == 9, "invalid guest crash barrier")
-    require("action=map key=%s" % KEY in node_b_before and
-            "status=ok" in node_b_before,
-            "lost guest did not establish the held mapping")
-    require("SIM_DEC: MAP success" in qemu_b_before,
-            "lost guest QEMU did not establish a physical mapping")
+    address = int(crash_ready["address"])
+    require(len(crash_ready) == 11 and address > 0,
+            "invalid guest crash barrier")
+    matching_routes = [row for row in records(qemu_b_before, "GSVA_MAP:")
+                       if int(row.get("home_va", "0"), 0) == address]
+    require(len(matching_routes) == 1 and
+            int(matching_routes[0].get("size", "0"), 0) == 2097152 and
+            matching_routes[0].get("source") == "2" and
+            matching_routes[0].get("profile") == "1",
+            "lost guest QEMU did not establish the exact managed mapping")
+    map_id = matching_routes[0].get("map_id")
+    require(not any(row.get("map_id") == map_id
+                    for row in records(qemu_b_before, "GSVA_UNMAP:")),
+            "lost guest mapping was removed before the crash")
 
     guest_kill = one_record(host_log, "mem_service guest-recovery-host:", {
         "phase": "guest-kill", "node": "1", "signal": "9",

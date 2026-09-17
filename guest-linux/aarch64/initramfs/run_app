@@ -2316,9 +2316,11 @@ mem_service_object_share_guest_recovery() {
   local generation=""
   local attempt=0
   local session_pid=""
+  local peer_pid=""
   local before=""
   local after=""
   local field=""
+  local address=""
   local quarantined_bytes=""
   local replacement_incarnation=0
 
@@ -2366,7 +2368,7 @@ mem_service_object_share_guest_recovery() {
       echo "provider_import_region_bytes=2097152"
       echo "op=acquire key=$key idempotency_key=guest-recovery-holder-acquire expected_generation=$generation"
       echo "op=map key=$key flags=read"
-      echo "op=wait_state key=guest-recovery-hold state=active timeout_ms=60000 poll_ms=100"
+      echo "op=wait_state key=$key state=quarantined timeout_ms=60000 poll_ms=100"
     } >/tmp/guest-recovery-holder.conf
     /bin/linqu_mem_service object-session \
       --config /tmp/guest-recovery-holder.conf \
@@ -2374,9 +2376,16 @@ mem_service_object_share_guest_recovery() {
     session_pid=$!
     attempt=0
     while [ "$attempt" -lt 1200 ]; do
-      if /bin/busybox grep -q \
-          "action=map key=$key .*status=ok" \
-          /tmp/guest-recovery-holder.log 2>/dev/null; then
+      if /bin/linqu_mem_service inspect-allocation --connect "$connect" \
+          --key "$key" >/tmp/guest-recovery-holder-active.log 2>&1 &&
+          /bin/busybox grep -qx 'state=active' \
+            /tmp/guest-recovery-holder-active.log &&
+          /bin/busybox grep -qx 'live_refs=1' \
+            /tmp/guest-recovery-holder-active.log &&
+          /bin/linqu_mem_service allocation-stats --connect "$connect" \
+            >/tmp/guest-recovery-holder-stats.log 2>&1 &&
+          /bin/busybox grep -qx 'import_mappings=1' \
+            /tmp/guest-recovery-holder-stats.log; then
         break
       fi
       kill -0 "$session_pid" 2>/dev/null || {
@@ -2386,9 +2395,18 @@ mem_service_object_share_guest_recovery() {
       attempt=$((attempt + 1))
       /bin/busybox sleep 0.05
     done
-    [ "$attempt" -lt 1200 ] || return 1
-    /bin/busybox cat /tmp/guest-recovery-holder.log
-    echo "mem_service guest-recovery: node=1 phase=crash-ready status=ready fault=guest_crash key=$key generation=$generation incarnation=$incarnation live_refs=1 mapping=active"
+    [ "$attempt" -lt 1200 ] || {
+      /bin/busybox cat /tmp/guest-recovery-holder.log
+      /bin/busybox cat /tmp/guest-recovery-holder-active.log
+      /bin/busybox cat /tmp/guest-recovery-holder-stats.log
+      return 1
+    }
+    address="$(/bin/busybox sed -n 's/^address=//p' \
+      /tmp/guest-recovery-holder-active.log | /bin/busybox head -n 1)"
+    case "$address" in ''|0|*[!0-9]*) return 1 ;; esac
+    /bin/busybox cat /tmp/guest-recovery-holder-active.log
+    /bin/busybox cat /tmp/guest-recovery-holder-stats.log
+    echo "mem_service guest-recovery: node=1 phase=crash-ready status=ready fault=guest_crash key=$key generation=$generation incarnation=$incarnation address=$address live_refs=1 import_mappings=1 mapping=active"
     while kill -0 "$session_pid" 2>/dev/null; do
       /bin/busybox sleep 1
     done
@@ -2451,7 +2469,40 @@ mem_service_object_share_guest_recovery() {
         --key "$key" >/tmp/guest-recovery-before.log 2>&1 &&
         /bin/busybox grep -qx 'state=active' /tmp/guest-recovery-before.log &&
         /bin/busybox grep -qx 'provider_backed=1' \
-          /tmp/guest-recovery-before.log &&
+          /tmp/guest-recovery-before.log; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.05
+  done
+  [ "$attempt" -lt 1200 ] || {
+    /bin/busybox cat /tmp/guest-recovery-before.log
+    /bin/busybox cat /tmp/managed-share.worker.log
+    return 1
+  }
+  {
+    echo "session_id=guest-recovery-home"
+    echo "connect=$connect"
+    echo "request_timeout_ms=30000"
+    echo "holder_node_id=guest-node-0"
+    echo "holder_provider_incarnation=$incarnation"
+    echo "provider=obmm"
+    echo "provider_node_id=0"
+    echo "provider_node_count=2"
+    echo "provider_generation=$((incarnation + 101))"
+    echo "provider_import_region_bytes=2097152"
+    echo "op=wait_state key=$key state=quarantined timeout_ms=60000 poll_ms=100"
+  } >/tmp/guest-recovery-home.conf
+  /bin/linqu_mem_service object-session \
+    --config /tmp/guest-recovery-home.conf \
+    >/tmp/guest-recovery-home.log 2>&1 &
+  peer_pid=$!
+
+  attempt=0
+  while [ "$attempt" -lt 1200 ]; do
+    if /bin/linqu_mem_service inspect-allocation --connect "$connect" \
+        --key "$key" >/tmp/guest-recovery-before.log 2>&1 &&
+        /bin/busybox grep -qx 'state=active' /tmp/guest-recovery-before.log &&
         /bin/busybox grep -qx 'live_refs=1' /tmp/guest-recovery-before.log &&
         /bin/linqu_mem_service allocation-stats --connect "$connect" \
           >/tmp/guest-recovery-before-stats.log 2>&1 &&
@@ -2459,10 +2510,20 @@ mem_service_object_share_guest_recovery() {
           /tmp/guest-recovery-before-stats.log; then
       break
     fi
+    kill -0 "$peer_pid" 2>/dev/null || {
+      /bin/busybox cat /tmp/guest-recovery-home.log
+      return 1
+    }
     attempt=$((attempt + 1))
     /bin/busybox sleep 0.05
   done
-  [ "$attempt" -lt 1200 ] || return 1
+  [ "$attempt" -lt 1200 ] || {
+    /bin/busybox cat /tmp/guest-recovery-home.log
+    /bin/busybox cat /tmp/guest-recovery-before.log
+    /bin/busybox cat /tmp/guest-recovery-before-stats.log
+    /bin/busybox cat /tmp/managed-share.worker.log
+    return 1
+  }
   /bin/busybox cat /tmp/guest-recovery-before.log
   echo "mem_service guest-recovery: node=0 phase=active status=ready fault=guest_crash key=$key generation=$generation old_incarnation=$incarnation live_refs=1 import_mappings=1"
 
@@ -2579,6 +2640,8 @@ mem_service_object_share_guest_recovery() {
   quarantined_bytes="$(/bin/busybox sed -n 's/^quarantined_bytes=//p' \
     /tmp/guest-recovery-final-stats.log | /bin/busybox head -n 1)"
   case "$quarantined_bytes" in ''|0|*[!0-9]*) return 1 ;; esac
+  kill "$peer_pid" 2>/dev/null || true
+  wait "$peer_pid" 2>/dev/null || true
   echo "mem_service guest-recovery: node=0 phase=observation status=pass fault=guest_crash key=$key generation=$generation old_incarnation=$incarnation new_incarnation=$replacement_incarnation state=quarantined live_refs=1 import_mappings=1 backing_allocated_bytes=0 address_reserved_bytes=0 quarantined_bytes=$quarantined_bytes managed_recovery_required=1 data_plane_ready=0"
   return 0
 }

@@ -53,11 +53,9 @@ def fixture():
         "mem_service object-share: status=ok node=0 role=provider backend=obmm",
     ))
     node_b_before = "\n".join((
-        "mem_service object-session: session=guest-recovery-holder op=2 action=map "
-        f"key={key} status=ok base=0x0000700000000000 len=65536",
         f"mem_service guest-recovery: node=1 phase=crash-ready status=ready "
         f"fault=guest_crash key={key} generation={generation} incarnation=7 "
-        "live_refs=1 mapping=active",
+        "address=123145302310912 live_refs=1 import_mappings=1 mapping=active",
     ))
     node_b_after = "\n".join((
         "mem_service kernel-regions: phase=baseline",
@@ -72,8 +70,8 @@ def fixture():
         "mem_service object-share: status=ok node=1 role=consumer backend=obmm",
     ))
     qemu_b_before = (
-        "SIM_DEC: MAP success id=4 pa=40000400000 sz=200000 "
-        "remote_uba=ffffffe00000 token=96 generation=7 export_mem_id=1\n"
+        "GSVA_MAP: map_id=5 segment_id=14177894576915742721 "
+        "home_va=0x700000000000 epoch=1 size=2097152 source=2 profile=1\n"
     )
     host_log = "\n".join((
         "mem_service guest-recovery-host: phase=guest-kill node=1 signal=9 pid=123",
@@ -103,7 +101,8 @@ class GuestCrashGuestTests(unittest.TestCase):
             (0, "quarantined_bytes=2097152", "quarantined_bytes=0"),
             (1, "mapping=active", "mapping=missing"),
             (2, "incarnation=8", "incarnation=7"),
-            (3, "SIM_DEC: MAP success", "SIM_DEC: MAP failed"),
+            (3, "home_va=0x700000000000", "home_va=0x700000200000"),
+            (3, "source=2", "source=1"),
             (4, "phase=guest-kill", "phase=guest-skip"),
             (4, "pid=123", "pid=0"),
             (4, "exit_code=137", "exit_code=143"),
@@ -151,6 +150,9 @@ class GuestCrashGuestTests(unittest.TestCase):
             "\nmem_service_object_share_recovery_fault() {", 1
         )[0]
         self.assertIn("phase=crash-ready status=ready", function)
+        self.assertIn("session_id=guest-recovery-home", function)
+        self.assertEqual(function.count("provider_generation=$((incarnation + 101))"), 2)
+        self.assertIn("import_mappings=1 mapping=active", function)
         self.assertIn("timeout_ms=60000 poll_ms=100", function)
         self.assertNotIn("timeout_ms=600000", function)
         self.assertIn("expired_count=1", function)
