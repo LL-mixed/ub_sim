@@ -22,6 +22,8 @@
 #define GSVA_APP_A 0x1111222233334444ULL
 #define GSVA_APP_B 0xaaaabbbbccccddddULL
 #define GSVA_APP_MATRIX_VALUE_BASE 0x4753564d00000000ULL
+#define GSVA_APP_DEFAULT_MATRIX_ITERATIONS 1
+#define GSVA_APP_MAX_MATRIX_ITERATIONS 1000
 #define GSVA_APP_TIMEOUT_MS 90000
 
 enum gsva_app_mode {
@@ -41,6 +43,7 @@ struct gsva_app_config {
     uint64_t base;
     uint64_t size;
     int node_count;
+    int matrix_iterations;
 };
 
 struct gsva_app_payload {
@@ -93,6 +96,7 @@ static bool parse_args(int argc, char **argv, struct gsva_app_config *cfg)
     cfg->base = GSVA_APP_DEFAULT_BASE;
     cfg->size = GSVA_APP_DEFAULT_SIZE;
     cfg->node_count = 2;
+    cfg->matrix_iterations = GSVA_APP_DEFAULT_MATRIX_ITERATIONS;
 
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
@@ -131,6 +135,14 @@ static bool parse_args(int argc, char **argv, struct gsva_app_config *cfg)
                 value < 2 || value > OBMM_POOL_HELPERS_MAX_NODES)
                 return false;
             cfg->node_count = (int)value;
+        } else if (strcmp(argv[i], "--matrix-iterations") == 0 &&
+                   i + 1 < argc) {
+            uint64_t value;
+
+            if (!parse_u64(argv[++i], &value) || value < 1 ||
+                value > GSVA_APP_MAX_MATRIX_ITERATIONS)
+                return false;
+            cfg->matrix_iterations = (int)value;
         } else {
             return false;
         }
@@ -254,9 +266,10 @@ static uint64_t matrix_slot_base(const struct gsva_app_config *cfg, int node_idx
     return cfg->base + (uint64_t)node_idx * cfg->size;
 }
 
-static uint64_t matrix_value(int writer_idx, int owner_idx)
+static uint64_t matrix_value(int iteration, int writer_idx, int owner_idx)
 {
     return GSVA_APP_MATRIX_VALUE_BASE |
+           ((uint64_t)(uint32_t)iteration << 16) |
            ((uint64_t)(uint32_t)writer_idx << 8) |
            (uint64_t)(uint32_t)owner_idx;
 }
@@ -272,19 +285,6 @@ static int wait_matrix_ready(struct gsva_matrix_payload *payload, int owner,
             payload->owner_node == (uint64_t)owner &&
             payload->node_count == (uint64_t)node_count &&
             payload->ptr == ptr)
-            return 0;
-        usleep(1000);
-    }
-    errno = ETIMEDOUT;
-    return -1;
-}
-
-static int wait_matrix_done(struct gsva_matrix_payload *payload)
-{
-    long deadline = obmm_now_ms() + GSVA_APP_TIMEOUT_MS;
-
-    while (obmm_now_ms() < deadline) {
-        if (payload->phase >= 2)
             return 0;
         usleep(1000);
     }
@@ -308,6 +308,7 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
     int import_idx = 0;
     int owner;
     int writer;
+    int iteration;
     int ret = -1;
 
     memset(regions, 0, sizeof(regions));
@@ -386,43 +387,48 @@ static int run_matrix(int obmm_fd, uint32_t local_cna,
             goto out_cleanup;
     }
 
-    for (owner = 0; owner < cfg->node_count; owner++)
-        payloads[owner]->values[local_idx] = matrix_value(local_idx, owner);
-    __sync_synchronize();
+    for (iteration = 1; iteration <= cfg->matrix_iterations; iteration++) {
+        for (owner = 0; owner < cfg->node_count; owner++)
+            payloads[owner]->values[local_idx] =
+                matrix_value(iteration, local_idx, owner);
+        __sync_synchronize();
 
-    for (owner = 0; owner < cfg->node_count; owner++) {
-        for (writer = 0; writer < cfg->node_count; writer++) {
-            long deadline = obmm_now_ms() + GSVA_APP_TIMEOUT_MS;
-            uint64_t expect = matrix_value(writer, owner);
+        for (owner = 0; owner < cfg->node_count; owner++) {
+            for (writer = 0; writer < cfg->node_count; writer++) {
+                long deadline = obmm_now_ms() + GSVA_APP_TIMEOUT_MS;
+                uint64_t expect = matrix_value(iteration, writer, owner);
 
-            while (obmm_now_ms() < deadline &&
-                   payloads[owner]->values[writer] != expect) {
-                usleep(1000);
+                while (obmm_now_ms() < deadline &&
+                       payloads[owner]->values[writer] != expect) {
+                    usleep(1000);
+                }
+                if (payloads[owner]->values[writer] != expect) {
+                    log_msg("matrix verify failed iteration=%d owner=%d"
+                            " writer=%d value=%#" PRIx64 " expect=%#" PRIx64,
+                            iteration, owner, writer,
+                            (uint64_t)payloads[owner]->values[writer], expect);
+                    errno = ETIMEDOUT;
+                    goto out_cleanup;
+                }
             }
-            if (payloads[owner]->values[writer] != expect) {
-                log_msg("matrix verify failed owner=%d writer=%d value=%#"
-                        PRIx64 " expect=%#" PRIx64,
-                        owner, writer,
-                        (uint64_t)payloads[owner]->values[writer], expect);
-                errno = ETIMEDOUT;
+        }
+
+        payloads[local_idx]->phase = (uint64_t)iteration + 1;
+        __sync_synchronize();
+        for (owner = 0; owner < cfg->node_count; owner++) {
+            if (wait_phase(&payloads[owner]->phase,
+                           (uint64_t)iteration + 1) != 0)
                 goto out_cleanup;
-            }
         }
     }
 
-    payloads[local_idx]->phase = 2;
-    __sync_synchronize();
-    for (owner = 0; owner < cfg->node_count; owner++) {
-        if (wait_matrix_done(payloads[owner]) != 0)
-            goto out_cleanup;
-    }
-
     log_msg("result=done mode=matrix node=%d node_count=%d directed_pairs=%d"
-            " slice_base=%#" PRIx64 " ptr=%#" PRIx64
+            " iterations=%d slice_base=%#" PRIx64 " ptr=%#" PRIx64
             " value_from_node0=%#" PRIx64
             " value_from_last=%#" PRIx64,
             local_idx, cfg->node_count,
-            cfg->node_count * (cfg->node_count - 1), local_base, local_base,
+            cfg->node_count * (cfg->node_count - 1), cfg->matrix_iterations,
+            local_base, local_base,
             (uint64_t)payloads[local_idx]->values[0],
             (uint64_t)payloads[local_idx]->values[cfg->node_count - 1]);
     ret = 0;
@@ -995,7 +1001,8 @@ int main(int argc, char **argv)
 
     if (!parse_args(argc, argv, &cfg)) {
         fprintf(stderr, "usage: obmm_gsva --mode identity|conflict|stale-generation|invalid-offset|matrix|mmap-mode|outside-aperture|outside-import|anonymous-collision "
-                "[--base A] [--size S] [--node-count N]\n");
+                "[--base A] [--size S] [--node-count N] "
+                "[--matrix-iterations N]\n");
         return 2;
     }
     obmm_fd = obmm_open_device();

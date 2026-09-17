@@ -4048,6 +4048,9 @@ run_obmm_gsva() {
       obmm_gsva_node_count=*)
         args="$args --node-count ${token#*=}"
         ;;
+      obmm_gsva_matrix_iterations=*)
+        args="$args --matrix-iterations ${token#*=}"
+        ;;
     esac
   done
 

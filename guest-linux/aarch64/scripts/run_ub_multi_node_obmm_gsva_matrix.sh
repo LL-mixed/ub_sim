@@ -8,13 +8,16 @@ WORKSPACE_ROOT="$(cd "$ROOT_DIR/../.." && pwd)"
 KERNEL_IMAGE="${KERNEL_IMAGE:-$ROOT_DIR/out/Image}"
 INITRAMFS_IMAGE="${INITRAMFS_IMAGE:-$ROOT_DIR/out/initramfs.cpio.gz}"
 OBMM_GSVA_MATRIX_NODE_COUNT="${OBMM_GSVA_MATRIX_NODE_COUNT:-${GSVA_MATRIX_NODE_COUNT:-4}}"
+OBMM_GSVA_MATRIX_ITERATIONS="${OBMM_GSVA_MATRIX_ITERATIONS:-10}"
 PRINT_CONFIG=0
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_ub_multi_node_obmm_gsva_matrix.sh [--nodes 2|3|4|8] [--print-config]
+usage: run_ub_multi_node_obmm_gsva_matrix.sh [--nodes 2|3|4|8]
+                                             [--iterations N] [--print-config]
 
 Runs the OBMM GSVA all-directed-pair matrix for the selected topology.
+--iterations selects the number of publish/acquire data rounds (default: 10).
 --print-config resolves and prints the topology without launching QEMU.
 USAGE
 }
@@ -32,6 +35,19 @@ while (( $# > 0 )); do
       ;;
     --nodes=*)
       OBMM_GSVA_MATRIX_NODE_COUNT="${1#--nodes=}"
+      shift
+      ;;
+    --iterations)
+      if (( $# < 2 )); then
+        echo "[obmm-gsva-matrix] FAIL: --iterations requires a value" >&2
+        usage
+        exit 2
+      fi
+      OBMM_GSVA_MATRIX_ITERATIONS="$2"
+      shift 2
+      ;;
+    --iterations=*)
+      OBMM_GSVA_MATRIX_ITERATIONS="${1#--iterations=}"
       shift
       ;;
     --print-config)
@@ -76,6 +92,11 @@ case "$OBMM_GSVA_MATRIX_NODE_COUNT" in
     exit 2
     ;;
 esac
+if [[ "$OBMM_GSVA_MATRIX_ITERATIONS" != <-> ]] ||
+   (( OBMM_GSVA_MATRIX_ITERATIONS < 1 || OBMM_GSVA_MATRIX_ITERATIONS > 1000 )); then
+  echo "[obmm-gsva-matrix] FAIL: iterations must be between 1 and 1000" >&2
+  exit 2
+fi
 TOPOLOGY_FILE="${TOPOLOGY_FILE:-$DEFAULT_TOPOLOGY_FILE}"
 ENTITY_PLAN_FILE="${UB_FM_ENTITY_PLAN_FILE:-$WORKSPACE_ROOT/vendor/ub_topology_two_node_v2_entity.ini}"
 ENTITY_COUNT="${UB_SIM_ENTITY_COUNT:-2}"
@@ -100,6 +121,7 @@ if (( PRINT_CONFIG )); then
   echo "topology_file=$TOPOLOGY_FILE"
   echo "port_num=$PORT_NUM"
   echo "directed_pairs=$((OBMM_GSVA_MATRIX_NODE_COUNT * (OBMM_GSVA_MATRIX_NODE_COUNT - 1)))"
+  echo "iterations=$OBMM_GSVA_MATRIX_ITERATIONS"
   echo "nodes=${(j:,:)NODE_NAMES}"
   exit 0
 fi
@@ -176,7 +198,7 @@ start_node() {
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
       -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_gsva=1 linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} linqu_cna=${node_cna} obmm_gsva_mode=matrix obmm_gsva_base=${OBMM_GSVA_MATRIX_BASE} obmm_gsva_size=${OBMM_GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${OBMM_GSVA_MATRIX_NODE_COUNT} ${APPEND_EXTRA}" \
+      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_gsva=1 linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} linqu_cna=${node_cna} obmm_gsva_mode=matrix obmm_gsva_base=${OBMM_GSVA_MATRIX_BASE} obmm_gsva_size=${OBMM_GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${OBMM_GSVA_MATRIX_NODE_COUNT} obmm_gsva_matrix_iterations=${OBMM_GSVA_MATRIX_ITERATIONS} ${APPEND_EXTRA}" \
       >"$(qemu_log_for "$node_name")" 2>&1 &
   echo $! > "$(pid_file_for "$node_name")"
 }
@@ -274,7 +296,7 @@ validate_node_logs() {
       echo "$LOG_PREFIX FAIL: $node_name lacks kernel aperture evidence" >&2
       return 1
     fi
-    if ! grep -q "\[obmm_gsva\] result=done mode=matrix node=${node_idx} node_count=${OBMM_GSVA_MATRIX_NODE_COUNT} .*directed_pairs=${expected_pairs}" "$guest_log"; then
+    if ! grep -q "\[obmm_gsva\] result=done mode=matrix node=${node_idx} node_count=${OBMM_GSVA_MATRIX_NODE_COUNT} .*directed_pairs=${expected_pairs} iterations=${OBMM_GSVA_MATRIX_ITERATIONS}" "$guest_log"; then
       echo "$LOG_PREFIX FAIL: $node_name did not complete matrix mode" >&2
       return 1
     fi
@@ -314,7 +336,7 @@ print_node_summary() {
   grep '\[obmm_gsva\]' "$(guest_log_for "$node_name")" | tail -6
 }
 
-echo "$LOG_PREFIX run_id=$RUN_ID base=$OBMM_GSVA_MATRIX_BASE slice_size=$OBMM_GSVA_MATRIX_SLICE_SIZE"
+echo "$LOG_PREFIX run_id=$RUN_ID base=$OBMM_GSVA_MATRIX_BASE slice_size=$OBMM_GSVA_MATRIX_SLICE_SIZE iterations=$OBMM_GSVA_MATRIX_ITERATIONS"
 echo "$LOG_PREFIX topology=$TOPOLOGY_FILE qemu_mem=$QEMU_MEM qemu_smp=$QEMU_SMP port_num=$PORT_NUM"
 echo "$LOG_PREFIX starting ${OBMM_GSVA_MATRIX_NODE_COUNT} nodes..."
 

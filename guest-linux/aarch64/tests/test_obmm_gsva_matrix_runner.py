@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "run_ub_multi_node_obmm_gsva_matrix.sh"
 APP = ROOT / "apps" / "obmm_gsva" / "obmm_gsva.c"
+RUN_APP = ROOT / "initramfs" / "run_app"
 
 
 class ObmmGsvaMatrixRunnerTest(unittest.TestCase):
@@ -39,7 +40,26 @@ class ObmmGsvaMatrixRunnerTest(unittest.TestCase):
                 self.assertEqual(config["node_count"], str(nodes))
                 self.assertTrue(config["topology_file"].endswith(topology))
                 self.assertEqual(config["directed_pairs"], pairs)
+                self.assertEqual(config["iterations"], "10")
                 self.assertEqual(config["nodes"], names)
+
+    def test_exposes_explicit_iteration_count(self):
+        result = subprocess.run(
+            [
+                "zsh",
+                str(RUNNER),
+                "--nodes",
+                "8",
+                "--iterations",
+                "17",
+                "--print-config",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        config = dict(line.split("=", 1) for line in result.stdout.splitlines())
+        self.assertEqual(config["iterations"], "17")
 
     def test_rejects_unsupported_node_count_before_launch(self):
         result = subprocess.run(
@@ -58,6 +78,27 @@ class ObmmGsvaMatrixRunnerTest(unittest.TestCase):
             source,
         )
         self.assertIn("cfg->node_count * (cfg->node_count - 1)", source)
+        self.assertIn("iteration <= cfg->matrix_iterations", source)
+        self.assertIn('" iterations=%d slice_base=%#"', source)
+        self.assertIn("obmm_gsva_matrix_iterations=*", RUN_APP.read_text())
+
+    def test_rejects_invalid_iteration_count_before_launch(self):
+        result = subprocess.run(
+            [
+                "zsh",
+                str(RUNNER),
+                "--nodes",
+                "8",
+                "--iterations",
+                "0",
+                "--print-config",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("iterations must be between 1 and 1000", result.stderr)
 
 
 if __name__ == "__main__":
