@@ -454,6 +454,36 @@ struct stage_context {
     enum mem_service_wire_status status;
 };
 
+static int report_stage_failure(
+    const struct stage_context *stage,
+    const char *phase,
+    int rc)
+{
+    struct mem_service_client_allocation current = {0};
+    enum mem_service_wire_status inspect_status =
+        MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    int inspect_rc = mem_service_client_inspect_allocation(
+        stage->object->client, stage->object->allocation.key,
+        &current, &inspect_status);
+
+    fprintf(stderr,
+            "[w5_managed_object] role=writer stage=%s rc=%d status=%u"
+            " snapshot_generation=%" PRIu64
+            " snapshot_version=%" PRIu64
+            " current_rc=%d current_status=%u"
+            " current_generation=%" PRIu64
+            " current_version=%" PRIu64
+            " current_state=%s key=%s\n",
+            phase, rc, (unsigned)stage->status,
+            stage->object->allocation.generation,
+            stage->object->allocation.version,
+            inspect_rc, (unsigned)inspect_status,
+            current.generation, current.version,
+            inspect_rc == 0 ? current.state : "unavailable",
+            stage->object->allocation.key);
+    return rc;
+}
+
 static int stage_callback(void *opaque,
     const struct mem_service_provider_channel *channel,
     const struct mem_service_client_object_mapping *mapping,
@@ -467,9 +497,12 @@ static int stage_callback(void *opaque,
     rc = mem_service_client_prepare_managed_reference(stage->object->client,
         channel, &stage->object->allocation, mapping, lifecycle, stage->view,
         &stage->reference, &stage->status);
-    if (rc) return rc;
+    if (rc)
+        return report_stage_failure(stage, "reference-prepare", rc);
     rc = transition(stage->object, MEM_SERVICE_REFERENCE_STAGE,
         stage->reference_key, &stage->reference, &result, &stage->status);
+    if (rc)
+        return report_stage_failure(stage, "reference-transition", rc);
     if (!rc) stage->object->allocation = result.allocation;
     return rc;
 }
