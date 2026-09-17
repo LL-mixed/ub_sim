@@ -244,6 +244,26 @@ int main(int argc, char **argv) {
         self.assertIn("route->backing_token_id ?", unmap)
         self.assertIn("route->backing_token_id : route->token.token_id", unmap)
 
+    def test_local_strict_io_bypasses_and_restores_the_cpu_window(self):
+        source = (QEMU / "hw/ub/ub_ubc.c").read_text()
+        body = source.split(
+            "static MemTxResult ubc_sim_dec_remote_io_body(" , 2
+        )[2].split(
+            "MemTxResult ubc_sim_dec_remote_read(", 1
+        )[0]
+        local = body.split("if (dcna == ubc_dev->parent.cna) {", 1)[1].split(
+            "link = ubc_find_active_link", 1
+        )[0]
+        self.assertIn("gsva_home_acquire(", local)
+        self.assertIn("gsva_route_lookup_base(&g_gsva_routes", local)
+        self.assertIn("ubc_cpu_window_detach(&home_route->cpu_window)", local)
+        self.assertIn("ubc_dma_write_local_data_tid_strict(", local)
+        self.assertIn("memory_region_add_subregion_overlap(", local)
+        self.assertLess(local.index("ubc_cpu_window_detach("),
+                        local.index("ubc_dma_write_local_data_tid_strict("))
+        self.assertLess(local.index("ubc_dma_read_local_data_tid_strict("),
+                        local.index("memory_region_add_subregion_overlap("))
+
     def test_legacy_export_retire_removes_route_before_export_record(self):
         source = (QEMU / "hw/ub/ub_ubc.c").read_text()
         helper = source.split(
