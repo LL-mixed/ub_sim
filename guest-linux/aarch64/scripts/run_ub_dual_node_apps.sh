@@ -1181,13 +1181,15 @@ if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" ]]; then
         "$MEM_SERVICE_OBJECT_SHARE_SIZE" != "65536" ||
         "$MEM_SERVICE_OBJECT_SHARE_ITERATIONS" != "1" ||
         ( "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "reserve_intent_crash" &&
-          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "torn_ledger_crash" ) ]]; then
-    echo "cpu-recovery-fault requires OBMM, 65536 bytes, one round and a reserve-intent crash fault" >&2
+          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "torn_ledger_crash" &&
+          "$MEM_SERVICE_OBJECT_SHARE_FAULT" != "manager_crash" ) ]]; then
+    echo "cpu-recovery-fault requires OBMM, 65536 bytes, one round and a supported recovery fault" >&2
     exit 2
   fi
 elif [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "reserve_intent_crash" ||
-        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "torn_ledger_crash" ]]; then
-  echo "reserve-intent crash faults require cpu-recovery-fault access" >&2
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "torn_ledger_crash" ||
+        "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "manager_crash" ]]; then
+  echo "recovery faults require cpu-recovery-fault access" >&2
   exit 2
 fi
 if [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-holder-recovery" ]]; then
@@ -4039,11 +4041,18 @@ run_iteration() {
         --output "${nodea_guest_log:h}/managed-holder-recovery-validation.json" \
         || return 1
     elif [[ "$MEM_SERVICE_OBJECT_SHARE_ACCESS" == "cpu-recovery-fault" ]]; then
-      python3 "${SCRIPT_DIR}/validate_mem_service_recovery_fault_guest.py" \
-        --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
-        --fault "$MEM_SERVICE_OBJECT_SHARE_FAULT" \
-        --output "${nodea_guest_log:h}/managed-recovery-fault-validation.json" \
-        || return 1
+      if [[ "$MEM_SERVICE_OBJECT_SHARE_FAULT" == "manager_crash" ]]; then
+        python3 "${SCRIPT_DIR}/validate_mem_service_manager_crash_guest.py" \
+          --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
+          --output "${nodea_guest_log:h}/managed-manager-crash-validation.json" \
+          || return 1
+      else
+        python3 "${SCRIPT_DIR}/validate_mem_service_recovery_fault_guest.py" \
+          --node-a "$nodea_guest_log" --node-b "$nodeb_guest_log" \
+          --fault "$MEM_SERVICE_OBJECT_SHARE_FAULT" \
+          --output "${nodea_guest_log:h}/managed-recovery-fault-validation.json" \
+          || return 1
+      fi
     else
     validate_mem_service_object_share_log \
       "nodeA" "$nodea_guest_log" || return 1

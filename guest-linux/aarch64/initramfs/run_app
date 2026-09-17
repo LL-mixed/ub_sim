@@ -604,6 +604,27 @@ mem_service_object_share_wait_daemon() {
   done
 }
 
+mem_service_object_share_wait_control_plane_state() {
+  local connect="$1"
+  local expected="$2"
+  local attempt=0
+  local current=""
+
+  case "$expected" in up|down) ;; *) return 2 ;; esac
+  while [ "$attempt" -lt 1200 ]; do
+    if /bin/linqu_mem_service health --connect "$connect" \
+        --timeout-ms 100 --max-attempts 1 >/dev/null 2>&1; then
+      current=up
+    else
+      current=down
+    fi
+    [ "$current" != "$expected" ] || return 0
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.05
+  done
+  return 1
+}
+
 mem_service_object_share_run_provider() {
   local backend="$1"
   local size="$2"
@@ -1976,6 +1997,311 @@ mem_service_object_share_holder_rejoin() {
   return 0
 }
 
+mem_service_object_share_manager_recovery() {
+  local node="$1"
+  local size="$2"
+  local incarnation="$3"
+  local connect="$4"
+  local daemon="$5"
+  local worker="$6"
+  local key="recovery-fault-manager-crash"
+  local generation=""
+  local manager_status=0
+  local worker_status=0
+  local attempt=0
+  local field=""
+  local before=""
+  local after=""
+  local backing_bytes=""
+  local address_bytes=""
+
+  attempt=0
+  while [ "$attempt" -lt 1200 ]; do
+    if /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+        --timeout-ms 1000 --max-attempts 1 \
+        >/tmp/manager-recovery-directory-ready.log 2>&1 &&
+        /bin/busybox grep -qx 'provider_active_count=2' \
+          /tmp/manager-recovery-directory-ready.log &&
+        /bin/busybox grep -qx 'provider_directory_ready=1' \
+          /tmp/manager-recovery-directory-ready.log; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.05
+  done
+  [ "$attempt" -lt 1200 ] || return 1
+
+  if [ "$node" = "1" ]; then
+    attempt=0
+    while [ "$attempt" -lt 1200 ]; do
+      if /bin/linqu_mem_service inspect-allocation --connect "$connect" \
+          --key "$key" >/tmp/manager-recovery-peer-before.log 2>&1 &&
+          /bin/busybox grep -qx 'state=active' \
+            /tmp/manager-recovery-peer-before.log; then
+        break
+      fi
+      attempt=$((attempt + 1))
+      /bin/busybox sleep 0.05
+    done
+    [ "$attempt" -lt 1200 ] || return 1
+    generation="$(/bin/busybox sed -n 's/^generation=//p' \
+      /tmp/manager-recovery-peer-before.log | /bin/busybox head -n 1)"
+    case "$generation" in ''|0*|*[!0-9]*) return 1 ;; esac
+    /bin/linqu_mem_service acquire-object --connect "$connect" \
+      --key "$key" --session-id manager-recovery-holder \
+      --idempotency-key manager-recovery-holder-acquire \
+      --expected-generation "$generation" --holder-node-id guest-node-1 \
+      --holder-provider-incarnation "$incarnation" \
+      >/tmp/manager-recovery-holder.log 2>&1 || {
+        /bin/busybox cat /tmp/manager-recovery-holder.log
+        return 1
+      }
+    /bin/busybox cat /tmp/manager-recovery-holder.log
+    echo "mem_service manager-recovery: node=1 phase=holder status=ready fault=manager_crash key=$key generation=$generation live_refs=1"
+
+    mem_service_object_share_wait_control_plane_state "$connect" down || return 1
+    echo "mem_service manager-recovery: node=1 phase=manager-transition status=down restart=1"
+    attempt=0
+    while kill -0 "$worker" 2>/dev/null && [ "$attempt" -lt 200 ]; do
+      attempt=$((attempt + 1))
+      /bin/busybox sleep 0.05
+    done
+    kill -0 "$worker" 2>/dev/null && return 1
+    wait "$worker" || worker_status=$?
+    [ "$worker_status" -ne 0 ] || return 1
+    worker_pid=""
+    echo "mem_service manager-recovery: node=1 phase=worker-exit status=expected exit_code=$worker_status"
+    mem_service_object_share_wait_control_plane_state "$connect" up || return 1
+    echo "mem_service manager-recovery: node=1 phase=manager-transition status=up restart=1"
+    mem_service_object_share_wait_control_plane_state "$connect" down || return 1
+    echo "mem_service manager-recovery: node=1 phase=manager-transition status=down restart=2"
+    mem_service_object_share_wait_control_plane_state "$connect" up || return 1
+    echo "mem_service manager-recovery: node=1 phase=manager-transition status=up restart=2"
+
+    /bin/linqu_mem_service provider-register --connect "$connect" \
+      --node-id guest-node-1 --incarnation "$incarnation" \
+      --readiness-generation "$incarnation" --capabilities 1 || return 1
+    attempt=0
+    while [ "$attempt" -lt 1200 ]; do
+      if /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+          >/tmp/manager-recovery-peer-directory.log 2>&1 &&
+          /bin/busybox grep -qx 'provider_active_count=2' \
+            /tmp/manager-recovery-peer-directory.log &&
+          /bin/busybox grep -qx 'provider_directory_ready=1' \
+            /tmp/manager-recovery-peer-directory.log &&
+          /bin/busybox grep -qx 'data_plane_ready=0' \
+            /tmp/manager-recovery-peer-directory.log; then
+        break
+      fi
+      attempt=$((attempt + 1))
+      /bin/busybox sleep 0.05
+    done
+    [ "$attempt" -lt 1200 ] || return 1
+    /bin/busybox cat /tmp/manager-recovery-peer-directory.log
+    /bin/linqu_mem_service inspect-allocation --connect "$connect" --key "$key" \
+      >/tmp/manager-recovery-peer-after.log 2>&1 || return 1
+    /bin/busybox cat /tmp/manager-recovery-peer-after.log
+    /bin/busybox grep -qx 'state=quarantined' \
+      /tmp/manager-recovery-peer-after.log || return 1
+    /bin/busybox grep -qx "generation=$generation" \
+      /tmp/manager-recovery-peer-after.log || return 1
+    /bin/busybox grep -qx 'live_refs=1' \
+      /tmp/manager-recovery-peer-after.log || return 1
+    /bin/linqu_mem_service allocation-stats --connect "$connect" \
+      >/tmp/manager-recovery-peer-stats.log 2>&1 || return 1
+    /bin/busybox cat /tmp/manager-recovery-peer-stats.log
+    /bin/busybox grep -qx 'managed_recovery_required=1' \
+      /tmp/manager-recovery-peer-stats.log || return 1
+    echo "mem_service manager-recovery: node=1 phase=observation status=pass fault=manager_crash key=$key generation=$generation state=quarantined live_refs=1 restarts=2"
+    return 0
+  fi
+
+  /bin/linqu_mem_service allocate-object --connect "$connect" \
+    --key "$key" --idempotency-key manager-recovery-allocate \
+    --session-id manager-recovery-controller --home-node guest-node-0 \
+    --size-bytes "$size" --capabilities 1 \
+    >/tmp/manager-recovery-allocate.log 2>&1 || return 1
+  /bin/busybox cat /tmp/manager-recovery-allocate.log
+  generation="$(/bin/busybox sed -n 's/^generation=//p' \
+    /tmp/manager-recovery-allocate.log | /bin/busybox head -n 1)"
+  case "$generation" in ''|0*|*[!0-9]*) return 1 ;; esac
+  attempt=0
+  while [ "$attempt" -lt 1200 ]; do
+    if /bin/linqu_mem_service inspect-allocation --connect "$connect" \
+        --key "$key" >/tmp/manager-recovery-before.log 2>&1 &&
+        /bin/busybox grep -qx 'state=active' /tmp/manager-recovery-before.log &&
+        /bin/busybox grep -qx 'provider_backed=1' \
+          /tmp/manager-recovery-before.log &&
+        /bin/busybox grep -qx 'live_refs=1' \
+          /tmp/manager-recovery-before.log; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.05
+  done
+  [ "$attempt" -lt 1200 ] || return 1
+  /bin/busybox cat /tmp/manager-recovery-before.log
+  echo "mem_service manager-recovery: node=0 phase=active status=ready fault=manager_crash key=$key generation=$generation live_refs=1"
+
+  kill -9 "$daemon" 2>/dev/null || return 1
+  wait "$daemon" || manager_status=$?
+  [ "$manager_status" -eq 137 ] || return 1
+  daemon_pid=""
+  echo "mem_service manager-recovery: node=0 phase=manager-exit status=expected restart=1 signal=9 exit_code=$manager_status"
+  attempt=0
+  while kill -0 "$worker" 2>/dev/null && [ "$attempt" -lt 200 ]; do
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.05
+  done
+  kill -0 "$worker" 2>/dev/null && return 1
+  wait "$worker" || worker_status=$?
+  [ "$worker_status" -ne 0 ] || return 1
+  worker_pid=""
+  /bin/busybox cat /tmp/managed-share.worker.log
+  echo "mem_service manager-recovery: node=0 phase=worker-exit status=expected exit_code=$worker_status"
+  /bin/busybox grep -q '^mem_service_store_managed_v2$' \
+    /tmp/managed-share.store || return 1
+  /bin/busybox grep -q '^managed_store_complete=1$' \
+    /tmp/managed-share.store || return 1
+  /bin/busybox sleep 1
+
+  /bin/linqu_mem_service serve --config /tmp/managed-share.daemon.conf &
+  daemon_pid=$!
+  daemon="$daemon_pid"
+  mem_service_object_share_wait_daemon "$connect" "$daemon" || return 1
+  /bin/linqu_mem_service inspect-allocation --connect "$connect" --key "$key" \
+    >/tmp/manager-recovery-after-1.log 2>&1 || return 1
+  /bin/linqu_mem_service allocation-stats --connect "$connect" \
+    >/tmp/manager-recovery-stats-1.log 2>&1 || return 1
+  /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+    >/tmp/manager-recovery-directory-1.log 2>&1 || return 1
+  for field in key generation home_node provider_incarnation descriptor_hex address address_len live_refs; do
+    before="$(/bin/busybox sed -n "s/^$field=//p" \
+      /tmp/manager-recovery-before.log | /bin/busybox head -n 1)"
+    after="$(/bin/busybox sed -n "s/^$field=//p" \
+      /tmp/manager-recovery-after-1.log | /bin/busybox head -n 1)"
+    [ -n "$before" ] && [ "$before" = "$after" ] || return 1
+  done
+  /bin/busybox grep -qx 'state=quarantined' \
+    /tmp/manager-recovery-after-1.log || return 1
+  /bin/busybox grep -qx 'provider_backed=1' \
+    /tmp/manager-recovery-after-1.log || return 1
+  /bin/busybox grep -qx 'managed_recovery_required=1' \
+    /tmp/manager-recovery-stats-1.log || return 1
+  /bin/busybox grep -qx 'quarantined_objects=1' \
+    /tmp/manager-recovery-stats-1.log || return 1
+  /bin/busybox grep -qx 'live_refs=1' \
+    /tmp/manager-recovery-stats-1.log || return 1
+  /bin/busybox grep -qx 'provider_active_count=0' \
+    /tmp/manager-recovery-directory-1.log || return 1
+  /bin/busybox grep -qx 'provider_directory_ready=0' \
+    /tmp/manager-recovery-directory-1.log || return 1
+  /bin/busybox grep -qx 'data_plane_ready=0' \
+    /tmp/manager-recovery-directory-1.log || return 1
+  /bin/busybox cat /tmp/manager-recovery-after-1.log
+  /bin/busybox cat /tmp/manager-recovery-stats-1.log
+  /bin/busybox cat /tmp/manager-recovery-directory-1.log
+  echo "mem_service manager-recovery: node=0 phase=restart status=isolated restart=1 key=$key generation=$generation state=quarantined provider_backed=1 live_refs=1 identity_preserved=1 managed_recovery_required=1"
+  /bin/busybox sleep 1
+
+  manager_status=0
+  kill -9 "$daemon" 2>/dev/null || return 1
+  wait "$daemon" || manager_status=$?
+  [ "$manager_status" -eq 137 ] || return 1
+  daemon_pid=""
+  echo "mem_service manager-recovery: node=0 phase=manager-exit status=expected restart=2 signal=9 exit_code=$manager_status"
+  /bin/busybox sleep 1
+  /bin/linqu_mem_service serve --config /tmp/managed-share.daemon.conf &
+  daemon_pid=$!
+  daemon="$daemon_pid"
+  mem_service_object_share_wait_daemon "$connect" "$daemon" || return 1
+  /bin/linqu_mem_service inspect-allocation --connect "$connect" --key "$key" \
+    >/tmp/manager-recovery-after-2.log 2>&1 || return 1
+  /bin/linqu_mem_service allocation-stats --connect "$connect" \
+    >/tmp/manager-recovery-stats-2.log 2>&1 || return 1
+  /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+    >/tmp/manager-recovery-directory-2.log 2>&1 || return 1
+  for field in key generation home_node provider_incarnation descriptor_hex address address_len live_refs; do
+    before="$(/bin/busybox sed -n "s/^$field=//p" \
+      /tmp/manager-recovery-before.log | /bin/busybox head -n 1)"
+    after="$(/bin/busybox sed -n "s/^$field=//p" \
+      /tmp/manager-recovery-after-2.log | /bin/busybox head -n 1)"
+    [ -n "$before" ] && [ "$before" = "$after" ] || return 1
+  done
+  /bin/busybox grep -qx 'state=quarantined' \
+    /tmp/manager-recovery-after-2.log || return 1
+  /bin/busybox grep -qx 'provider_backed=1' \
+    /tmp/manager-recovery-after-2.log || return 1
+  /bin/busybox grep -qx 'managed_recovery_required=1' \
+    /tmp/manager-recovery-stats-2.log || return 1
+  /bin/busybox grep -qx 'quarantined_objects=1' \
+    /tmp/manager-recovery-stats-2.log || return 1
+  /bin/busybox grep -qx 'live_refs=1' \
+    /tmp/manager-recovery-stats-2.log || return 1
+  /bin/busybox grep -qx 'provider_active_count=0' \
+    /tmp/manager-recovery-directory-2.log || return 1
+  /bin/busybox grep -qx 'provider_directory_ready=0' \
+    /tmp/manager-recovery-directory-2.log || return 1
+  /bin/busybox grep -qx 'data_plane_ready=0' \
+    /tmp/manager-recovery-directory-2.log || return 1
+  echo "mem_service manager-recovery: node=0 phase=restart status=isolated restart=2 key=$key generation=$generation state=quarantined provider_backed=1 live_refs=1 identity_preserved=1 managed_recovery_required=1"
+
+  /bin/linqu_mem_service provider-register --connect "$connect" \
+    --node-id guest-node-0 --incarnation "$incarnation" \
+    --readiness-generation "$incarnation" --capabilities 1 || return 1
+  attempt=0
+  while [ "$attempt" -lt 1200 ]; do
+    if /bin/linqu_mem_service provider-directory-status --connect "$connect" \
+        >/tmp/manager-recovery-directory-final.log 2>&1 &&
+        /bin/busybox grep -qx 'provider_active_count=2' \
+          /tmp/manager-recovery-directory-final.log &&
+        /bin/busybox grep -qx 'provider_directory_ready=1' \
+          /tmp/manager-recovery-directory-final.log &&
+        /bin/busybox grep -qx 'data_plane_ready=0' \
+          /tmp/manager-recovery-directory-final.log; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    /bin/busybox sleep 0.05
+  done
+  [ "$attempt" -lt 1200 ] || return 1
+  /bin/busybox cat /tmp/manager-recovery-directory-final.log
+  echo "mem_service manager-recovery: node=0 phase=directory status=isolated provider_active_count=2 provider_directory_ready=1 data_plane_ready=0"
+
+  if /bin/linqu_mem_service acquire-object --connect "$connect" \
+      --key "$key" --session-id manager-recovery-holder \
+      --idempotency-key manager-recovery-holder-acquire \
+      --expected-generation "$generation" --holder-node-id guest-node-1 \
+      --holder-provider-incarnation "$incarnation" \
+      >/tmp/manager-recovery-old-replay.log 2>&1; then
+    return 1
+  fi
+  /bin/busybox cat /tmp/manager-recovery-old-replay.log
+  /bin/busybox grep -qx 'reason=managed_reconciliation_required' \
+    /tmp/manager-recovery-old-replay.log || return 1
+  echo "mem_service manager-recovery: node=0 phase=old-replay status=rejected reason=managed_reconciliation_required key=$key generation=$generation"
+  if /bin/linqu_mem_service allocate-object --connect "$connect" \
+      --key manager-recovery-new --idempotency-key manager-recovery-new-allocate \
+      --session-id manager-recovery-controller --home-node guest-node-0 \
+      --size-bytes "$size" --capabilities 1 \
+      >/tmp/manager-recovery-new.log 2>&1; then
+    return 1
+  fi
+  /bin/busybox cat /tmp/manager-recovery-new.log
+  /bin/busybox grep -qx 'reason=managed_reconciliation_required' \
+    /tmp/manager-recovery-new.log || return 1
+  echo "mem_service manager-recovery: node=0 phase=new-allocation status=rejected reason=managed_reconciliation_required"
+
+  backing_bytes="$(/bin/busybox sed -n 's/^backing_allocated_bytes=//p' \
+    /tmp/manager-recovery-stats-2.log | /bin/busybox head -n 1)"
+  address_bytes="$(/bin/busybox sed -n 's/^address_reserved_bytes=//p' \
+    /tmp/manager-recovery-stats-2.log | /bin/busybox head -n 1)"
+  case "$backing_bytes" in ''|0|*[!0-9]*) return 1 ;; esac
+  case "$address_bytes" in ''|0|*[!0-9]*) return 1 ;; esac
+  echo "mem_service manager-recovery: node=0 phase=observation status=pass fault=manager_crash key=$key generation=$generation state=quarantined live_refs=1 backing_allocated_bytes=$backing_bytes address_reserved_bytes=$address_bytes restarts=2"
+  return 0
+}
+
 mem_service_object_share_recovery_fault() {
   local node="$1"
   local size="$2"
@@ -2193,7 +2519,8 @@ mem_service_object_share_managed() (
     echo "state_file=/tmp/managed-share.worker.state"
     echo "allocation_granularity_bytes=2097152"
     [ "$fault" != "backing_capacity" ] || echo "fast_allocation=1"
-    if [ "$node" = "0" ] && [ "$access" = "cpu-recovery-fault" ]; then
+    if [ "$node" = "0" ] && [ "$access" = "cpu-recovery-fault" ] &&
+        [ "$fault" != "manager_crash" ]; then
       echo "fault_injection_phase=reserve-intent"
       case "$fault" in
         reserve_intent_crash) echo "fault_injection_mode=sync-exit" ;;
@@ -2212,10 +2539,15 @@ mem_service_object_share_managed() (
   fi
   worker_pid=$!
   if [ "$access" = "cpu-recovery-fault" ]; then
-    mem_service_object_share_recovery_fault "$node" "$size" "$incarnation" \
-      "$connect" "$worker_pid" "$fault" || exit 1
-    if [ "$node" = "0" ]; then
-      worker_pid=""
+    if [ "$fault" = "manager_crash" ]; then
+      mem_service_object_share_manager_recovery "$node" "$size" "$incarnation" \
+        "$connect" "$daemon_pid" "$worker_pid" || exit 1
+    else
+      mem_service_object_share_recovery_fault "$node" "$size" "$incarnation" \
+        "$connect" "$worker_pid" "$fault" || exit 1
+      if [ "$node" = "0" ]; then
+        worker_pid=""
+      fi
     fi
   fi
   if [ "$access" = "cpu-holder-recovery" ]; then
@@ -2389,7 +2721,11 @@ mem_service_object_share_managed() (
   if [ "$access" = "cpu-pto" ]; then
     /bin/linqu_mem_service metrics --connect "$connect" || exit 1
   fi
-  echo "mem_service kernel-regions: phase=drained"
+  if [ "$fault" = "manager_crash" ]; then
+    echo "mem_service kernel-regions: phase=isolated"
+  else
+    echo "mem_service kernel-regions: phase=drained"
+  fi
   /bin/linqu_gva_manager --dump-obmm-regions || exit 1
   role=provider
   [ "$node" = "0" ] || role=consumer
@@ -2405,6 +2741,8 @@ mem_service_object_share_managed() (
   # Keep home exports and the daemon alive independently of client sessions.
   if [ "$access" = "cpu-recovery-fault" ] && [ "$node" = "0" ]; then
     mem_service_object_share_wait_infrastructure "$node" "$daemon_pid"
+  elif [ "$fault" = "manager_crash" ]; then
+    return 0
   else
     mem_service_object_share_wait_infrastructure "$node" "$worker_pid"
   fi
@@ -2471,13 +2809,15 @@ run_mem_service_object_share() {
       { [ "$backend" != "obmm" ] || [ "$size" != "65536" ] ||
         [ "$iterations" != "1" ] ||
         { [ "$fault" != "reserve_intent_crash" ] &&
-          [ "$fault" != "torn_ledger_crash" ]; }; }; then
+          [ "$fault" != "torn_ledger_crash" ] &&
+          [ "$fault" != "manager_crash" ]; }; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=recovery_fault_config"
     return 2
   fi
   if [ "$access" != "cpu-recovery-fault" ] &&
       { [ "$fault" = "reserve_intent_crash" ] ||
-        [ "$fault" = "torn_ledger_crash" ]; }; then
+        [ "$fault" = "torn_ledger_crash" ] ||
+        [ "$fault" = "manager_crash" ]; }; then
     log "mem_service object-share: status=fail node=$node_idx reason=recovery_fault_access"
     return 2
   fi
