@@ -1005,7 +1005,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("--compare-prefix-cache-benefit", realistic_matrix_runner_text)
         self.assertIn("run_w5_cluster_config.sh", realistic_matrix_runner_text)
         self.assertIn("w5_inference_run_report.py", realistic_matrix_runner_text)
-        self.assertIn("--same-prefix-runs N", serving_matrix_runner_text)
+        self.assertIn("--warmup-runs N", serving_matrix_runner_text)
+        self.assertIn("--measured-runs N", serving_matrix_runner_text)
         self.assertIn("--shared-prefix-token-ids CSV", serving_matrix_runner_text)
         self.assertIn("--suffix-b-token-ids CSV", serving_matrix_runner_text)
         self.assertIn("--expect-prefix-cache-matched-tokens", serving_matrix_runner_text)
@@ -1476,8 +1477,10 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                     "--dry-run",
                     "--steps",
                     "8",
-                    "--same-prefix-runs",
+                    "--warmup-runs",
                     "2",
+                    "--measured-runs",
+                    "5",
                     "--shared-prefix-token-ids",
                     "10,11,12",
                     "--suffix-a-token-ids",
@@ -1493,7 +1496,9 @@ class Qwen3DenseEnvTest(unittest.TestCase):
 
         self.assertIn("=== W5 Prefix Cache Serving Matrix ===", result.stdout)
         self.assertIn("Steps:            8", result.stdout)
-        self.assertIn("Same-prefix runs: 2", result.stdout)
+        self.assertIn("Functional runs:  1 per measured group", result.stdout)
+        self.assertIn("Warmup runs:      2 per measured group", result.stdout)
+        self.assertIn("Measured runs:    5 per measured group", result.stdout)
         self.assertIn("Shared prefix:    10,11,12", result.stdout)
         self.assertIn("Shared tokens:    3", result.stdout)
         self.assertIn("Suffix A replay:  2", result.stdout)
@@ -1501,15 +1506,20 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("Prompt A:         10,11,12,13,15,17", result.stdout)
         self.assertIn("Prompt B:         10,11,12,14,16,18", result.stdout)
         self.assertEqual(result.stdout.count("--no-memory-reuse"), 1)
-        self.assertEqual(result.stdout.count("--require-prefix-cache"), 9)
-        self.assertEqual(result.stdout.count("--expect-prefix-cache-matched-tokens"), 4)
-        self.assertEqual(result.stdout.count("--expect-prefix-cache-suffix-replay-tokens"), 4)
-        self.assertEqual(result.stdout.count("--compare-prefix-cache-benefit"), 4)
+        self.assertEqual(result.stdout.count("--require-prefix-cache"), 35)
+        self.assertEqual(result.stdout.count("--expect-prefix-cache-matched-tokens"), 18)
+        self.assertEqual(result.stdout.count("--expect-prefix-cache-suffix-replay-tokens"), 18)
+        self.assertEqual(result.stdout.count("--compare-prefix-cache-benefit"), 16)
         self.assertEqual(result.stdout.count("--compare-prefix-cache "), 0)
-        self.assertIn("benefit_comparisons=4", result.stdout)
+        self.assertIn("benefit_comparisons=16", result.stdout)
+        self.assertEqual(result.stdout.count("--summarize-repetitions"), 2)
+        self.assertIn("repetition_group=hot-prefix samples=7", result.stdout)
+        self.assertIn("repetition_group=divergent-suffix samples=7", result.stdout)
         self.assertIn("run=seed-shared-prefix", result.stdout)
-        self.assertIn("run=reuse-request-b-1", result.stdout)
-        self.assertIn("run=reuse-request-b-2", result.stdout)
+        self.assertIn("run=hot-prefix-functional", result.stdout)
+        self.assertIn("run=hot-prefix-measured-5", result.stdout)
+        self.assertIn("run=divergent-suffix-functional", result.stdout)
+        self.assertIn("run=divergent-suffix-measured-5", result.stdout)
         self.assertIn("expect-fail", result.stdout)
         self.assertIn("run_w5_cluster_config.sh", result.stdout)
         self.assertIn("w5_inference_run_report.py", result.stdout)
@@ -1530,6 +1540,29 @@ class Qwen3DenseEnvTest(unittest.TestCase):
             "--suffix-a-token-ids and --suffix-b-token-ids must differ",
             result.stderr,
         )
+
+        for option, value, expected in (
+            (
+                "--warmup-runs",
+                "1",
+                "--warmup-runs must be an integer greater than or equal to 2: 1",
+            ),
+            (
+                "--measured-runs",
+                "4",
+                "--measured-runs must be an integer greater than or equal to 5: 4",
+            ),
+        ):
+            with self.subTest(option=option):
+                result = subprocess.run(
+                    [str(matrix_runner), "--dry-run", option, value],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(expected, result.stderr)
+
     def test_w5_cluster_config_runner_prints_post_run_maintenance_flags(self):
         script_dir = Path(__file__).resolve().parents[1] / "scripts"
         config_runner = script_dir / "run_w5_cluster_config.sh"

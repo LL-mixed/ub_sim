@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_PATH="$ROOT_DIR/out/w5_cluster_qwen3_0_6b_2step.matrix.env"
 STEPS=8
-SAME_PREFIX_RUNS=2
+WARMUP_RUNS=2
+MEASURED_RUNS=5
 DRY_RUN=0
 INCLUDE_EVICTION=1
 SHARED_PREFIX_TOKEN_IDS="81378,37585,374"
@@ -14,7 +15,8 @@ SUFFIX_B_TOKEN_IDS="14,16,18"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_prefix_cache_serving_matrix.sh [--steps N] [--same-prefix-runs N] [--dry-run]
+usage: run_w5_prefix_cache_serving_matrix.sh [--steps N] [--warmup-runs N]
+                                               [--measured-runs N] [--dry-run]
                                                [--shared-prefix-token-ids CSV]
                                                [--suffix-a-token-ids CSV]
                                                [--suffix-b-token-ids CSV]
@@ -22,15 +24,17 @@ usage: run_w5_prefix_cache_serving_matrix.sh [--steps N] [--same-prefix-runs N] 
 
 Runs a W5 prefix-cache serving matrix:
   1. seed the shared prefix, GSVA KV writeback, memory reuse disabled
-  2. one or more request A runs with shared prefix plus suffix A that must hit the prefix cache
-  3. request A and request B alternate for every same-prefix run; both must hit the shared prefix
+  2. hot-prefix request A: one functional run, two or more warmups, five or more measurements
+  3. divergent-suffix request B: the same independent functional/warmup/measured sequence
   4. an evicted/empty reuse-store request A that must fail closed when prefix cache is required
 
 The W5 guest runtime replays multi-token suffixes by starting from the matched prefix KV,
 running the first suffix token as the step-0 input, and forcing the remaining suffix tokens
 as replay terminal tokens before normal generation resumes.
 
-Defaults: --steps 8 --same-prefix-runs 2 --suffix-a-token-ids 13,15,17 --suffix-b-token-ids 14,16,18.
+Each measured group reports sample count, median, min/max, mean, and population standard
+deviation. Defaults: --steps 8 --warmup-runs 2 --measured-runs 5,
+--suffix-a-token-ids 13,15,17 --suffix-b-token-ids 14,16,18.
 USAGE
 }
 
@@ -49,17 +53,30 @@ while (( $# > 0 )); do
       STEPS="${1#--steps=}"
       shift
       ;;
-    --same-prefix-runs)
+    --warmup-runs)
       if (( $# < 2 )); then
-        echo "--same-prefix-runs requires a value" >&2
+        echo "--warmup-runs requires a value" >&2
         usage
         exit 2
       fi
-      SAME_PREFIX_RUNS="$2"
+      WARMUP_RUNS="$2"
       shift 2
       ;;
-    --same-prefix-runs=*)
-      SAME_PREFIX_RUNS="${1#--same-prefix-runs=}"
+    --warmup-runs=*)
+      WARMUP_RUNS="${1#--warmup-runs=}"
+      shift
+      ;;
+    --measured-runs)
+      if (( $# < 2 )); then
+        echo "--measured-runs requires a value" >&2
+        usage
+        exit 2
+      fi
+      MEASURED_RUNS="$2"
+      shift 2
+      ;;
+    --measured-runs=*)
+      MEASURED_RUNS="${1#--measured-runs=}"
       shift
       ;;
     --shared-prefix-token-ids)
@@ -144,8 +161,20 @@ if [[ ! "$STEPS" =~ '^[0-9]+$' || "$STEPS" == "0" ]]; then
   echo "--steps must be a positive integer: $STEPS" >&2
   exit 2
 fi
-if [[ ! "$SAME_PREFIX_RUNS" =~ '^[0-9]+$' || "$SAME_PREFIX_RUNS" == "0" ]]; then
-  echo "--same-prefix-runs must be a positive integer: $SAME_PREFIX_RUNS" >&2
+if [[ ! "$WARMUP_RUNS" =~ '^[0-9]+$' ]]; then
+  echo "--warmup-runs must be an integer greater than or equal to 2: $WARMUP_RUNS" >&2
+  exit 2
+fi
+if (( WARMUP_RUNS < 2 )); then
+  echo "--warmup-runs must be an integer greater than or equal to 2: $WARMUP_RUNS" >&2
+  exit 2
+fi
+if [[ ! "$MEASURED_RUNS" =~ '^[0-9]+$' ]]; then
+  echo "--measured-runs must be an integer greater than or equal to 5: $MEASURED_RUNS" >&2
+  exit 2
+fi
+if (( MEASURED_RUNS < 5 )); then
+  echo "--measured-runs must be an integer greater than or equal to 5: $MEASURED_RUNS" >&2
   exit 2
 fi
 if [[ ! "$SHARED_PREFIX_TOKEN_IDS" =~ '^[0-9]+(,[0-9]+)*$' ]]; then
@@ -302,11 +331,15 @@ config_seed_prefix="$(write_case_config shared-prefix-seed "$SHARED_PREFIX_TOKEN
 config_evicted="$(write_case_config request-a-evicted "$prompt_a" "$EMPTY_REUSE_OUT_DIR")"
 typeset -a reuse_summaries
 typeset -a reuse_labels
+typeset -a hot_prefix_summaries
+typeset -a divergent_suffix_summaries
 
 echo "=== W5 Prefix Cache Serving Matrix ==="
 echo "Profile:          $PROFILE"
 echo "Steps:            $STEPS"
-echo "Same-prefix runs: $SAME_PREFIX_RUNS"
+echo "Functional runs:  1 per measured group"
+echo "Warmup runs:      $WARMUP_RUNS per measured group"
+echo "Measured runs:    $MEASURED_RUNS per measured group"
 echo "Shared prefix:    $SHARED_PREFIX_TOKEN_IDS"
 echo "Shared tokens:    $shared_prefix_token_count"
 echo "Suffix A:         ${SUFFIX_A_TOKEN_IDS:-<empty>}"
@@ -330,34 +363,84 @@ echo "[w5_prefix_cache_serving_matrix] seed_summary=$seed_summary"
 config_a="$(write_case_config request-a-reuse "$prompt_a" "$OUT_DIR" "$seed_run_id" 0 0)"
 config_b="$(write_case_config request-b "$prompt_b" "$OUT_DIR" "$seed_run_id" 0 0)"
 
+run_prefix_case() {
+  local label="$1"
+  local case_config="$2"
+  local suffix_replay_count="$3"
+
+  run_case "$label" "$case_config" --require-prefix-cache
+  if (( DRY_RUN )); then
+    LAST_SUMMARY="$OUT_DIR/eight_node_w5_inference_cluster_summary.<$label-run>.txt"
+    printf '%q ' "$REPORT" "$LAST_SUMMARY" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_replay_count"
+    printf '\n'
+  else
+    LAST_SUMMARY="$(latest_summary)"
+    echo "[w5_prefix_cache_serving_matrix] reuse_summary=$LAST_SUMMARY"
+    "$REPORT" "$LAST_SUMMARY" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_replay_count"
+  fi
+}
+
+record_reuse_summary() {
+  local label="$1"
+  reuse_labels+=("$label")
+  reuse_summaries+=("$LAST_SUMMARY")
+}
+
+run_prefix_case hot-prefix-functional "$config_a" "$suffix_a_replay_count"
+record_reuse_summary hot-prefix-functional
+
 reuse_index=1
-while (( reuse_index <= SAME_PREFIX_RUNS )); do
-  run_case "reuse-request-a-$reuse_index" "$config_a" --require-prefix-cache
-  if (( DRY_RUN )); then
-    reuse_summary="$OUT_DIR/eight_node_w5_inference_cluster_summary.<reuse-request-a-$reuse_index-run>.txt"
-    printf '%q ' "$REPORT" "$reuse_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_a_replay_count"
-    printf '\n'
-  else
-    reuse_summary="$(latest_summary)"
-    echo "[w5_prefix_cache_serving_matrix] reuse_summary=$reuse_summary"
-    "$REPORT" "$reuse_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_a_replay_count"
-  fi
-  reuse_labels+=("reuse-request-a-$reuse_index")
-  reuse_summaries+=("$reuse_summary")
-  run_case "reuse-request-b-$reuse_index" "$config_b" --require-prefix-cache
-  if (( DRY_RUN )); then
-    reuse_b_summary="$OUT_DIR/eight_node_w5_inference_cluster_summary.<reuse-request-b-$reuse_index-run>.txt"
-    printf '%q ' "$REPORT" "$reuse_b_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_b_replay_count"
-    printf '\n'
-  else
-    reuse_b_summary="$(latest_summary)"
-    echo "[w5_prefix_cache_serving_matrix] reuse_b_summary=$reuse_b_summary"
-    "$REPORT" "$reuse_b_summary" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_b_replay_count"
-  fi
-  reuse_labels+=("reuse-request-b-$reuse_index")
-  reuse_summaries+=("$reuse_b_summary")
+while (( reuse_index <= WARMUP_RUNS )); do
+  label="hot-prefix-warmup-$reuse_index"
+  run_prefix_case "$label" "$config_a" "$suffix_a_replay_count"
+  record_reuse_summary "$label"
+  hot_prefix_summaries+=("$LAST_SUMMARY")
   (( reuse_index += 1 ))
 done
+reuse_index=1
+while (( reuse_index <= MEASURED_RUNS )); do
+  label="hot-prefix-measured-$reuse_index"
+  run_prefix_case "$label" "$config_a" "$suffix_a_replay_count"
+  record_reuse_summary "$label"
+  hot_prefix_summaries+=("$LAST_SUMMARY")
+  (( reuse_index += 1 ))
+done
+
+run_prefix_case divergent-suffix-functional "$config_b" "$suffix_b_replay_count"
+record_reuse_summary divergent-suffix-functional
+
+reuse_index=1
+while (( reuse_index <= WARMUP_RUNS )); do
+  label="divergent-suffix-warmup-$reuse_index"
+  run_prefix_case "$label" "$config_b" "$suffix_b_replay_count"
+  record_reuse_summary "$label"
+  divergent_suffix_summaries+=("$LAST_SUMMARY")
+  (( reuse_index += 1 ))
+done
+reuse_index=1
+while (( reuse_index <= MEASURED_RUNS )); do
+  label="divergent-suffix-measured-$reuse_index"
+  run_prefix_case "$label" "$config_b" "$suffix_b_replay_count"
+  record_reuse_summary "$label"
+  divergent_suffix_summaries+=("$LAST_SUMMARY")
+  (( reuse_index += 1 ))
+done
+
+echo "[w5_prefix_cache_serving_matrix] repetition_group=hot-prefix samples=${#hot_prefix_summaries[@]}"
+if (( DRY_RUN )); then
+  printf '%q ' "$REPORT" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_a_replay_count" --warmup-count "$WARMUP_RUNS" --minimum-measured "$MEASURED_RUNS" --summarize-repetitions "${hot_prefix_summaries[@]}"
+  printf '\n'
+else
+  "$REPORT" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_a_replay_count" --warmup-count "$WARMUP_RUNS" --minimum-measured "$MEASURED_RUNS" --summarize-repetitions "${hot_prefix_summaries[@]}"
+fi
+
+echo "[w5_prefix_cache_serving_matrix] repetition_group=divergent-suffix samples=${#divergent_suffix_summaries[@]}"
+if (( DRY_RUN )); then
+  printf '%q ' "$REPORT" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_b_replay_count" --warmup-count "$WARMUP_RUNS" --minimum-measured "$MEASURED_RUNS" --summarize-repetitions "${divergent_suffix_summaries[@]}"
+  printf '\n'
+else
+  "$REPORT" --require-prefix-cache --expect-prefix-cache-matched-tokens "$shared_prefix_token_count" --expect-prefix-cache-suffix-replay-tokens "$suffix_b_replay_count" --warmup-count "$WARMUP_RUNS" --minimum-measured "$MEASURED_RUNS" --summarize-repetitions "${divergent_suffix_summaries[@]}"
+fi
 
 echo "[w5_prefix_cache_serving_matrix] benefit_comparisons=${#reuse_summaries[@]}"
 comparison_index=1
