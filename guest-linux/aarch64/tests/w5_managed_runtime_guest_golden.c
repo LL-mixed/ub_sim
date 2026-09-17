@@ -2,6 +2,7 @@
 #include "components/mem_service/providers/mem_service_provider_obmm.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,7 @@ struct lingqu_shmem_pto_endpoint { unsigned id; };
 
 static struct mem_service_provider provider;
 static unsigned closed;
+static int endpoint_open_result;
 
 int mem_service_provider_obmm_probe_device(const char *device_path,
                                            const char *primary_cna_path,
@@ -47,6 +49,7 @@ int mem_service_provider_obmm_endpoint_open(
     assert(config->import_region_bytes == 64 * 1024 * 1024);
     assert(config->max_remote_mappings == 8);
     assert(config->required_peer_mappings == 1);
+    if (endpoint_open_result) return endpoint_open_result;
     endpoint->implementation = endpoint;
     return 0;
 }
@@ -148,7 +151,7 @@ int mem_service_access_domain_destroy(struct mem_service_access_domain *domain)
 int mem_service_provider_obmm_endpoint_close_checked(
     struct mem_service_provider_obmm_endpoint *endpoint)
 {
-    assert(endpoint->implementation);
+    if (!endpoint->implementation) return 0;
     endpoint->implementation = NULL;
     ++closed;
     return 0;
@@ -166,6 +169,9 @@ int main(void)
         .max_mappings = 8,
     };
     assert(w5_managed_runtime_open(&config, &runtime) == 0 && runtime);
+    assert(!strcmp(w5_managed_runtime_open_stage(runtime), "ready"));
+    assert(strstr(w5_managed_runtime_open_detail(runtime),
+                  "device=/dev/obmm"));
     assert(w5_managed_runtime_client(runtime));
     assert(w5_managed_runtime_channel(runtime)->provider == &provider);
     assert(w5_managed_runtime_domain(runtime));
@@ -175,6 +181,13 @@ int main(void)
                    "guest-node-3"));
     assert(w5_managed_runtime_client_provider_incarnation(runtime) ==
            1000003);
+    assert(w5_managed_runtime_close(&runtime) == 0 && !runtime);
+    assert(closed == 4);
+    endpoint_open_result = -EPERM;
+    assert(w5_managed_runtime_open(&config, &runtime) == -EPERM && runtime);
+    assert(!strcmp(w5_managed_runtime_open_stage(runtime), "obmm-endpoint"));
+    assert(strstr(w5_managed_runtime_open_detail(runtime),
+                  "primary_cna=0xc4c2"));
     assert(w5_managed_runtime_close(&runtime) == 0 && !runtime);
     assert(closed == 4);
     puts("w5_managed_runtime_guest=pass provider_selected_by_adapter=1 cleanup=4");

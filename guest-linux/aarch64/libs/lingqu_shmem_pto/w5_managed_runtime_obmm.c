@@ -18,6 +18,8 @@ struct w5_managed_runtime_guest {
     struct lingqu_shmem_pto_endpoint *endpoint;
     char connect_spec[128];
     char client_node_id[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN];
+    char open_detail[256];
+    const char *open_stage;
     uint64_t client_provider_incarnation;
 };
 
@@ -47,6 +49,7 @@ int w5_managed_runtime_open(
     runtime = calloc(1, sizeof(*runtime));
     if (!runtime) return -ENOMEM;
     *runtime_out = runtime;
+    runtime->open_stage = "allocated";
     memcpy(runtime->connect_spec, config->connect_spec, connect_length + 1);
     memcpy(runtime->client_node_id, config->client_node_id, node_length + 1);
     runtime->client_provider_incarnation =
@@ -63,17 +66,22 @@ int w5_managed_runtime_open(
     rc = mem_service_provider_obmm_probe_device(
         provider_config.device_path, provider_config.primary_cna_path,
         probe_detail, sizeof(probe_detail));
+    runtime->open_stage = "obmm-probe";
+    snprintf(runtime->open_detail, sizeof(runtime->open_detail), "%s",
+             probe_detail);
     if (rc != 0) {
         fprintf(stderr,
                 "[w5_managed_runtime] open stage=obmm-probe rc=%d %s\n",
                 rc, probe_detail);
         return rc;
     }
+    runtime->open_stage = "registry-init";
     rc = mem_service_provider_registry_init(&runtime->registry);
     if (rc != 0)
         fprintf(stderr,
                 "[w5_managed_runtime] open stage=registry-init rc=%d\n", rc);
     if (!rc) {
+        runtime->open_stage = "obmm-endpoint";
         rc = mem_service_provider_obmm_endpoint_open(&runtime->provider,
                                                      &provider_config);
         if (rc != 0)
@@ -85,6 +93,7 @@ int w5_managed_runtime_open(
                     provider_config.required_peer_mappings, probe_detail);
     }
     if (!rc) {
+        runtime->open_stage = "provider-registration";
         rc = mem_service_provider_obmm_endpoint_registration(&runtime->provider,
                                                              &registration);
         if (rc != 0)
@@ -93,6 +102,7 @@ int w5_managed_runtime_open(
                     " stage=provider-registration rc=%d\n", rc);
     }
     if (!rc) {
+        runtime->open_stage = "provider-register";
         rc = mem_service_provider_registry_register(&runtime->registry,
                                                     &registration);
         if (rc != 0)
@@ -101,6 +111,7 @@ int w5_managed_runtime_open(
                     rc);
     }
     if (!rc) {
+        runtime->open_stage = "channel-bind";
         rc = mem_service_provider_channel_bind(&runtime->registry,
             registration.name, registration.instance,
             MEM_SERVICE_PROVIDER_CAP_PEER_MAPPING, &runtime->channel);
@@ -109,6 +120,7 @@ int w5_managed_runtime_open(
                     "[w5_managed_runtime] open stage=channel-bind rc=%d\n", rc);
     }
     if (!rc) {
+        runtime->open_stage = "access-domain";
         rc = mem_service_access_domain_create(&runtime->client,
                                               &runtime->channel,
                                               &runtime->domain);
@@ -118,6 +130,7 @@ int w5_managed_runtime_open(
                     rc);
     }
     if (!rc) {
+        runtime->open_stage = "compute-context";
         rc = lingqu_shmem_mem_service_open_managed(&runtime->compute);
         if (rc != 0)
             fprintf(stderr,
@@ -125,6 +138,7 @@ int w5_managed_runtime_open(
                     rc);
     }
     if (!rc) {
+        runtime->open_stage = "pto-endpoint";
         rc = lingqu_shmem_pto_endpoint_open(&runtime->endpoint,
                                             &endpoint_info);
         if (rc != 0)
@@ -132,7 +146,20 @@ int w5_managed_runtime_open(
                     "[w5_managed_runtime] open stage=pto-endpoint rc=%d\n",
                     rc);
     }
+    if (!rc) runtime->open_stage = "ready";
     return rc;
+}
+
+const char *w5_managed_runtime_open_stage(
+    const struct w5_managed_runtime_guest *runtime)
+{
+    return runtime && runtime->open_stage ? runtime->open_stage : "unavailable";
+}
+
+const char *w5_managed_runtime_open_detail(
+    const struct w5_managed_runtime_guest *runtime)
+{
+    return runtime && runtime->open_detail[0] ? runtime->open_detail : "none";
 }
 
 const struct mem_service_client *w5_managed_runtime_client(

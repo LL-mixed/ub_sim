@@ -25,6 +25,12 @@ int w5_managed_runtime_open(
     const struct w5_managed_runtime_config *config,
     struct w5_managed_runtime_guest **runtime_out);
 
+const char *w5_managed_runtime_open_stage(
+    const struct w5_managed_runtime_guest *runtime);
+
+const char *w5_managed_runtime_open_detail(
+    const struct w5_managed_runtime_guest *runtime);
+
 const struct mem_service_client *w5_managed_runtime_client(
     const struct w5_managed_runtime_guest *runtime);
 

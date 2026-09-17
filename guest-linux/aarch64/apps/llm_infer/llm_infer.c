@@ -11214,8 +11214,11 @@ int main(int argc, char **argv)
                                              &w5_managed_runtime);
         if (managed_rc != 0) {
             fprintf(stderr,
-                    "[w4_guest] fail managed serving runtime open rc=%d\n",
-                    managed_rc);
+                    "[w4_guest] fail managed serving runtime open"
+                    " stage=%s rc=%d detail=%s\n",
+                    w5_managed_runtime_open_stage(w5_managed_runtime),
+                    managed_rc,
+                    w5_managed_runtime_open_detail(w5_managed_runtime));
             if (w5_managed_runtime)
                 (void)w5_managed_runtime_close(&w5_managed_runtime);
             return 1;
