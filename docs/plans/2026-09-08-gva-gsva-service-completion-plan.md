@@ -1,9 +1,9 @@
 # GVA / GSVA 服务能力补齐：实施方向与阶段计划
 
-日期：2026-09-08；修订 4（2026-09-11）：将计划范围收敛到 OBMM 内存 backing
-及 GVA/GSVA 服务主线，保留修订 3 的控制通道设计与历史审计依据。
-状态：实施决策已明确；远端 readiness、模型 artifact 和发布授权仍待执行时确认。
-以下里程碑均未由本次文档工作完成。
+日期：2026-09-08；修订 5（2026-09-18）：完成 M5 tokenless replay 联合失效
+验收，M1 至 M5 全部通过。保留修订 3、修订 4 的设计决策和实施过程记录。
+状态：本计划定义的实现与实际运行验收已完成；第 8 节跟踪表和 2026-09-18
+M5 补记为当前结论，前文的未完成描述保留为当时的历史状态。
 
 2026-09-09 补充：[gva_manager 接入实施计划](2026-09-09-mem-service-gva-manager-integration-plan.md)
 细化地址管理主线，记录后续 managed allocation/provider 代码进展，并把同一全局对象
@@ -1448,7 +1448,8 @@ M3 物理核对接口约定：新增版本化 kernel segment 枚举，覆盖 act
 
 - 以 [2026-09-05 policy 设计](2026-09-05-ub-void-response-predicate-policy-design.md)
   和 [source-owned 验证报告](../2026-09-05-source-owned-void-response-validation-report.md)
-  为当前语义依据；本轮代码配对是 kernel `85fb35d`、QEMU `f201ebe`。
+  为当前语义依据；最终验收锁定 mem_service `218cdf1`、kernel `ac09d36a`、
+  QEMU `b7fb60e7` 和父仓库 `62b2e2ba`。
   2026-09-02 的 wait-key/PLT 叙述及 2026-09-03 wait_key 文档属于历史方案。
 - 普通 LDR 的 void 由 source UBC 仲裁；Linux task 保持 runnable，yield 后返回
   原 LDR，重放发起新事务。旧 voided 事务只 drop payload 并清理，不能写入 cache、
@@ -1623,7 +1624,42 @@ M1.1 的协议测试不能证明 M1.2 已完成；M1.2 通过也不能跳过 M1.
 | M2 动态身份与 W5 | 通过 | r123/r124 覆盖 home 与 consumer 的 token/epoch/owner/descriptor 身份拒绝；r274/r38/r41 覆盖错误、重复、迟到和缺失 ACK、恢复回执及旧 CPU/PTO 拒绝；r286/r384 覆盖正常 PTO drain；r322 百轮拒绝旧 key/V2 并读取新代；r381 拒绝退役 descriptor 的 CPU 访问并验证新映射；当前锁定服务 `3592080c`、QEMU `02d214fe`；r81/r82/r93/r84 完成 Qwen 2/3/4/8-node，r87/r88/r92 完成 DeepSeek 2/3/8-node，两个核心配置均完成 8-step 和终态资源归零 | 无；本文 M2 的身份、故障和模型/拓扑矩阵已满足。M4 压力/收益与 M5 tokenless replay 继续独立验收 |
 | M3 回收与恢复 | 通过 | r19-r20 覆盖完整/半写 ledger 隔离；r30 覆盖 daemon 双次退出；r37 覆盖七个可续作边界；r38/r41 覆盖 ACK 与 receipt 缺失、旧 CPU/PTO 拒绝和 rejoin；r46 覆盖连续两次整 guest 退出；`87d5a66f`/`c2c56c19`/`5a1d75a3` 与 n4-910c1 r49-r55 覆盖七 phase 各两周期的完整重复事务矩阵，逐 case generation 1→2、恢复/退役/物理回收及终态资源归零 | 无；本计划 M3 验收条件已满足。M1、M2、M4、M5 与总目标不受此状态变更影响 |
 | M4 压力与收益 | 通过 | r121 已覆盖三个并发客户端、不同 size/alignment、交错释放和 replacement，r297/r306/r307/r322 覆盖耗尽、复用、百轮及旧引用拒绝；Qwen 4-node 冷 cache 组完成 1 功能、2 预热、5 测量；`218cdf1` 的两客户端语义压力 fixture 混合 prefix、decode-KV、hidden，验证最长 prefix、TTL、版本冲突、容量驱逐及对象/字节计数回到 0；`e6bfe20e` 的 8-node prefix matrix 在 n4-910c 完成 1 seed，并对 hot-prefix 与 divergent-suffix 各完成 1 功能、2 预热、5 测量，16 个复用样本均为 3-token prefix、2-token suffix replay、8/8 GSVA KV hit；两组正式样本 E2E 中位数分别为 25599/25657 ms，完整矩阵、收益报告和 fail-closed 通过；A16、A18 也已按各自矩阵关闭 | 无；容量回收、三类 serving 对象语义、冷/热/不同 suffix 分组及如实收益报告均满足本文 M4 验收 |
-| M5 tokenless replay 联合失效 | 未开始 | 联合失效执行组合尚未锁定；现有正常共享基线不构成此项证据 | 旧完成丢弃、pin 与地址重用的联合证据未完成 |
+| M5 tokenless replay 联合失效 | 通过 | `fef5cbd2`/`ac09d36a` 建立 tokenless replay mapping revalidation 与能力位；`eb9197fe` 使用原子同 VA replacement 消除瞬时未映射窗口；`b7fb60e7` 按 export token 精确路由同 UBA 的不同 backing，`62b2e2ba` 将 identity route/reject 纳入 fail-closed runner。n4-910c1 的 `m5-mapping-reuse-20260918-r3` 完成挂起访问、撤销、释放、同址新对象、迟到与重复响应的实际双 guest 序列，旧访问得到终态 signal 7，新对象值核对通过，迟到/重复 payload 均丢弃，零 cache/PLT/event/CQ/wakeup 副作用 | 无；旧完成丢弃、replay 映射重新验证、同 VA 新对象隔离、精确 export identity 和资源清理均有实际运行证据 |
+
+2026-09-18 M5 补记：最终验收组合为 mem_service
+`218cdf150ab37c49e1c31d92c210321798a1546e`、kernel
+`ac09d36aa22183168d5547bf5200074dc494bea7`、QEMU
+`b7fb60e7d53d6476ee84608614505aa08bd3c985` 和父仓库
+`62b2e2bac246ca01136ad0a7dc9e5dd82e6f21ad`。本地轻量门禁完成 17/17
+coroutine contract 和 AArch64 静态交叉编译；远端 QEMU 定向单元测试完成
+19/19。r1 暴露 replacement 前瞬时 VMA 空洞，旧访问提前收到 SIGBUS；
+`eb9197fe` 改为 `MAP_FIXED` 原子 replacement。r2 随后证明旧访问、迟到和重复
+响应处理正确，同时暴露同 UBA 的两个 export 会被地址优先路由到旧 backing；
+`b7fb60e7` 改为先按 `(range, token_id)` 选择精确 export，身份不匹配时失败关闭。
+两轮失败均保留为修复依据，未计为通过。
+
+最终 run `m5-mapping-reuse-20260918-r3` 返回 `status=pass`：
+`guard_arms=2`、`stale_mapping_rejections=1`、`late_drops=1`、
+`duplicate_drops=1`、`duplicate_schedules=1`、`identity_routes=2`、
+`identity_tokens=2`、`identity_rejects=0`，并且 `cache_fills=0`、`blocks=0`、
+`wakes=0`。旧 mapping generation 2 被终态 signal 7 拒绝；同 VA 的 replacement
+generation 3 读取 `6571dc1c2510d9b0`，与期望一致；`pending=0`、
+`completions=0`、`sleeps=0`、`wakeups=0`、`replay_consumed=0`、
+`nc_plt_allocations=0`、`nc_plt_pending=0`、`direct_el0_upcalls=0`。
+模型 manifest SHA-256 为
+`22906130f5e65f4b9956697c1d6d21393477d6c5f1fe5931e2ad6eb5a7fcdcd1`，
+QEMU、kernel 和 initramfs SHA-256 分别为
+`dfc228a17fdec69df5b54433ea01071b0e8d7bb9fce3b65e0698d84edce7d735`、
+`40493a4b28189eb9169b757f1fbe8f18bd7890141a721da05a8b7fce32bbba3a`、
+`890582489c7d91e5b9b6dc30b64b17d74ebe645bcbc78a36c6cd4a06e0e5f7d7`。
+control、nodeA guest/QEMU、nodeB guest/QEMU 日志 SHA-256 依次为
+`87091fb56469355e373d1825fdb56b80beef960363122c5a9a80252350aca193`、
+`e757bfecf0a2b283392959e9c245e9e4cff57b795a192f537736b37bbb348fc2`、
+`0f01fa88d7a09099b19d790ffff07f1a8a82c4094f228c4b4d11336a3a5bf6f3`、
+`1f5f069b0ddda35def33bca31800392d081eeb69265e76a2fa3a65e473fea941`、
+`553d1ca12ec8af79e0ef5e92a73ce96bf716f8f033d2aa9798f99ae4fbbb871c`。
+runner 报告 `qemu_destroyed=1`，随后精确进程检查为 0。至此 M1 至 M5
+全部通过，本计划实施完成。
 
 2026-09-17 M2 补记：Qwen 8-node/8-step 的首次 r83 在 32 个历史
 allocation 全部仍存活时，于 node C 的 step 4 previous-token 映射前失败；此前四个
