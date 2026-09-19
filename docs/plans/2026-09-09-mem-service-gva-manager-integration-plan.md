@@ -1,10 +1,12 @@
 # 将 gva_manager 接入 mem_service：地址管理能力补齐计划
 
-日期：2026-09-09。状态：实施计划，附局部实现记录；整体目标尚未验收。
+创建日期：2026-09-09。现状核查：2026-09-19。
+状态：主要服务能力已实现并有运行记录；原设计符合性及联合验收尚未全部关闭。
 
-阅读说明：第 1 至 6 节定义目标、缺口、实施范围和验收要求；第 7 节单独记录
-局部进展。其中的编译及单测结果只覆盖明确列出的范围，不代表跨节点服务能力
-通过验收。后续仅凭实际运行证据更新对应验收项。
+阅读说明：第 1、3 至 6 节保留目标设计和验收要求；第 2 节区分历史基线与当前
+实现，第 7 节给出当前阶段判断并保留历史记录。2026-09-19 的核查仅阅读本地
+源码、Git 记录及已提交报告，没有重跑远端测试或确认远端分支是否另有更新。
+已记录通过与本次重新验证分开表述，不将分立组件测试自动计为联合验收通过。
 
 **目标：复用并扩展现有 `gva_manager`，使 mem_service 独立管理全局对象的地址、
 实际 backing 和访问寿命。不同节点通过同一个 global object reference 获取同一对象，
@@ -12,8 +14,8 @@
 
 本文细化 [GVA/GSVA 服务补齐总计划](2026-09-08-gva-gsva-service-completion-plan.md)
 中的地址管理工作，并提升 CPU/PTO 交叉访问为本目标的必验能力。性能分析等工作
-继续由总计划追踪，范围以总计划修订 4 为准。后续按本文 AM1 至 AM4 推进地址管理；总计划中较早的
-源码盘点和“未开始”状态不能覆盖本文记录的最新代码进展。
+继续由总计划追踪。总计划修订 5 已宣布 M1-M5 通过；本文保留更具体的地址
+协调和 managed 联合验收要求，不直接用总计划状态替代 A01-A18 的证据核对。
 
 ## 1. 目标与边界
 
@@ -53,7 +55,7 @@
 - 不以性能收益、1M context、完整模型训练适配为本目标的完成条件。
 - 不要求更改 Simpler/PTO ISA 算子 ABI；先复用现有能力，确有阻塞再单列证据和变更范围。
 
-## 2. 当前实现基线
+## 2. 实现基线与当前缺口
 
 以下是计划建立时的源码与 Git 盘点，属于历史基线，**不代表当前工作区状态或运行验证通过**。
 后续局部实现见第 7 节；执行每个阶段前重新记录实际源码组合，不能沿用本表 SHA
@@ -69,7 +71,10 @@
 执行阶段先选定干净的组合，记录完整 SHA、lock 和配置摘要。禁止把本地子模块
 领先的实现直接描述为“从根仓库 clone 即可得到”。本文不修改任何 gitlink。
 
-### 2.1 已有机制与可以复用的进展
+### 2.1 2026-09-09 历史机制盘点
+
+本表及 2.2 保留立项依据，其中“尚未”“当前”等措辞仅描述当时状态。
+2026-09-19 的实现与剩余工作以 2.3、2.4 和第 7 节为准。
 
 | 能力 | 代码证据 | 当前边界 |
 | --- | --- | --- |
@@ -82,7 +87,7 @@
 | OBMM provider 映射 | [mem_service_provider_obmm.c](../../mem_service/components/mem_service/providers/mem_service_provider_obmm.c) | 当前分配调用普通 `obmm_do_export`；48-byte v1 descriptor 与固定 VA 参数尚不能证明严格 GSVA |
 | Memory Service/PTO 对象适配 | [lingqu_shmem_pto](../../guest-linux/aarch64/libs/lingqu_shmem_pto/README.md)、[acquire API](../../guest-linux/aarch64/libs/lingqu_shmem_pto/lingqu_shmem_mem_service.h) | 已校验对象引用并以 lease pin mapping；已有 in-place KV 支持。尚未与 managed allocation、动态 segment 寿命统一 |
 
-### 2.2 点名缺口
+### 2.2 2026-09-09 原始缺口清单
 
 | 编号 | 缺口与当前影响 | 必须补齐的内容 | 交付阶段 |
 | --- | --- | --- | --- |
@@ -97,7 +102,61 @@
 | G9 | 已有 GSVA 与 PTO 分立验证入口，缺少同一服务对象统一访问的完整证据 | 不依赖 infer 的端到端测试，加多 home、2/3/8-node 和 W5 消费者回归 | AM1 至 AM4 |
 | G10 | segment descriptor 不能单独表达每个进程的 VA 占用、上下文与访问权限 | provider/平台侧维护进程 mapping、地址空间上下文和权限绑定；CPU 页级保护与 PTO 字节范围分别验收 | AM1 至 AM3 |
 
+### 2.3 2026-09-19 当前源码与已实现能力
+
+| 仓库 | 本次核对的完整提交 |
+| --- | --- |
+| ub_sim | `0e922c73241e6c20a20e14321c6fe10ce4a0c1fa` |
+| mem_service | `218cdf150ab37c49e1c31d92c210321798a1546e` |
+| kernel_ub | `ac09d36aa22183168d5547bf5200074dc494bea7` |
+| QEMU | `b7fb60e7d53d6476ee84608614505aa08bd3c985` |
+
+上述子模块 checkout 与根仓库 gitlink 一致，`mem_service.lock` 同步指向
+`218cdf15`。工作区另有与本次核查无关的文档修改和生成物；本文不更改它们。
+历史报告各自绑定其当时的源码和产物，不能声称整套矩阵已在上述最终组合重新执行。
+
+| 原缺口 | 当前实现与运行记录 | 仍需核对的边界 |
+| --- | --- | --- |
+| G1/G4 | 共享 manager 库已供常驻 OBMM worker 使用，真实 alloc、fixed export、枚举、unexport、retire 已接线；v2 descriptor 传播实际 GSVA 身份 | bootstrap 属于基础设施组合，worker 启动仍检查既有 active aperture；不能声称 worker 单进程独自完成全部启动工作 |
+| G2 | managed 对象绑定及 V2 引用已有 resolve/acquire/map-begin 路径；r322 百轮复用拒绝旧引用，W5 已作为 SDK 消费者运行 | 全节点任意对象互访的 managed 矩阵仍需按 2.4 核对 |
+| G3 | kernel 区间检查、同址重用、容量与并发已有实现；worker 使用按节点静态分区的地址探测策略 | 与原设计的单协调者全局区间账本存在差异，见 2.4 |
+| G5/G6/G10 | managed mapping owner、compute pin、CPU/PTO 联合访问与权限保护已实现；r286/r384 及 A18 记录包含真实数据与清理证据 | A07-A11 须逐项对应完整范围，不能沿用早期双请求子集描述，也不能仅按总计划 M2 状态关闭 |
+| G7 | holder fencing、回收及底层 replay mapping revalidation 已实现；M5 r3 记录旧访问 signal 7、新代值正确、迟到与重复完成丢弃 | managed retire/reclaim 与挂起 replay 的同轮联合证据尚待确认 |
+| G8 | worker 持久 ledger、事务续作、隔离及 guest 故障恢复已有实现；r49-r55 覆盖重复事务故障，A18 覆盖 daemon 重启隔离 | 恢复测试通过不代表所有未知状态均能自动恢复；quarantine 继续属于安全结果 |
+| G9 | 独立服务 CPU、四种 CPU/PTO 组合、两模型多拓扑 W5、两机 source-free 发布均已有记录 | 底层全有向矩阵与 managed W5 的组合证据不能直接替代完整服务全有向矩阵 |
+
+代码入口：[共享 manager 库](../../guest-linux/aarch64/libs/gva_manager/gva_manager.c)、
+[常驻 worker](../../mem_service/components/mem_service/providers/mem_service_provider_obmm_worker.c)、
+[PTO managed acquire](../../guest-linux/aarch64/libs/lingqu_shmem_pto/lingqu_shmem_mem_service.h)。
+运行依据：[实施与验证记录](../2026-09-11-gva-managed-service-implementation-progress.md)
+中的 2026-09-17/18 阶段复核、A16/A18，以及总计划第 8 节 M5 最终记录。
+
+### 2.4 剩余差异与补齐顺序
+
+1. **地址权威设计差异（G3/A05）。** `worker_node_allocation_window()` 按
+   aperture 和 node count 划分互不重叠的节点区间，`allocate_work()` 在本节点
+   区间内选择地址并向本地 kernel 请求保留，日志策略为 `node-partitioned-probe`。
+   固定且一致的拓扑配置下可避免跨 home 区间冲突；某个节点的地址份额耗尽后，
+   该策略不能使用其他节点空闲的地址份额。第 1.2/3.1 节要求的单协调者全局账本
+   尚未由此实现。保留原目标，下一步先确认是否正式接受静态分区；若接受，应明确
+   节点身份唯一性、地址域配置一致性、拓扑变化和容量限制，再修订设计与测试标准。
+   未确认前，不把实现现状自动升级为已批准的架构决定。
+2. **managed 全有向矩阵（G9/A16）。** 已有 2/3/8-node 全有向十轮及八节点
+   三轮冷启动证据来自底层 OBMM/GSVA matrix；managed 多 home 证据来自 W5
+   stage allocation。补齐同一服务路径的矩阵：每节点通过 SDK 分配对象，其他
+   节点使用同一引用 acquire、发布/获取并读写，按第 5.2 节执行冷启动和清理。
+3. **managed 生命周期与 replay 联合（G7/A11/A12）。** M5 使用
+   `obmm_async_coroutine` 验证实际映射撤销/替换和旧完成丢弃。补齐或定位同轮
+   证据：managed 对象持有期间挂起 CPU 访问，服务发起 retire/reclaim，证明
+   旧访问退出或上下文安全隔离前不复用；随后核对同址新代对象及迟到响应。
+4. **最终证据索引与版本回归。** 将 A01-A18 分别关联源码组合、run ID、原始日志
+   和判定结果，说明历史全量中的 skip；对最终 kernel/QEMU 变更执行相应服务路径
+   回归后再给出整体验收结论。仅更新文档标签不能关闭前三项。
+
 ## 3. 补齐实现的设计
+
+本节保留目标设计；当前静态分区实现与单协调者要求的差异见 2.4。
+以下实施性措辞不表示相关能力全部尚未开发，已实现范围见 2.3。
 
 ### 3.1 复用 manager 的位置与发布边界
 
@@ -521,9 +580,25 @@ A18 的跨机最小复现集合为 A01 至 A04、四种访问组合、一次重�
 | 阶段 | 当前状态 | 下一项可演示结果 | 完成记录 |
 | --- | --- | --- | --- |
 | AM1 | 通过 | 两节点、单 home 的 A01-A06 与 CPU A09 子集已满足；多 home、拓扑、冷启动和独立发布保留在 AM4/A16/A18 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r306 百个独立 session；r19-r20/r30 readiness fail-closed；r121/r118/r297 区间、并发与容量；r126/r124/r321/r381 冲突、descriptor、旧引用拒绝 |
-| AM2 | 进行中：四种读写组合、四线程 owner、只读双对象、大尺寸、home 互换及共享会话双请求子集通过；完整阶段未完成 | 多请求故障恢复、现有全局对象引用绑定、tail 反向 home 及设备并行性独立验收 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：r176/r177b/r178 与 r186c/r191-r194 的既有证据保留；r207/r208 的双方向 cross-page、r209 的反向 ND、r210 的原方向 tail 双请求整轮通过，大尺寸两轮各核对 102 个分片；r204 的重复打开会话失败及既有启动/解析失败原记录保留；A07-A11 整项仍未关闭 |
-| AM3 | 未完成 | drain 后重用、旧引用拒绝、崩溃隔离及 replay 安全 | 待填写 A11-A15 结果 |
-| AM4 | 通过 | A16 多 home/全有向矩阵、A18 独立发布，以及总计划 M4 的对象压力和 prefix 分组测量均完成 | [实施记录](../2026-09-11-gva-managed-service-implementation-progress.md)：managed W5 与 `a8787024` 关闭 A16；同一 source-free 发布组合在两台远端关闭 A18；`218cdf1` 覆盖 prefix/decode-KV/hidden、最长 prefix、TTL/版本和容量驱逐，`e6bfe20e` 在 n4-910c 完成 hot-prefix 与 divergent-suffix 各 1 功能、2 预热、5 测量及 fail-closed |
+| AM2 | 核心能力与多项联合验证已有证据；完整出口待逐项复核 | 将后续严格 V2、owner/drain、故障及 A18 四组合记录映射到 A07-A11，清除早期子集状态的歧义 | 实施记录 r286/r384、r322、2026-09-18 M2 复核及 `a18-package-cpu-pto-20260918-r2`；早期 r176-r210 仅作为过程记录 |
+| AM3 | 回收恢复已有完整分阶段记录；本计划联合出口未关闭 | 确认或补齐 managed retire/reclaim 与挂起 replay 的同轮证据，并处理全局地址权威差异 | r49-r55 重复事务矩阵、r322 旧引用拒绝、A18 重启隔离；M5 `m5-mapping-reuse-20260918-r3` 验证底层 replay，不能单独代替服务联合测试 |
+| AM4 | 多拓扑 W5、独立包及压力已有证据；最终验收未关闭 | 补 managed 全有向矩阵及规定冷启动，汇总最终源码组合的 A01-A18 | A18 两机 source-free 包、Qwen/DeepSeek 4/8-step 记录保留；A16 原有 raw matrix 与 managed W5 分开列证据，不再据其组合直接宣布本阶段通过 |
+
+### 当前验收索引（2026-09-19）
+
+| 验收项 | 当前结论 | 证据或剩余动作 |
+| --- | --- | --- |
+| A01-A04、A06 | AM1 范围已有通过记录 | r306、r19-r20/r30、r126 及 A18；不等于最终版本重跑 |
+| A05 | 单 home 分配与静态分区已有证据；设计差异未关闭 | r121/r118/r297；按 2.4 决定地址权威方案 |
+| A07-A10 | 主要访问与保护能力已有证据；完整判据待逐项索引 | r123/r124、r286/r384、A18 四组合；保持 CPU 页级与 PTO 字节级边界区分 |
+| A11-A12 | 重用及底层 replay 分别已验证；服务联合范围待确认 | r322/r381、M5 r3；补同轮 managed holder/retire/reclaim/replay 证据 |
+| A13-A15 | 事务恢复、隔离及资源回收已有记录 | r49-r55、r46、A18 重启隔离；区分归零与已计量的 quarantine |
+| A16 | 底层全有向与 managed W5 均有记录；完整服务矩阵待补 | 不以 raw 全有向测试代替 SDK 全有向访问与规定冷启动 |
+| A17 | 模型与拓扑运行矩阵已有记录 | Qwen r81/r82/r93/r84，DeepSeek r87/r88/r92；两个核心配置为 8-step |
+| A18 | 独立发布与两机复现已有通过记录 | A18 同包四组合、旧引用、重启隔离及两模型 8-node/4-step；最终组合全量回归证据另核对 |
+
+本表不撤销历史成功运行，也不将尚未找到对应证据的项直接认定为代码缺陷。
+完整完成判定仍以第 6 节为准。以下 2026-09-09 记录保留当时结论，不能覆盖本表。
 
 ### 2026-09-09 首次实现记录
 
@@ -670,5 +745,6 @@ A05 的并发、全局多 home 协调、幂等和隔离区仍缺证据；A05 整
 每个变更范围都须完成测试。用户授权发布后，先发布经过验证的子模块 commit，
 确认可从远端取得，再同步根仓库 gitlink 与 `mem_service.lock`；本文不授权 commit/push。
 
-**最近一步只做 AM1 的实际数据闭环。** 地址库提取、接口和状态记录服务于这个结果；
-完成该演示后再进入 CPU/PTO 联合寿命与故障矩阵，避免长期停留在接口建设。
+**2026-09-19 后续顺序以 2.4 为准。** AM1 数据闭环已具备运行记录，不重新开展
+共享库和基础接口建设；集中处理地址协调设计差异、服务全有向矩阵与 replay 联合
+验收，随后核对最终版本的 A01-A18 证据。
