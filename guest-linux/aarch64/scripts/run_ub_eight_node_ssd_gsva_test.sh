@@ -87,6 +87,7 @@ start_node() {
     UB_SIM_ENTITY_COUNT="$ENTITY_COUNT" \
     UB_FM_ENTITY_PLAN_FILE="$ENTITY_PLAN_FILE" \
     UB_SIM_PORT_NUM="$PORT_NUM" \
+    GSVA_COH_UB_LINK_TX=1 \
     "$QEMU_BIN" \
       -M virt,gic-version=3,its=on,ummu=on,ub-cluster-mode=on \
       -cpu cortex-a57 \

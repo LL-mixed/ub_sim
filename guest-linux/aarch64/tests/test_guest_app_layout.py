@@ -4033,6 +4033,16 @@ def test_device_gsva_retire_uses_local_holder_revoke():
                       "    }") >= 2
 
 
+def test_ssd_gsva_launchers_enable_cross_node_coherence():
+    for name in (
+        "run_ub_two_node_ssd_gsva_test.sh",
+        "run_ub_four_node_ssd_gsva_test.sh",
+        "run_ub_eight_node_ssd_gsva_test.sh",
+    ):
+        source = (ROOT / "scripts" / name).read_text()
+        assert "GSVA_COH_UB_LINK_TX=1" in source
+
+
 class GuestToolchainContractTests(unittest.TestCase):
     def test_arm64_native_gcc_is_accepted_for_guest_builds(self):
         common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()
