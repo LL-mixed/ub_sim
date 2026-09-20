@@ -2,6 +2,18 @@
 
 Workspace-local notes and implementation-specific design material can live here.
 
+Repository maintenance:
+
+- [git_batch_push.sh](../guest-linux/aarch64/scripts/git_batch_push.sh)
+  - run from the repository to publish: `git_batch_push.sh <remote> [branch] [batch_size]`
+  - remote is mandatory; branch defaults to `main`, batch size to `500`
+  - the remote temporary ref records progress; rerun with the same arguments
+    to resume. The temporary ref is force-advanced and must not be shared
+    between concurrent runs. `--self-test` uses temporary local Git repositories
+    only. For kernel use, run `../aarch64/scripts/git_batch_push.sh <remote> ub_sim 1000`
+    from `guest-linux/kernel_ub`. Actual remote publishing requires explicit
+    authorization and the task network-audit wrapper.
+
 Architecture illustrations:
 
 - [Lingqu supernode data architecture](2026-09-10-lingqu-supernode-data-architecture.md)
