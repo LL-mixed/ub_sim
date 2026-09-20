@@ -382,6 +382,7 @@ struct Qwen3TokenizerProjectionCliArgs {
 struct Qwen3GuestDecodeLoopCliArgs {
     validate_only: bool,
     step_count: usize,
+    cluster_node_count: Option<usize>,
     prompt: Option<String>,
     prompt_token_ids: Option<String>,
     script_path: PathBuf,
@@ -1127,6 +1128,7 @@ where
     match args.next() {
         Some(mode) if mode == "qwen3-guest-decode-loop" || mode == "w5-inference-cluster" => {
             let mut step_count = None;
+            let mut cluster_node_count = None;
             let mut prompt = None;
             let mut prompt_token_ids = None;
             let mut script_path = None;
@@ -1190,6 +1192,14 @@ where
                     step_count = Some(parse_positive_usize("--steps", &next.to_string_lossy())?);
                 } else if let Some(value) = text.strip_prefix("--steps=") {
                     step_count = Some(parse_positive_usize("--steps", value)?);
+                } else if text == "--nodes" {
+                    let next = pending
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("--nodes requires a value"))?;
+                    cluster_node_count =
+                        Some(parse_w5_cluster_node_count(&next.to_string_lossy())?);
+                } else if let Some(value) = text.strip_prefix("--nodes=") {
+                    cluster_node_count = Some(parse_w5_cluster_node_count(value)?);
                 } else if text == "--prompt" {
                     let next = pending
                         .next()
@@ -1799,6 +1809,7 @@ where
             Ok(Some(Qwen3GuestDecodeLoopCliArgs {
                 validate_only,
                 step_count: step_count.unwrap_or(1),
+                cluster_node_count,
                 prompt,
                 prompt_token_ids,
                 script_path: script_path.unwrap_or_else(default_qwen3_guest_decode_script_path),
@@ -2011,6 +2022,14 @@ fn parse_positive_usize(label: &str, value: &str) -> anyhow::Result<usize> {
         anyhow::bail!("{label} must be > 0");
     }
     Ok(parsed)
+}
+
+fn parse_w5_cluster_node_count(value: &str) -> anyhow::Result<usize> {
+    let node_count = parse_positive_usize("--nodes", value)?;
+    if !matches!(node_count, 2 | 3 | 4 | 8) {
+        anyhow::bail!("--nodes must be 2, 3, 4, or 8: {node_count}");
+    }
+    Ok(node_count)
 }
 
 fn parse_nonnegative_usize(label: &str, value: &str) -> anyhow::Result<usize> {
@@ -18024,6 +18043,7 @@ mod tests {
         let args = qwen3_guest_decode_loop_args_from([
             "qwen3-guest-decode-loop",
             "--steps=1",
+            "--nodes=3",
             "--prompt",
             "Capital of China is",
             "--prompt-token-ids=9707,1207,16948,18,358",
@@ -18041,6 +18061,7 @@ mod tests {
         .expect("parse guest decode loop args")
         .expect("guest decode loop args");
         assert_eq!(args.step_count, 1);
+        assert_eq!(args.cluster_node_count, Some(3));
         assert_eq!(args.prompt.as_deref(), Some("Capital of China is"));
         assert_eq!(
             args.prompt_token_ids.as_deref(),
@@ -18059,6 +18080,19 @@ mod tests {
         assert_eq!(args.sampler.temperature_milli, 800);
         assert_eq!(args.sampler.seed, 42);
         assert_eq!(args.engram, Qwen3EngramConfig::default());
+    }
+
+    #[test]
+    fn qwen3_guest_decode_loop_args_reject_unsupported_cluster_nodes() {
+        for node_count in ["1", "5", "9"] {
+            let err = qwen3_guest_decode_loop_args_from([
+                "w5-inference-cluster",
+                &format!("--nodes={node_count}"),
+            ])
+            .expect_err("unsupported W5 cluster size should fail");
+
+            assert!(err.to_string().contains("--nodes must be 2, 3, 4, or 8"));
+        }
     }
 
     #[test]
@@ -19080,6 +19114,7 @@ mod tests {
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: false,
             step_count: 1,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: None,
             script_path: PathBuf::from(
@@ -19143,6 +19178,7 @@ mod tests {
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: false,
             step_count: 1,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: None,
             script_path: PathBuf::from(
@@ -19205,6 +19241,7 @@ mod tests {
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: false,
             step_count: 1,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: None,
             script_path: PathBuf::from(
@@ -19277,6 +19314,7 @@ mod tests {
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: true,
             step_count: 1,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: Some("1,2,3".to_string()),
             script_path: PathBuf::from(
@@ -20146,6 +20184,7 @@ mod tests {
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: false,
             step_count: 1,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: None,
             script_path: PathBuf::from(
@@ -28705,6 +28744,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: false,
             step_count: 1,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: None,
             script_path: PathBuf::from(
@@ -29076,6 +29116,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: false,
             step_count: 2,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: None,
             script_path: PathBuf::from(
@@ -29300,6 +29341,7 @@ memory_boundary_observation: phase=range_exit observation_id=boundary-observatio
         let args = Qwen3GuestDecodeLoopCliArgs {
             validate_only: false,
             step_count: 1,
+            cluster_node_count: None,
             prompt: None,
             prompt_token_ids: None,
             script_path,
@@ -31969,6 +32011,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     let engram_simt = qwen3_prepare_engram_simt_mode(&effective_engram)?;
     let w5_profile =
         resolve_w5_inference_profile(args.w5_profile.as_deref(), &runtime, &effective_engram)?;
+    let cluster_node_count = args.cluster_node_count.unwrap_or(w5_profile.nodes as usize);
     if let (Some(config), Some(decisions)) = (&args.memory_decisions, &memory_decisions) {
         validate_w5_memory_decision_bundle_for_run(
             config,
@@ -31988,6 +32031,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         println!("  w5_profile: {}", w5_profile.name);
         println!("  w5_profile_mode: {}", w5_profile.mode);
         println!("  w5_profile_nodes: {}", w5_profile.nodes);
+        println!("  cluster_nodes: {cluster_node_count}");
         println!("  model_id: {}", runtime.profile.model_id);
         println!("  model_key: {}", runtime.model_key);
         println!("  weights_path: {}", runtime.weights_path.display());
@@ -32068,6 +32112,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
     println!("  w5_profile: {}", w5_profile.name);
     println!("  w5_profile_mode: {}", w5_profile.mode);
     println!("  w5_profile_nodes: {}", w5_profile.nodes);
+    println!("  cluster_nodes: {cluster_node_count}");
     println!("  w5_profile_backend: {}", w5_profile.backend_profile);
     println!(
         "  w5_profile_engram_required: {}",
@@ -32364,7 +32409,9 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             );
         }
     }
-    println!("  worker_path: 8-node W5 inference cluster OBMM object-service range forward");
+    println!(
+        "  worker_path: {cluster_node_count}-node W5 inference cluster OBMM object-service range forward"
+    );
     let trace_file = qwen3_guest_trace_file_path(env::var_os("TRACE_FILE"), std::process::id());
     if let Some(parent) = trace_file.parent() {
         fs::create_dir_all(parent).with_context(|| {
@@ -32425,6 +32472,7 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
             "SIM_QWEN3_DENSE_TP_NODES",
             runtime.profile.tp_nodes.to_string(),
         )
+        .env("SIM_W5_CLUSTER_NODE_COUNT", cluster_node_count.to_string())
         .env(
             "SIM_QWEN3_DENSE_HIDDEN_RANGE_BYTES",
             hidden_range_bytes(&runtime.profile).to_string(),
@@ -32573,14 +32621,16 @@ fn run_qwen3_guest_decode_loop_cli(args: &Qwen3GuestDecodeLoopCliArgs) -> anyhow
         0
     };
     let expected_shortpath_worker_counts = if shortpath_execute_jump_to_terminal {
-        w5_expected_jump_to_terminal_worker_counts(memory_decisions.as_ref(), 8)
+        w5_expected_jump_to_terminal_worker_counts(
+            memory_decisions.as_ref(),
+            cluster_node_count as u32,
+        )
     } else {
         None
     };
     let engram_shortpath_local_policy =
         effective_engram.enabled && shortpath_execute_jump_to_terminal;
-    let worker_counts =
-        qwen3_guest_expected_worker_counts(args.step_count, runtime.profile.tp_nodes as usize);
+    let worker_counts = qwen3_guest_expected_worker_counts(args.step_count, cluster_node_count);
     let expected_runtime_forward_count = worker_counts.range_forwards;
     let expected_runtime_input_count = worker_counts.runtime_inputs;
     let expected_runtime_publish_count = worker_counts.runtime_outputs;

@@ -456,6 +456,7 @@ print(executables.pop())
     --script "$SCRIPT_DIR/run_llm_infer_eight_node_guest.sh"
     --w5-profile "$SIM_UAPI_W5_PROFILE"
     --steps "${SIM_QWEN3_GUEST_DECODE_STEPS:-1}"
+    --nodes "${SIM_W5_CLUSTER_NODE_COUNT:-8}"
     --weights-path "$model_source_path"
     --prompt-token-ids "$SIM_LLM_INFER_PROMPT_TOKEN_IDS"
   )

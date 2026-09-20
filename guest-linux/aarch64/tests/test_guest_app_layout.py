@@ -4063,6 +4063,25 @@ def test_w5_terminal_token_gate_requires_durable_reference_evidence():
     assert "broadcast_targets=1" in gate
 
 
+def test_w5_runtime_passes_pipeline_topology_to_worker_accounting():
+    runtime = (ROOT / "scripts" / "run_w5_inference_cluster_runtime.sh").read_text()
+    sim_cli = (
+        ROOT.parents[1] / "crates" / "sim-cli" / "src" / "main.rs"
+    ).read_text()
+
+    assert '--nodes "${SIM_W5_CLUSTER_NODE_COUNT:-8}"' in runtime
+    assert (
+        "qwen3_guest_expected_worker_counts(args.step_count, cluster_node_count)"
+        in sim_cli
+    )
+    assert "memory_decisions.as_ref(),\n            cluster_node_count as u32," in sim_cli
+    assert (
+        '.env("SIM_W5_CLUSTER_NODE_COUNT", cluster_node_count.to_string())'
+        in sim_cli
+    )
+    assert "runtime.profile.tp_nodes as usize" not in sim_cli
+
+
 def test_ssd_gsva_launchers_enable_cross_node_coherence():
     for name in (
         "run_ub_two_node_ssd_gsva_test.sh",
