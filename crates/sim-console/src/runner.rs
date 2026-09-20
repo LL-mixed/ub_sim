@@ -1878,7 +1878,7 @@ fn remote_target_bootstrap_command(target: &ExecutionTarget) -> Result<String, R
 }
 
 fn remote_source_mirror_prepare_command(
-    mirror: &crate::target::SubmoduleMirror,
+    _mirror: &crate::target::SubmoduleMirror,
     remote_repo: &str,
     expected: &str,
 ) -> String {
@@ -1888,11 +1888,9 @@ fn remote_source_mirror_prepare_command(
         .unwrap_or(remote_repo);
     let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
     format!(
-        "set -eu; repo={repo}; if git -C \"$repo\" rev-parse --git-dir >/dev/null 2>&1; then :; elif [ -f \"$repo/.git\" ] && grep -q '^gitdir: ' \"$repo/.git\"; then rm -f \"$repo/.git\"; git init \"$repo\"; printf 'MIRROR_METADATA_REPAIRED\\n'; elif [ -e \"$repo\" ]; then printf 'source mirror path exists but is not a recoverable Git checkout: %s\\n' \"$repo\" >&2; exit 1; else mkdir -p {parent}; git init \"$repo\"; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then fetch_ok=0; if git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --filter=blob:none --no-tags {url} {git_ref}:{git_ref}; then fetch_ok=1; fi; if ! git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null && [ \"$fetch_ok\" -eq 1 ]; then git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 -c fetch.recurseSubmodules=false -C \"$repo\" fetch --no-tags {url} {expected}:{mirror_ref} || true; fi; fi; if git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -C \"$repo\" update-ref {mirror_ref} {expected}; fi; if GIT_NO_LAZY_FETCH=1 git -C \"$repo\" checkout --detach --force {expected} >/dev/null 2>&1 && GIT_NO_LAZY_FETCH=1 git -C \"$repo\" diff-index --ignore-submodules=all --quiet {expected} --; then printf 'MIRROR_READY\\n'; else printf 'MIRROR_NEEDS_CHECKOUT_PACK\\n'; fi",
+        "set -eu; repo={repo}; if git -C \"$repo\" rev-parse --git-dir >/dev/null 2>&1; then :; elif [ -f \"$repo/.git\" ] && grep -q '^gitdir: ' \"$repo/.git\"; then rm -f \"$repo/.git\"; git init \"$repo\"; printf 'MIRROR_METADATA_REPAIRED\\n'; elif [ -e \"$repo\" ]; then printf 'source mirror path exists but is not a recoverable Git checkout: %s\\n' \"$repo\" >&2; exit 1; else mkdir -p {parent}; git init \"$repo\"; fi; if GIT_NO_LAZY_FETCH=1 git -C \"$repo\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -C \"$repo\" update-ref {mirror_ref} {expected}; if GIT_NO_LAZY_FETCH=1 git -C \"$repo\" checkout --detach --force {expected} >/dev/null 2>&1 && GIT_NO_LAZY_FETCH=1 git -C \"$repo\" diff-index --ignore-submodules=all --quiet {expected} --; then printf 'MIRROR_READY\\n'; else printf 'MIRROR_NEEDS_CHECKOUT_PACK\\n'; fi; else printf 'MIRROR_NEEDS_CHECKOUT_PACK\\n'; fi",
         repo = shell_quote(remote_repo),
         parent = shell_quote(parent),
-        url = shell_quote(&mirror.fetch_url),
-        git_ref = shell_quote(&mirror.git_ref),
         expected = shell_quote(expected),
         mirror_ref = shell_quote(&mirror_ref),
     )
@@ -2078,7 +2076,7 @@ fn remote_source_mirror_import_checkout_pack_command(
 ) -> String {
     let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
     format!(
-        "set -eu; cleanup() {{ rm -f {pack}; }}; trap cleanup EXIT; git -C {repo} index-pack --stdin < {pack}; git -C {repo} cat-file -e {expected}^{{commit}}; git -C {repo} update-ref {mirror_ref} {expected}; GIT_NO_LAZY_FETCH=1 git -C {repo} checkout --detach --force {expected}; [ \"$(git -C {repo} rev-parse HEAD)\" = {expected} ]; GIT_NO_LAZY_FETCH=1 git -C {repo} diff-index --ignore-submodules=all --quiet {expected} --; printf 'MIRROR_CHECKOUT_READY\\n'",
+        "set -eu; cleanup() {{ rm -f {pack}; }}; trap cleanup EXIT; git -C {repo} index-pack --stdin < {pack}; GIT_NO_LAZY_FETCH=1 git -C {repo} cat-file -e {expected}^{{commit}}; git -C {repo} update-ref {mirror_ref} {expected}; GIT_NO_LAZY_FETCH=1 git -C {repo} checkout --detach --force {expected}; [ \"$(git -C {repo} rev-parse HEAD)\" = {expected} ]; GIT_NO_LAZY_FETCH=1 git -C {repo} diff-index --ignore-submodules=all --quiet {expected} --; printf 'MIRROR_CHECKOUT_READY\\n'",
         repo = shell_quote(remote_repo),
         pack = shell_quote(remote_pack),
         mirror_ref = shell_quote(&mirror_ref),
@@ -2140,7 +2138,7 @@ fn remote_probe_command(
             continue;
         }
         command.push_str(&format!(
-            "if ! git -C {path} cat-file -e {expected}^{{commit}} 2>/dev/null; then printf 'SUBMODULE_OBJECT_MISSING\\t%s\\t%s\\n' {display_path} {display_expected}; else actual=$(git -C {path} rev-parse HEAD 2>/dev/null || true); if [ \"$actual\" != {expected} ]; then printf 'SUBMODULE_HEAD_MISMATCH\\t%s\\t%s\\t%s\\n' {display_path} {display_expected} \"${{actual:-missing}}\"; elif ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --ignore-submodules=all --quiet {expected} --; then printf 'SUBMODULE_CHECKOUT_DIRTY\\t%s\\t%s\\n' {display_path} {display_expected}; fi; fi; ",
+            "if ! GIT_NO_LAZY_FETCH=1 git -C {path} cat-file -e {expected}^{{commit}} 2>/dev/null; then printf 'SUBMODULE_OBJECT_MISSING\\t%s\\t%s\\n' {display_path} {display_expected}; else actual=$(git -C {path} rev-parse HEAD 2>/dev/null || true); if [ \"$actual\" != {expected} ]; then printf 'SUBMODULE_HEAD_MISMATCH\\t%s\\t%s\\t%s\\n' {display_path} {display_expected} \"${{actual:-missing}}\"; elif ! GIT_NO_LAZY_FETCH=1 git -C {path} diff-index --ignore-submodules=all --quiet {expected} --; then printf 'SUBMODULE_CHECKOUT_DIRTY\\t%s\\t%s\\n' {display_path} {display_expected}; fi; fi; ",
             path = shell_quote(&source_path),
             expected = shell_quote(&expected),
             display_path = shell_quote(&mirror.path),
@@ -2261,7 +2259,7 @@ fn remote_mirror_fetch_command(
 ) -> String {
     let mirror_ref = format!("refs/sim-console/mirrors/{expected}");
     format!(
-        "target_path={target_path}; source_path={source_path}; mirror_ref={mirror_ref}; if git -C \"$source_path\" cat-file -e {expected}^{{commit}} 2>/dev/null && ! git -C \"$target_path\" checkout --detach --force {expected} >/dev/null 2>&1; then rm -rf \"$target_path\"; mkdir -p \"$(dirname \"$target_path\")\"; git clone --shared --no-checkout \"$source_path\" \"$target_path\"; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {git_ref}:\"$mirror_ref\" || true; fi; if ! git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {expected}:\"$mirror_ref\"; fi; git -C \"$target_path\" cat-file -e {expected}^{{commit}}; git -C \"$target_path\" update-ref \"$mirror_ref\" {expected}; git -C \"$target_path\" checkout --detach --force {expected}; ",
+        "target_path={target_path}; source_path={source_path}; mirror_ref={mirror_ref}; if GIT_NO_LAZY_FETCH=1 git -C \"$source_path\" cat-file -e {expected}^{{commit}} 2>/dev/null && ! GIT_NO_LAZY_FETCH=1 git -C \"$target_path\" checkout --detach --force {expected} >/dev/null 2>&1; then rm -rf \"$target_path\"; mkdir -p \"$(dirname \"$target_path\")\"; git clone --shared --no-checkout \"$source_path\" \"$target_path\"; fi; if ! GIT_NO_LAZY_FETCH=1 git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {git_ref}:\"$mirror_ref\" || true; fi; if ! GIT_NO_LAZY_FETCH=1 git -C \"$target_path\" cat-file -e {expected}^{{commit}} 2>/dev/null; then git -c fetch.recurseSubmodules=false -C \"$target_path\" fetch --no-tags {fetch_url} {expected}:\"$mirror_ref\"; fi; GIT_NO_LAZY_FETCH=1 git -C \"$target_path\" cat-file -e {expected}^{{commit}}; git -C \"$target_path\" update-ref \"$mirror_ref\" {expected}; GIT_NO_LAZY_FETCH=1 git -C \"$target_path\" checkout --detach --force {expected}; ",
         target_path = shell_quote(target_path),
         source_path = shell_quote(source_path),
         mirror_ref = shell_quote(&mirror_ref),
@@ -3336,9 +3334,9 @@ mod tests {
             "/home/test/source/vendor/example",
             "0123456789abcdef0123456789abcdef01234567",
         );
-        assert!(mirror.contains("http.lowSpeedLimit=1024"));
-        assert!(mirror.contains("http.lowSpeedTime=30"));
-        assert!(mirror.contains("fetch_ok=0"));
+        assert!(mirror.contains("GIT_NO_LAZY_FETCH=1 git -C"));
+        assert!(mirror.contains("MIRROR_NEEDS_CHECKOUT_PACK"));
+        assert!(!mirror.contains(" fetch "));
     }
 
     #[test]
@@ -3388,6 +3386,7 @@ mod tests {
         assert!(probe.contains("SUBMODULE_HEAD_MISMATCH"));
         assert!(probe.contains("SUBMODULE_CHECKOUT_DIRTY"));
         assert!(probe.contains("--ignore-submodules=all"));
+        assert!(probe.contains("GIT_NO_LAZY_FETCH=1 git -C"));
         let dependencies = source_dependencies(&repo_root, "HEAD", target).unwrap();
         let nested = dependencies
             .iter()
@@ -3411,7 +3410,7 @@ mod tests {
     }
 
     #[test]
-    fn source_mirror_repairs_a_broken_submodule_gitdir() {
+    fn source_mirror_repairs_metadata_before_requesting_checkout_pack() {
         let source = TempDir::new().unwrap();
         run_checked(
             StdCommand::new("git")
@@ -3462,6 +3461,7 @@ mod tests {
             target.path().to_str().unwrap(),
             &expected,
         );
+        assert!(command.contains("GIT_NO_LAZY_FETCH=1 git -C \"$repo\" cat-file"));
         let output = run_checked_output(
             StdCommand::new("sh").arg("-c").arg(command),
             "repair broken source mirror",
@@ -3470,12 +3470,8 @@ mod tests {
         let stdout = String::from_utf8_lossy(&output.stdout);
 
         assert!(stdout.contains("MIRROR_METADATA_REPAIRED"));
-        assert!(stdout.contains("MIRROR_READY"));
-        assert_eq!(git_head(target.path()).unwrap(), expected);
-        assert_eq!(
-            fs::read_to_string(target.path().join("payload.txt")).unwrap(),
-            "prepared payload\n"
-        );
+        assert!(stdout.contains("MIRROR_NEEDS_CHECKOUT_PACK"));
+        assert!(git_head(target.path()).is_err());
     }
 
     #[test]
@@ -3492,11 +3488,13 @@ mod tests {
             "0123456789abcdef",
         );
         assert!(command.contains("rm -rf \"$target_path\""));
+        assert!(command.contains("GIT_NO_LAZY_FETCH=1 git -C \"$source_path\" cat-file"));
+        assert!(command.contains("GIT_NO_LAZY_FETCH=1 git -C \"$target_path\" cat-file"));
         assert!(
             command.contains("git clone --shared --no-checkout \"$source_path\" \"$target_path\"")
         );
         assert!(command.contains(
-            "! git -C \"$target_path\" checkout --detach --force \
+            "! GIT_NO_LAZY_FETCH=1 git -C \"$target_path\" checkout --detach --force \
              '0123456789abcdef' >/dev/null 2>&1"
         ));
         assert!(command.contains("mirror_ref='refs/sim-console/mirrors/0123456789abcdef'"));
