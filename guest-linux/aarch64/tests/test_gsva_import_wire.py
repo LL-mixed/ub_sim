@@ -152,7 +152,9 @@ static void gsva_home_release(GsvaHomeBinding *pin)
 static bool gsva_home_overlaps(int *table, uint64_t address, uint64_t length)
 { (void)table; (void)address; (void)length; return legacy_overlap; }
 typedef struct { int unused; } UBLinkState;
+typedef struct { uint32_t token_id; } ObmmExportEntry;
 static UBLinkState link;
+static ObmmExportEntry exact_export = {.token_id = 97};
 static unsigned transfers, replies;
 static int dma_error;
 static uint32_t expected_len = 8;
@@ -169,6 +171,24 @@ static int ubc_dma_write_local_data_tid_strict(BusControllerDev *dev, uint64_t a
 { (void)dev; assert(address == expected_address && token == 97 && len == expected_len);
   for (uint32_t i = 0; i < len; ++i) assert(((const uint8_t *)bytes)[i] == 0x6b);
   transfers++; return dma_error; }
+static ObmmExportEntry *obmm_export_lookup(uint64_t address, uint32_t len,
+                                           uint32_t token)
+{ assert(address == expected_address && len == expected_len);
+  return token == exact_export.token_id ? &exact_export : NULL; }
+static MemTxResult obmm_export_read_exact(BusControllerDev *dev,
+                                          const ObmmExportEntry *entry,
+                                          uint64_t address, void *bytes,
+                                          uint32_t len)
+{ assert(entry == &exact_export);
+  return ubc_dma_read_local_data_tid_strict(dev, address, bytes, len,
+                                            entry->token_id); }
+static MemTxResult obmm_export_write_exact(BusControllerDev *dev,
+                                           const ObmmExportEntry *entry,
+                                           uint64_t address, const void *bytes,
+                                           uint32_t len)
+{ assert(entry == &exact_export);
+  return ubc_dma_write_local_data_tid_strict(dev, address, bytes, len,
+                                             entry->token_id); }
 static int ubc_send_msg_over_link(BusControllerDev *dev, UBLinkState *active,
                                  uint32_t peer, uint32_t sub, const void *bytes, uint32_t len)
 { (void)dev; assert(active == &link && peer == 8 && sub == 3 && len <= sizeof(output));
