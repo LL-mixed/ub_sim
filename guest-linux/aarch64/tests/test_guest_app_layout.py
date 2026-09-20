@@ -4026,6 +4026,11 @@ def test_device_gsva_retire_uses_local_holder_revoke():
     assert "export_entry = obmm_export_lookup(io->request.remote_uba" in qemu
     assert "obmm_export_write_exact(ubc_dev, export_entry" in qemu
     assert "obmm_export_read_exact(ubc_dev, export_entry" in qemu
+    assert "backing_token_id = route && route->backing_token_id" in qemu
+    assert "exp = obmm_export_lookup(gsva, len, backing_token_id);" in qemu
+    assert qemu.count("if (route && route->backing_token_id) {\n"
+                      "        return MEMTX_ACCESS_ERROR;\n"
+                      "    }") >= 2
 
 
 class GuestToolchainContractTests(unittest.TestCase):
