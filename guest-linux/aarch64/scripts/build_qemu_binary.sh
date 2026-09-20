@@ -108,6 +108,8 @@ qemu_source_signature() {
         "$SRC_DIR/tests/unit/test-linqu-bridge-lock.c" \
         "$SRC_DIR/tests/unit/test-gsva-route-lifetime.c" \
         "$SRC_DIR/tests/unit/test-gsva-retire.c" \
+        "$SRC_DIR/tests/unit/test-gsva-home.c" \
+        "$SRC_DIR/tests/unit/test-gsva-token-rotation.c" \
         "$SRC_DIR/tests/unit/meson.build" \
         "$SRC_DIR/include/hw/ub/linqu_bridge_lock.h"
     } |
@@ -405,6 +407,16 @@ setup_ninja_discovery() {
   fi
 }
 
+select_macos_command_line_tools() {
+  local clt="/Library/Developer/CommandLineTools"
+
+  [[ "$BUILD_HOST_OS" == "Darwin" ]] || return 0
+  [[ -n "${DEVELOPER_DIR:-}" ]] && return 0
+  [[ -x "$clt/usr/bin/clang" ]] || return 0
+  export DEVELOPER_DIR="$clt"
+  echo "[build_qemu_binary] using macOS Command Line Tools" >&2
+}
+
 apply_host_qemu_configure_args() {
   local host_cc="${CC:-cc}"
 
@@ -511,7 +523,9 @@ obmm_tests_ready() {
      -x "$BUILD_DIR/tests/unit/test-ub-async-load" &&
      -x "$BUILD_DIR/tests/unit/test-linqu-bridge-lock" &&
      -x "$BUILD_DIR/tests/unit/test-gsva-route-lifetime" &&
-     -x "$BUILD_DIR/tests/unit/test-gsva-retire" ]]
+     -x "$BUILD_DIR/tests/unit/test-gsva-retire" &&
+     -x "$BUILD_DIR/tests/unit/test-gsva-home" &&
+     -x "$BUILD_DIR/tests/unit/test-gsva-token-rotation" ]]
 }
 
 TEST_TARGETS_READY=1
@@ -524,6 +538,7 @@ if [[ ! -d "$SRC_DIR" ]]; then
   exit 1
 fi
 
+select_macos_command_line_tools
 apply_host_qemu_configure_args
 ensure_sim_qemu_link_args
 mkdir -p "$BUILD_DIR"
@@ -564,6 +579,8 @@ if (( BUILD_OBMM_TESTS == 1 )); then
     tests/unit/test-linqu-bridge-lock
     tests/unit/test-gsva-route-lifetime
     tests/unit/test-gsva-retire
+    tests/unit/test-gsva-home
+    tests/unit/test-gsva-token-rotation
   )
 fi
 echo "[build_qemu_binary] building ${BUILD_TARGETS[*]}" >&2
