@@ -167,54 +167,6 @@ demos:
     required_paths: [guest-linux/aarch64/scripts/run_ub_eight_node_gsva_identity_test.sh]
     controls: [stop, node_logs]
 
-  - id: ub-ssd-gsva-2
-    title: UB-SSD GSVA / 2 Nodes
-    category: UB-SSD
-    summary: Validate GSVA-backed UB-SSD block write and read paths.
-    node_count: 2
-    topology: pair
-    data_plane: [GSVA, UB-SSD]
-    tags: [storage, block-io]
-    estimated_duration_secs: 180
-    command:
-      program: guest-linux/aarch64/scripts/run_ub_two_node_ssd_gsva_test.sh
-      environment: { RUN_ID: "{run_id}" }
-    requirements: [QEMU, guest kernel, initramfs]
-    required_paths: [guest-linux/aarch64/scripts/run_ub_two_node_ssd_gsva_test.sh]
-    controls: [stop, node_logs]
-
-  - id: ub-ssd-gsva-4
-    title: UB-SSD GSVA / 4 Nodes
-    category: UB-SSD
-    summary: Validate GSVA-backed UB-SSD access across four nodes.
-    node_count: 4
-    topology: mesh
-    data_plane: [GSVA, UB-SSD]
-    tags: [storage, block-io]
-    estimated_duration_secs: 240
-    command:
-      program: guest-linux/aarch64/scripts/run_ub_four_node_ssd_gsva_test.sh
-      environment: { RUN_ID: "{run_id}" }
-    requirements: [QEMU, guest kernel, initramfs]
-    required_paths: [guest-linux/aarch64/scripts/run_ub_four_node_ssd_gsva_test.sh]
-    controls: [stop, node_logs]
-
-  - id: ub-ssd-gsva-8
-    title: UB-SSD GSVA / 8 Nodes
-    category: UB-SSD
-    summary: Validate GSVA-backed UB-SSD access across eight nodes.
-    node_count: 8
-    topology: mesh
-    data_plane: [GSVA, UB-SSD]
-    tags: [storage, block-io]
-    estimated_duration_secs: 360
-    command:
-      program: guest-linux/aarch64/scripts/run_ub_eight_node_ssd_gsva_test.sh
-      environment: { RUN_ID: "{run_id}" }
-    requirements: [QEMU, guest kernel, initramfs]
-    required_paths: [guest-linux/aarch64/scripts/run_ub_eight_node_ssd_gsva_test.sh]
-    controls: [stop, node_logs]
-
   - id: direct-el0-upcall-2
     title: Direct EL0 Upcall / 2 Nodes
     category: Upcall

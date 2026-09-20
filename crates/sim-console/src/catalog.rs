@@ -187,12 +187,21 @@ mod tests {
             "URMA and RPC",
             "Memory Service",
             "GVA and GSVA",
-            "UB-SSD",
             "Upcall",
             "W5 Inference",
         ] {
             assert!(categories.contains(expected), "missing category {expected}");
         }
+    }
+
+    #[test]
+    fn default_catalog_does_not_expose_unvalidated_ub_ssd_demos() {
+        let catalog = DemoCatalog::load_default().unwrap();
+
+        assert!(catalog
+            .demos
+            .iter()
+            .all(|demo| demo.category != "UB-SSD" && !demo.id.starts_with("ub-ssd-")));
     }
 
     #[test]

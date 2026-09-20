@@ -14,8 +14,9 @@ cargo run -p sim-console -- serve
 Open `http://127.0.0.1:9080`.
 
 The default catalog includes OBMM pool, URMA/RPC, standalone Memory Service,
-GVA/GSVA, UB-SSD, direct EL0 upcall, and W5 Qwen/DeepSeek V4 Flash entries. The
-Web page exposes reviewed demos, targets, and parameters only; it does not
+GVA/GSVA, direct EL0 upcall, and W5 Qwen/DeepSeek V4 Flash entries. UB-SSD
+demos remain hidden until their current 2/4/8-node paths are validated again.
+The Web page exposes reviewed demos, targets, and parameters only; it does not
 accept commands, SSH options, or raw environment variables.
 
 The execution-target selector defaults to `n4-910c1`. Select `n4-910c`,
