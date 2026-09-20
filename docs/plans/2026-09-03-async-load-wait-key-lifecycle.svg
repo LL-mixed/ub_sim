@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="920" viewBox="0 0 1600 920" role="img" aria-labelledby="title desc">
+  <title id="title">Historical async load wait_key lifecycle - superseded</title>
+  <desc id="desc">展示 wait_key 如何关联 PENDING、COMPLETE 和 waiter，以及 Cacheable 与 Normal NC 的不同 replay 路径。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 3L0 6Z" fill="#334155"/>
+    </marker>
+    <marker id="greenArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 3L0 6Z" fill="#15803d"/>
+    </marker>
+    <marker id="orangeArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L10 3L0 6Z" fill="#c2410c"/>
+    </marker>
+    <style>
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #0f172a; }
+      .sub { font: 500 17px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #475569; }
+      .head { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #0f172a; }
+      .body { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #334155; }
+      .key { font: 700 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #1d4ed8; }
+      .line { fill: none; stroke: #334155; stroke-width: 2.5; marker-end: url(#arrow); }
+      .green { fill: none; stroke: #15803d; stroke-width: 3; marker-end: url(#greenArrow); }
+      .orange { fill: none; stroke: #c2410c; stroke-width: 3; marker-end: url(#orangeArrow); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="920" fill="#f8fafc"/>
+  <text x="60" y="54" class="title">历史方案：Async load wait_key 生命周期</text>
+  <text x="60" y="84" class="sub">2026-09-05 起退出主路径；当前采用 source-owned tokenless replay，不使用软件 wait_key。</text>
+
+  <rect x="50" y="118" width="1500" height="182" rx="16" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+  <text x="75" y="151" class="head">共同的 PENDING 路径</text>
+
+  <rect x="80" y="174" width="240" height="90" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-width="2"/>
+  <text x="105" y="207" class="head">1  Remote LDR</text>
+  <text x="105" y="237" class="body">UBC 接受 request</text>
+
+  <rect x="390" y="174" width="290" height="90" rx="12" fill="#eef2ff" stroke="#818cf8" stroke-width="2"/>
+  <text x="415" y="200" class="head">2  分配 identity</text>
+  <text x="415" y="228" class="key">{owner_generation, wait_key}</text>
+  <text x="415" y="250" class="body">requester_id = PE / hardware thread</text>
+
+  <rect x="750" y="174" width="310" height="90" rx="12" fill="#ffffff" stroke="#60a5fa" stroke-width="2"/>
+  <text x="775" y="207" class="head">3  PENDING → event/CQ</text>
+  <text x="775" y="237" class="body">本地 coherent DMA memory</text>
+
+  <rect x="1130" y="174" width="370" height="90" rx="12" fill="#fefce8" stroke="#eab308" stroke-width="2"/>
+  <text x="1155" y="207" class="head">4  Delivery 到原 requester</text>
+  <text x="1155" y="237" class="body">EL1: ESR tag 或 per-PE key + Data Abort；EL0: upcall</text>
+
+  <path d="M320 219H380" class="line"/>
+  <path d="M680 219H740" class="line"/>
+  <path d="M1060 219H1120" class="line"/>
+
+  <rect x="50" y="335" width="1500" height="220" rx="16" fill="#ecfdf5" stroke="#86efac" stroke-width="2"/>
+  <text x="75" y="370" class="head">Normal Cacheable completion</text>
+
+  <rect x="80" y="402" width="260" height="100" rx="12" fill="#ffffff" stroke="#4ade80" stroke-width="2"/>
+  <text x="105" y="436" class="head">Remote line 返回</text>
+  <text x="105" y="466" class="body">普通 cache fill 可见</text>
+
+  <rect x="405" y="402" width="300" height="100" rx="12" fill="#ffffff" stroke="#4ade80" stroke-width="2"/>
+  <text x="430" y="436" class="head">COMPLETE + IRQ</text>
+  <text x="430" y="466" class="key">沿用 PENDING.wait_key</text>
+
+  <rect x="770" y="402" width="300" height="100" rx="12" fill="#ffffff" stroke="#4ade80" stroke-width="2"/>
+  <text x="795" y="436" class="head">software wake waiter</text>
+  <text x="795" y="466" class="body">task/coroutine 进入 READY</text>
+
+  <rect x="1135" y="402" width="365" height="100" rx="12" fill="#ffffff" stroke="#4ade80" stroke-width="2"/>
+  <text x="1160" y="436" class="head">原 LDR replay</text>
+  <text x="1160" y="466" class="body">ERET → cache hit；key 生命周期结束</text>
+
+  <path d="M340 452H395" class="green"/>
+  <path d="M705 452H760" class="green"/>
+  <path d="M1070 452H1125" class="green"/>
+
+  <rect x="50" y="590" width="1500" height="220" rx="16" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/>
+  <text x="75" y="625" class="head">Normal NC completion</text>
+
+  <rect x="80" y="657" width="260" height="100" rx="12" fill="#ffffff" stroke="#fb923c" stroke-width="2"/>
+  <text x="105" y="691" class="head">Scalar data 返回</text>
+  <text x="105" y="721" class="body">NC PLT → REPLAY_READY</text>
+
+  <rect x="405" y="657" width="300" height="100" rx="12" fill="#ffffff" stroke="#fb923c" stroke-width="2"/>
+  <text x="430" y="691" class="head">COMPLETE + IRQ</text>
+  <text x="430" y="721" class="key">沿用 PENDING.wait_key</text>
+
+  <rect x="770" y="657" width="300" height="100" rx="12" fill="#ffffff" stroke="#fb923c" stroke-width="2"/>
+  <text x="795" y="691" class="head">wake + arm token</text>
+  <text x="795" y="721" class="body">wait_key → replay token/latch</text>
+
+  <rect x="1135" y="657" width="365" height="100" rx="12" fill="#ffffff" stroke="#fb923c" stroke-width="2"/>
+  <text x="1160" y="691" class="head">原 LDR replay</text>
+  <text x="1160" y="721" class="body">消费 PLT；清 latch；generation++</text>
+
+  <path d="M340 707H395" class="orange"/>
+  <path d="M705 707H760" class="orange"/>
+  <path d="M1070 707H1125" class="orange"/>
+
+  <rect x="50" y="845" width="1500" height="48" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="75" y="876" class="body">多核：PE 通过 ESR tag 或 per-PE key 取得精确 identity；shared ring 顺序不参与匹配。</text>
+</svg>

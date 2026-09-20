@@ -10,6 +10,10 @@ Architecture illustrations:
 
 Current async-load architecture and validation entry points:
 
+- [Historical wait-key alternatives](plans/2026-09-03-async-load-wait-key-lifecycle-design.md)
+  - archived lifecycle and fault-key diagrams, superseded by source-owned
+    tokenless replay; retained only to explain the earlier design choices
+
 - [2026-09-03-async-load-overall-solution-introduction.md](2026-09-03-async-load-overall-solution-introduction.md)
   - current source-owned void-response contract for source-local and
     remote-wire triggers, tokenless runnable-yield, fresh-transaction replay,
