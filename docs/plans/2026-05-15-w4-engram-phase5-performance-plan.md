@@ -435,7 +435,7 @@ Acceptance:
 | W4 eight-node CPU mode | `qwen3-guest-decode-loop --engram --engram-pool obmm` | pass |
 | W4 eight-node fused mode | CPU mode plus fused context op | pass and emit timing delta |
 
-Any QEMU/W4 guest command must run outside the Codex sandbox per `CLAUDE.md`.
+Any QEMU/W4 guest command must run outside the Codex sandbox per `AGENTS.md`.
 
 ## Risks
 
