@@ -2,6 +2,12 @@
 
 Workspace-local notes and implementation-specific design material can live here.
 
+Architecture illustrations:
+
+- [Lingqu supernode data architecture](2026-09-10-lingqu-supernode-data-architecture.md)
+  - dated architecture overview with editable SVG and device illustration;
+    deployment defaults and current acceptance status follow the linked plan
+
 Current async-load architecture and validation entry points:
 
 - [2026-09-03-async-load-overall-solution-introduction.md](2026-09-03-async-load-overall-solution-introduction.md)
