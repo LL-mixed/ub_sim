@@ -33,6 +33,7 @@ const TARGET_NATIVE_TOOLS: &str = "git make cargo python3 cmake ninja pkg-config
 const TARGET_PKG_CONFIG_DEPS: &str = "glib-2.0 libelf liburing openssl pixman-1 zlib";
 const OPENEULER_BUILD_PACKAGES: &str = "bc bison cmake cpio curl elfutils-libelf-devel flex glib2-devel liburing-devel lvm2 openssl-devel parted pixman-devel qemu-img zlib-devel pkgconf-pkg-config ninja-build gcc gcc-c++ make zsh python3-pip rsync";
 const STOP_REQUESTED_MARKER: &str = "stop.requested";
+const REMOTE_LAUNCH_READY_MARKER: &str = "remote-launch.ready";
 const KERNEL_BUILD_POLICY_REV: &str = "3";
 const KERNEL_SIGNATURE_PATHS: &[&str] = &[
     "drivers/ub/obmm",
@@ -958,7 +959,6 @@ impl RunManager {
 
     async fn monitor_remote_logs(&self, run_id: String) {
         loop {
-            let _ = self.sync_remote_logs(&run_id).await;
             let terminal = self
                 .inner
                 .runs
@@ -968,6 +968,9 @@ impl RunManager {
                 .is_none_or(|record| record.status.is_terminal());
             if terminal {
                 return;
+            }
+            if remote_log_sync_ready(&self.inner.state_root, &run_id) {
+                let _ = self.sync_remote_logs(&run_id).await;
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
@@ -1044,10 +1047,11 @@ impl RunManager {
             .await
             .get(run_id)
             .map(|record| record.target_id.clone());
-        if target_id
-            .as_deref()
-            .and_then(|id| self.inner.targets.find(id))
-            .is_some_and(|target| target.kind == ExecutionTargetKind::Ssh)
+        if remote_log_sync_ready(&self.inner.state_root, run_id)
+            && target_id
+                .as_deref()
+                .and_then(|id| self.inner.targets.find(id))
+                .is_some_and(|target| target.kind == ExecutionTargetKind::Ssh)
         {
             let _ = self.sync_remote_logs(run_id).await;
         }
@@ -1539,6 +1543,7 @@ pub fn run_remote_worker(plan_path: &Path) -> Result<(), RunManagerError> {
         .stderr(Stdio::inherit());
     run_ssh_prepare_with_retry(&mut prepare_command)?;
     fs::remove_file(&bundle_path).ok();
+    fs::write(run_dir.join(REMOTE_LAUNCH_READY_MARKER), b"ready\n")?;
 
     println!(
         "[sim-console] launching run={} target={} repo={repo_root}",
@@ -2422,6 +2427,13 @@ fn load_runs(state_root: &Path) -> Result<BTreeMap<String, RunRecord>, RunManage
     Ok(records)
 }
 
+fn remote_log_sync_ready(state_root: &Path, run_id: &str) -> bool {
+    state_root
+        .join(run_id)
+        .join(REMOTE_LAUNCH_READY_MARKER)
+        .is_file()
+}
+
 fn process_group_is_alive(pid: u32) -> bool {
     if pid == 0 || pid > i32::MAX as u32 {
         return false;
@@ -3236,6 +3248,18 @@ mod tests {
             "nodeB retained\n"
         );
         assert!(!staging.exists());
+    }
+
+    #[test]
+    fn remote_log_sync_waits_for_launch_boundary() {
+        let root = TempDir::new().unwrap();
+        let run_id = "sim-console-42";
+        let run_dir = root.path().join(run_id);
+        fs::create_dir_all(&run_dir).unwrap();
+
+        assert!(!remote_log_sync_ready(root.path(), run_id));
+        fs::write(run_dir.join(REMOTE_LAUNCH_READY_MARKER), "ready\n").unwrap();
+        assert!(remote_log_sync_ready(root.path(), run_id));
     }
 
     #[test]
