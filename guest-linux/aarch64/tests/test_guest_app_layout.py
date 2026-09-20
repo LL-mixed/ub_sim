@@ -4033,6 +4033,36 @@ def test_device_gsva_retire_uses_local_holder_revoke():
                       "    }") >= 2
 
 
+def test_obmm_export_io_resolves_scatterlist_backing_through_ummu():
+    qemu = (
+        ROOT.parents[1] / "vendor" / "qemu_8.2.0_ub" / "hw" / "ub" / "ub_ubc.c"
+    ).read_text()
+    export_io = qemu.split(
+        "static MemTxResult obmm_export_read_exact(", 2
+    )[2].split("static SimDecMapEntry *sim_dec_find_entry_by_id", 1)[0]
+
+    assert "ubc_dma_read_local_data_tid_strict(ubc_dev, uba" in export_io
+    assert "ubc_dma_write_local_data_tid_strict(ubc_dev, uba" in export_io
+    assert export_io.count("entry->token_id") >= 4
+    assert "entry->backing_uba + offset" not in export_io
+    assert "address_space_read(&address_space_memory" not in export_io
+    assert "address_space_write(&address_space_memory" not in export_io
+
+
+def test_w5_terminal_token_gate_requires_durable_reference_evidence():
+    runner = (ROOT / "scripts" / "run_llm_infer_eight_node_guest.sh").read_text()
+    gate = runner.split(
+        '"$node_id qwen3 terminal token result publish"', 1
+    )[0].rsplit("assert_log_has", 1)[1]
+
+    assert "record_locator=[0-9]+" in gate
+    assert "reference_slot=[0-9]+" in gate
+    assert "reference_offset=0x[0-9a-f]+" in gate
+    assert "reference_copies=2" in gate
+    assert "publisher=terminal_node" in gate
+    assert "broadcast_targets=1" in gate
+
+
 def test_ssd_gsva_launchers_enable_cross_node_coherence():
     for name in (
         "run_ub_two_node_ssd_gsva_test.sh",
