@@ -4004,6 +4004,30 @@ def test_shared_obmm_helpers_use_one_exported_uapi_identity():
     assert "kernel_ub/include/uapi" not in ssd
 
 
+def test_device_gsva_retire_uses_local_holder_revoke():
+    npu = (ROOT / "apps" / "npu_gsva_test" / "npu_gsva_test.c").read_text()
+    ssd = (ROOT / "apps" / "ssd_gsva_test" / "ssd_gsva_test.c").read_text()
+    qemu = (
+        ROOT.parents[1] / "vendor" / "qemu_8.2.0_ub" / "hw" / "ub" / "ub_ubc.c"
+    ).read_text()
+
+    assert "OBMM_GSVA_EVENT_LOCAL_REVOKE" in npu
+    assert "OBMM_GSVA_EVENT_LOCAL_REVOKE" in ssd
+    assert "GSVA_BACKING_GENERATION" in npu
+    assert "GSVA_BACKING_GENERATION" in ssd
+    assert "obmm_do_gsva_export_segment" in npu
+    assert "obmm_do_gsva_export_segment" in ssd
+    assert "obmm_do_import_v4_epoch" in npu
+    assert "obmm_do_import_v4_epoch" in ssd
+    assert "OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY" in npu
+    assert "OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY" in ssd
+    assert "GSVA_ADDRESS_PROFILE_STRICT_GSVA" not in npu
+    assert "GSVA_ADDRESS_PROFILE_STRICT_GSVA" not in ssd
+    assert "export_entry = obmm_export_lookup(io->request.remote_uba" in qemu
+    assert "obmm_export_write_exact(ubc_dev, export_entry" in qemu
+    assert "obmm_export_read_exact(ubc_dev, export_entry" in qemu
+
+
 class GuestToolchainContractTests(unittest.TestCase):
     def test_arm64_native_gcc_is_accepted_for_guest_builds(self):
         common = (ROOT / "scripts" / "qemu_ub_common.sh").read_text()

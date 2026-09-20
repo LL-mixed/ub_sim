@@ -43,6 +43,7 @@
 #define NPU_DEV          "/dev/ub_npu0"
 #define TEST_DATA_SIZE   4096
 #define VECTOR_ELEMENT_COUNT 16
+#define GSVA_BACKING_GENERATION (GSVA_GENERATION + 1)
 
 static int obmm_fd = -1;
 static int npu_fd = -1;
@@ -53,7 +54,10 @@ static int node_count = 2;
 static struct obmm_helpers_meta local_meta;
 static struct obmm_gsva_segment_desc_v1 peer_desc;
 static struct obmm_helpers_meta peer_metas[OBMM_POOL_HELPERS_MAX_NODES];
+static struct obmm_helpers_meta peer_backing_metas[
+    OBMM_POOL_HELPERS_MAX_NODES];
 static bool peer_got[OBMM_POOL_HELPERS_MAX_NODES];
+static bool peer_backing_got[OBMM_POOL_HELPERS_MAX_NODES];
 static int peer_ids[OBMM_POOL_HELPERS_MAX_NODES];
 static int peer_count = 0;
 static int selected_peer_node_idx = -1;
@@ -94,27 +98,28 @@ static void init_peer_key_from_desc(const struct obmm_gsva_segment_desc_v1 *desc
     key->epoch = desc->epoch;
 }
 
-static void init_peer_desc_from_bootstrap(const struct obmm_helpers_meta *meta,
-                                          uint32_t owner_node_id,
-                                          struct obmm_gsva_segment_desc_v1 *desc)
+static void init_peer_desc_from_bootstrap(
+    const struct obmm_helpers_meta *backing_meta,
+    const struct obmm_helpers_meta *token_meta, uint32_t owner_node_id,
+    struct obmm_gsva_segment_desc_v1 *desc)
 {
     memset(desc, 0, sizeof(*desc));
     desc->version = OBMM_GSVA_ABI_VERSION;
     desc->flags = OBMM_GSVA_SEG_F_STRICT_ADDRESS_IDENTITY |
                   OBMM_GSVA_SEG_F_TOKEN_VALUE_REQUIRED |
                   OBMM_GSVA_SEG_F_ACTIVE;
-    desc->segment_id = meta->export_mem_id;
-    desc->home_va = meta->remote_uba;
-    desc->size = meta->size;
+    desc->segment_id = backing_meta->flags;
+    desc->home_va = backing_meta->remote_uba;
+    desc->size = backing_meta->size;
     desc->epoch = 1;
-    desc->home_cna = meta->export_cna;
+    desc->home_cna = backing_meta->export_cna;
     desc->owner_node_id = owner_node_id;
     desc->node_count = (uint32_t)node_count;
     desc->cache_policy = OBMM_SIM_DEC_CACHE_POLICY_DIRECTORY_MESI;
-    desc->p_tag = meta->export_cna & 0x00ffffffu;
+    desc->p_tag = backing_meta->export_cna & 0x00ffffffu;
     desc->access_flags = OBMM_GSVA_ACCESS_READ | OBMM_GSVA_ACCESS_WRITE;
-    desc->token_id = meta->token_id;
-    desc->token_value = meta->token_id;
+    desc->token_id = (uint32_t)(token_meta->flags >> 32);
+    desc->token_value = (uint32_t)token_meta->flags;
 }
 
 static int npu_submit_and_wait(struct ub_npu_cmd_v1 *cmd,
@@ -741,11 +746,10 @@ static int test_retired_segment_denied(void)
 
     printf(TAG "TEST: retired segment rejection\n");
 
-    if (send_gsva_event(OBMM_GSVA_EVENT_RETIRE, &peer_key,
+    if (send_gsva_event(OBMM_GSVA_EVENT_LOCAL_REVOKE, &peer_key,
                         g_token_id, g_token_value, &ev_error) != 0 ||
         ev_error != GSVA_OK) {
-        fprintf(stderr, TAG "  FAIL: RETIRE error=%d errno=%d\n",
-                ev_error, errno);
+        fprintf(stderr, TAG "  FAIL: LOCAL_REVOKE error=%d\n", ev_error);
         return -1;
     }
 
@@ -918,19 +922,33 @@ static int setup_gsva(void)
         return -1;
     }
 
-    memset(&local_meta, 0, sizeof(local_meta));
-    local_meta.export_cna = local_cna;
-    local_meta.remote_uba = alloc.desc.home_va;
-    local_meta.size = alloc.desc.size;
-    if (obmm_do_export_fixed_uba(obmm_fd, &local_meta, alloc.desc.size,
-                                 alloc.desc.home_va) != 0) {
-        fprintf(stderr, TAG "fixed-uba export: %s\n", strerror(errno));
+    if (obmm_do_gsva_export_segment(obmm_fd, &alloc.desc,
+                                    &local_meta) != 0) {
+        fprintf(stderr, TAG "managed GSVA export: %s\n", strerror(errno));
+        return -1;
+    }
+
+    if (obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
+                               GSVA_BACKING_GENERATION,
+                               &local_meta) != 0) {
+        fprintf(stderr, TAG "backing bootstrap publish: %s\n",
+                strerror(errno));
+        return -1;
+    }
+    memset(peer_backing_metas, 0, sizeof(peer_backing_metas));
+    memset(peer_backing_got, 0, sizeof(peer_backing_got));
+    if (obmm_bootstrap_lookup(obmm_fd, local_cna, node_count,
+                              GSVA_BACKING_GENERATION,
+                              peer_backing_metas,
+                              peer_backing_got) != 0) {
+        fprintf(stderr, TAG "backing bootstrap lookup: %s\n",
+                strerror(errno));
         return -1;
     }
 
     publish_meta = local_meta;
-    publish_meta.export_mem_id = alloc.desc.segment_id;
-    publish_meta.token_id = alloc.desc.token_id;
+    publish_meta.flags = ((uint64_t)alloc.desc.token_id << 32) |
+                         alloc.desc.token_value;
     if (obmm_bootstrap_publish(obmm_fd, node_idx, node_count,
                                GSVA_GENERATION, &publish_meta) != 0) {
         fprintf(stderr, TAG "bootstrap publish: %s\n", strerror(errno));
@@ -991,6 +1009,11 @@ static int setup_peer_context(int peer_idx_order)
 
     peer_meta_idx = peer_ids[peer_idx_order];
     current_peer_node_idx = peer_meta_idx;
+    if (!peer_backing_got[peer_meta_idx]) {
+        fprintf(stderr, TAG "peer=%d backing metadata missing\n",
+                peer_meta_idx);
+        return -1;
+    }
     memset(&query, 0, sizeof(query));
     query.version = OBMM_GSVA_ABI_VERSION;
     query.segment_id = peer_metas[peer_meta_idx].export_mem_id;
@@ -1000,7 +1023,8 @@ static int setup_peer_context(int peer_idx_order)
                     peer_meta_idx, strerror(errno));
             return -1;
         }
-        init_peer_desc_from_bootstrap(&peer_metas[peer_meta_idx],
+        init_peer_desc_from_bootstrap(&peer_backing_metas[peer_meta_idx],
+                                      &peer_metas[peer_meta_idx],
                                       (uint32_t)peer_meta_idx, &peer_desc);
     } else {
         peer_desc = query.desc;
@@ -1021,9 +1045,14 @@ static int setup_peer_context(int peer_idx_order)
         return -1;
     }
 
-    rc = obmm_do_import_gsva_desc_v1(obmm_fd, &peer_desc, local_cna,
-                                     import_pas[0], peer_gsva_base,
-                                     &import_mem_id);
+    rc = obmm_do_import_v4_epoch(
+        obmm_fd, &peer_backing_metas[peer_meta_idx], local_cna,
+        import_pas[0], peer_desc.token_id, peer_desc.token_value,
+        OBMM_SIM_DEC_MAP_SOURCE_GVA_MANAGER,
+        OBMM_SIM_DEC_ADDRESS_PROFILE_GSVA_IDENTITY, peer_desc.cache_policy,
+        0, 0, 0, peer_desc.p_tag, peer_desc.access_flags,
+        peer_desc.segment_id, peer_desc.epoch, peer_desc.home_va,
+        peer_desc.home_va, 0, &import_mem_id);
     if (rc != 0) {
         fprintf(stderr, TAG "GSVA import(peer=%d): %s\n", peer_meta_idx, strerror(errno));
         return -1;

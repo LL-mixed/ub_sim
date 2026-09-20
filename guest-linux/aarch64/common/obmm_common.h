@@ -537,6 +537,38 @@ static int OBMM_MAYBE_UNUSED obmm_do_export_fixed_uba(
     return 0;
 }
 
+static int OBMM_MAYBE_UNUSED obmm_do_gsva_export_segment(
+    int obmm_fd, const struct obmm_gsva_segment_desc_v1 *segment,
+    struct obmm_helpers_meta *meta)
+{
+    struct obmm_cmd_gsva_export_segment_v1 cmd = {0};
+
+    if (!segment || !meta) {
+        errno = EINVAL;
+        return -1;
+    }
+    cmd.version = OBMM_GSVA_ABI_VERSION;
+    cmd.segment = *segment;
+    if (ioctl(obmm_fd, OBMM_CMD_GSVA_EXPORT_SEGMENT, &cmd) != 0)
+        return -1;
+    if (cmd.error || cmd.outcome != OBMM_GSVA_EXPORT_CREATED ||
+        !cmd.export_mem_id || !cmd.export_token_id ||
+        cmd.export_uba != segment->home_va ||
+        cmd.export_size != segment->size) {
+        errno = cmd.error ? (int)cmd.error : EIO;
+        return -1;
+    }
+
+    memset(meta, 0, sizeof(*meta));
+    meta->export_mem_id = cmd.export_mem_id;
+    meta->flags = segment->segment_id;
+    meta->remote_uba = cmd.export_uba;
+    meta->size = cmd.export_size;
+    meta->token_id = cmd.export_token_id;
+    meta->export_cna = segment->home_cna;
+    return 0;
+}
+
 static int OBMM_MAYBE_UNUSED obmm_do_unexport(int obmm_fd, uint64_t mem_id)
 {
     (void)obmm_fd;
