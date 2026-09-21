@@ -330,6 +330,13 @@ p {
   border-color: var(--ok-line);
 }
 
+.feedback.pending {
+  color: #fde68a;
+  background: linear-gradient(180deg, #2a2109 0%, #1d1708 100%);
+  border-color: var(--warning-line);
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.08), var(--shadow-pop);
+}
+
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
@@ -755,6 +762,17 @@ p {
   background: #55656f;
 }
 
+.readiness-dot.preparing {
+  background: var(--warning);
+  box-shadow: 0 0 7px rgba(251, 191, 36, 0.8);
+  animation: pulse-preparing 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse-preparing {
+  0%, 100% { opacity: 0.55; transform: scale(0.82); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
 .item-stats {
   display: flex;
   flex-wrap: wrap;
@@ -811,6 +829,11 @@ p {
 
 .launch-readiness.blocked {
   color: #fca5a5;
+}
+
+.launch-readiness.preparing {
+  color: #fde68a;
+  font-weight: 700;
 }
 
 .launch-readiness span:last-child {
@@ -932,6 +955,35 @@ p {
   color: #fca5a5;
   background: linear-gradient(180deg, rgba(248, 113, 113, 0.09) 0%, rgba(248, 113, 113, 0.04) 100%);
   border-color: var(--danger-line);
+}
+
+.readiness-banner.preparing {
+  color: #fde68a;
+  background: linear-gradient(180deg, rgba(251, 191, 36, 0.14) 0%, rgba(251, 191, 36, 0.06) 100%);
+  border-color: var(--warning-line);
+  box-shadow: inset 0 0 24px rgba(251, 191, 36, 0.035);
+}
+
+.preparation-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.readiness-banner .preparation-spinner {
+  width: 15px;
+  height: 15px;
+  display: inline-block;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 2px solid rgba(251, 191, 36, 0.28);
+  border-top-color: var(--warning);
+  border-radius: 50%;
+  animation: preparation-spin 0.8s linear infinite;
+}
+
+@keyframes preparation-spin {
+  to { transform: rotate(360deg); }
 }
 
 .readiness-banner strong,

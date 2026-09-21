@@ -296,11 +296,12 @@ function setHealth(ok, message) {
   elements.apiStatus.textContent = message;
 }
 
-function showFeedback(message, error = true, source = "") {
+function showFeedback(message, error = true, source = "", tone = null) {
   elements.feedback.hidden = !message;
   elements.feedback.textContent = message || "";
   elements.feedback.dataset.source = message ? source : "";
-  elements.feedback.className = message ? `feedback ${error ? "error" : "ok"}` : "feedback";
+  const variant = tone || (error ? "error" : "ok");
+  elements.feedback.className = message ? `feedback ${variant}` : "feedback";
 }
 
 /* ------------------------------------------------------------------ views */
@@ -374,13 +375,22 @@ function renderCatalog() {
     const title = document.createElement("strong");
     title.textContent = demo.title;
     const dot = document.createElement("span");
-    const dotState = readiness ? (readiness.ready ? "ready" : "blocked") : "checking";
+    const targetIsPreparing = state.preparingTargetId === state.selectedTargetId;
+    const dotState = targetIsPreparing
+      ? "preparing"
+      : readiness
+        ? readiness.ready
+          ? "ready"
+          : "blocked"
+        : "checking";
     dot.className = `readiness-dot ${dotState}`;
-    dot.title = readiness
-      ? readiness.ready
-        ? `Ready on ${state.selectedTargetId}`
-        : `Blocked on ${state.selectedTargetId}: ${readiness.issues.map((issue) => issue.message).join("; ")}`
-      : `Checking readiness on ${state.selectedTargetId}`;
+    dot.title = targetIsPreparing
+      ? `Preparing target farm on ${state.selectedTargetId}`
+      : readiness
+        ? readiness.ready
+          ? `Ready on ${state.selectedTargetId}`
+          : `Blocked on ${state.selectedTargetId}: ${readiness.issues.map((issue) => issue.message).join("; ")}`
+        : `Checking readiness on ${state.selectedTargetId}`;
     top.append(title, dot);
     const summary = document.createElement("p");
     summary.textContent = demo.summary;
@@ -440,6 +450,7 @@ function renderTargets() {
     option.selected = target.id === state.selectedTargetId;
     elements.executionTarget.append(option);
   }
+  elements.executionTarget.disabled = Boolean(state.preparingTargetId);
   const target = selectedTarget();
   elements.targetDescription.textContent = target
     ? `${target.description}${target.repo_root ? ` Repository: ${target.repo_root}` : ""}`
@@ -504,10 +515,12 @@ function renderSelection() {
   const readiness = selectedDemoReadiness();
   const target = selectedTarget();
   const liveRun = state.runs.find((run) => isLive(run.status));
+  const isPreparing = state.preparingTargetId === target?.id;
   if (!demo) {
     return;
   }
   renderTargets();
+  elements.refreshButton.disabled = Boolean(state.preparingTargetId);
   elements.selectionCategory.textContent = demo.category;
   elements.selectionTitle.textContent = demo.title;
   elements.selectionSummary.textContent = demo.summary;
@@ -534,7 +547,28 @@ function renderSelection() {
   }
 
   const launchDot = elements.launchReadiness.querySelector(".readiness-dot");
-  if (!readiness) {
+  elements.demoReadiness.removeAttribute("aria-busy");
+  if (isPreparing) {
+    elements.demoReadiness.hidden = false;
+    elements.demoReadiness.className = "readiness-banner preparing";
+    elements.demoReadiness.setAttribute("aria-busy", "true");
+    elements.demoReadiness.replaceChildren();
+    const heading = document.createElement("div");
+    heading.className = "preparation-heading";
+    const spinner = document.createElement("span");
+    spinner.className = "preparation-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const title = document.createElement("strong");
+    title.textContent = "Target preparation in progress";
+    heading.append(spinner, title);
+    const message = document.createElement("p");
+    message.textContent =
+      `Preparing ${target.title}. Source, submodules, and required tools are being synchronized.`;
+    elements.demoReadiness.append(heading, message);
+    elements.launchReadiness.className = "launch-readiness preparing";
+    launchDot.className = "readiness-dot preparing";
+    elements.launchReadinessText.textContent = `Preparing target farm on ${target.title}...`;
+  } else if (!readiness) {
     elements.demoReadiness.hidden = false;
     elements.demoReadiness.className = "readiness-banner checking";
     elements.demoReadiness.textContent = "Checking launch readiness...";
@@ -579,11 +613,10 @@ function renderSelection() {
       readiness.issues.some((issue) => preparableIssueCodes.has(issue.code));
     if (canPrepare) {
       const prepareButton = document.createElement("button");
-      const isPreparing = state.preparingTargetId === target.id;
       prepareButton.type = "button";
       prepareButton.className = "secondary-command prepare-target-command";
-      prepareButton.textContent = isPreparing ? "Preparing target farm..." : "Prepare target farm";
-      prepareButton.disabled = isPreparing || Boolean(liveRun);
+      prepareButton.textContent = "Prepare target farm";
+      prepareButton.disabled = Boolean(liveRun);
       prepareButton.title = liveRun
         ? `Run ${liveRun.id} must finish before target preparation`
         : `Prepare ${target.title}`;
@@ -592,7 +625,7 @@ function renderSelection() {
     }
   }
 
-  elements.startButton.disabled = Boolean(liveRun) || !readiness?.ready;
+  elements.startButton.disabled = isPreparing || Boolean(liveRun) || !readiness?.ready;
   elements.startButton.title = liveRun
     ? `Run ${liveRun.id} is active`
     : readiness?.ready
@@ -1195,8 +1228,13 @@ async function prepareTarget() {
   const target = selectedTarget();
   if (!target || target.kind !== "ssh" || state.preparingTargetId) return;
   state.preparingTargetId = target.id;
-  showFeedback("");
-  renderSelection();
+  showFeedback(
+    `Preparing target farm on ${target.title}...`,
+    false,
+    "target-preparation",
+    "pending",
+  );
+  renderAll();
   try {
     const result = await api(`/api/v1/targets/${encodeURIComponent(target.id)}/prepare`, {
       method: "POST",
@@ -1211,7 +1249,7 @@ async function prepareTarget() {
     showFeedback(`Target preparation failed: ${error.message}`);
   } finally {
     state.preparingTargetId = null;
-    renderSelection();
+    renderAll();
   }
 }
 

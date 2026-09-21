@@ -160,6 +160,7 @@ const mockApi = `
       }
       if (path.endsWith("/api/v1/targets/n4-910c1/prepare")) {
         window.__targetPreparationRequests.push({ path, method: options.method });
+        await new Promise((resolve) => setTimeout(resolve, 700));
         responses["/api/v1/readiness"] = [{
           demo_id: "urma-rpc-2",
           target_id: "n4-910c1",
@@ -531,7 +532,34 @@ async function assertTargetPreparation(protocol, sessionId) {
     { expression: "document.querySelector('.prepare-target-command').click()" },
     sessionId,
   );
-  await delay(2500);
+  await delay(100);
+  const preparing = await protocol.send(
+    "Runtime.evaluate",
+    {
+      expression:
+        "({requests: window.__targetPreparationRequests, feedback: document.querySelector('#feedback').textContent, feedbackClass: document.querySelector('#feedback').className, banner: document.querySelector('#demo-readiness').textContent, bannerClass: document.querySelector('#demo-readiness').className, busy: document.querySelector('#demo-readiness').getAttribute('aria-busy'), spinnerCount: document.querySelectorAll('.preparation-spinner').length, barText: document.querySelector('#launch-readiness-text').textContent, barClass: document.querySelector('#launch-readiness').className, targetDisabled: document.querySelector('#execution-target').disabled, refreshDisabled: document.querySelector('#refresh-button').disabled, startDisabled: document.querySelector('#start-button').disabled})",
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (
+    preparing.result.value.requests.length !== 1 ||
+    preparing.result.value.feedback !== "Preparing target farm on n4-910c1..." ||
+    preparing.result.value.feedbackClass !== "feedback pending" ||
+    !preparing.result.value.banner.includes("Target preparation in progress") ||
+    !preparing.result.value.banner.includes("Preparing n4-910c1") ||
+    preparing.result.value.bannerClass !== "readiness-banner preparing" ||
+    preparing.result.value.busy !== "true" ||
+    preparing.result.value.spinnerCount !== 1 ||
+    preparing.result.value.barText !== "Preparing target farm on n4-910c1..." ||
+    preparing.result.value.barClass !== "launch-readiness preparing" ||
+    !preparing.result.value.targetDisabled ||
+    !preparing.result.value.refreshDisabled ||
+    !preparing.result.value.startDisabled
+  ) {
+    throw new Error(`target preparation state is not visible: ${JSON.stringify(preparing.result.value)}`);
+  }
+  await delay(2400);
   const prepared = await protocol.send(
     "Runtime.evaluate",
     {
