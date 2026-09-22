@@ -8,6 +8,7 @@ mod deepseek_v4_flash_official_range_runtime;
 mod deepseek_v4_flash_official_runtime;
 mod deepseek_v4_flash_official_vector_runtime;
 mod deepseek_v4_flash_pto_range;
+mod deepseek_v4_flash_pto_weights;
 mod deepseek_v4_flash_runtime;
 mod qwen3_pto_range;
 pub mod managed_model_input;
