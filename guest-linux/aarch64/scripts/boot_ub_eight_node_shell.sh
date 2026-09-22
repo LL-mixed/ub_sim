@@ -171,9 +171,12 @@ cmd_up() {
   echo "[shell-mode] launching 8-node openEuler cluster (UB full-mesh)..."
   # UB_USE_PREBUILT_QEMU=1 / UB_SYNC_ARTIFACTS=0: reuse the verified prebuilt
   # QEMU binary and guest artifacts; never rebuild from this host-side flow.
+  # Pin UB_FM_SHARED_DIR to the bind-mounted path: the launcher otherwise
+  # defaults to a per-launch unique dir that only exists inside the container,
+  # leaving the host-side serial sockets (status/attach) dead.
   local env_file_container env_file
   env_file_container=$(docker exec "$CONTAINER" zsh -c \
-    "cd /work && UB_USE_PREBUILT_QEMU=1 UB_SYNC_ARTIFACTS=0 SIM_W5_GUEST_BACKEND=openeuler zsh $LAUNCHER" 2>&1 | tee /dev/stderr | tail -1)
+    "cd /work && UB_USE_PREBUILT_QEMU=1 UB_SYNC_ARTIFACTS=0 UB_FM_SHARED_DIR='$SHARED_DIR' SIM_W5_GUEST_BACKEND=openeuler zsh $LAUNCHER" 2>&1 | tee /dev/stderr | tail -1)
   env_file="${env_file_container/#\/work/$REPO_ROOT}"
   [[ -f "$env_file" ]] || die "launcher did not produce an env file (got: $env_file_container)"
   cp "$env_file" "$STATE_FILE"
