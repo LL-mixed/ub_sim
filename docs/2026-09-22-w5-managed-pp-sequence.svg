@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980" role="img" aria-labelledby="title desc">
+  <title id="title">Current W5 managed pipeline-parallel request sequence</title>
+  <desc id="desc">Sequence diagram showing W5 node N publishing hidden and KV objects and node N plus one resolving those objects, dispatching callable 4, reading and writing through QEMU UB GM callbacks, fencing, and publishing the next references.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#176f69"/>
+    </marker>
+    <marker id="amber" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#b86a18"/>
+    </marker>
+    <style>
+      .title { font: 700 34px system-ui, sans-serif; fill: #172321; }
+      .subtitle { font: 400 17px system-ui, sans-serif; fill: #4d615e; }
+      .head { font: 700 18px system-ui, sans-serif; fill: #172321; }
+      .body { font: 500 15px system-ui, sans-serif; fill: #263a37; }
+      .small { font: 400 14px system-ui, sans-serif; fill: #536764; }
+      .mono { font: 500 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #173e3a; }
+      .lane { stroke: #a9c3be; stroke-width: 2; stroke-dasharray: 8 8; }
+      .msg { stroke: #176f69; stroke-width: 3; marker-end: url(#arrow); }
+      .msgBack { stroke: #176f69; stroke-width: 3; stroke-dasharray: 8 6; marker-end: url(#arrow); }
+      .current { stroke: #b86a18; stroke-width: 3; marker-end: url(#amber); }
+      .box { fill: #ffffff; stroke: #b8cfca; stroke-width: 2; rx: 8; }
+      .active { fill: #e6f3f0; stroke: #62a49b; stroke-width: 2; rx: 5; }
+      .warn { fill: #fff3df; stroke: #d0944d; stroke-width: 2; rx: 5; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="980" fill="#f5f8f7"/>
+  <rect width="1600" height="105" fill="#ffffff"/>
+  <text x="54" y="48" class="title">W5 managed PP: one range, one managed dispatch, one published handoff</text>
+  <text x="54" y="79" class="subtitle">The diagram reflects the current callable 4 implementation, including its host-side bulk staging boundary.</text>
+
+  <g transform="translate(40 130)">
+    <rect class="box" width="245" height="72"/>
+    <text x="122" y="31" text-anchor="middle" class="head">Node N+1 llm_infer</text>
+    <text x="122" y="54" text-anchor="middle" class="small">range consumer / producer</text>
+  </g>
+  <g transform="translate(350 130)">
+    <rect class="box" width="245" height="72"/>
+    <text x="122" y="31" text-anchor="middle" class="head">Memory Service SDK</text>
+    <text x="122" y="54" text-anchor="middle" class="small">object + mapping lifecycle</text>
+  </g>
+  <g transform="translate(660 130)">
+    <rect class="box" width="245" height="72"/>
+    <text x="122" y="31" text-anchor="middle" class="head">Guest PTO endpoint</text>
+    <text x="122" y="54" text-anchor="middle" class="small">callable 4 + memrefs</text>
+  </g>
+  <g transform="translate(970 130)">
+    <rect class="box" width="245" height="72"/>
+    <text x="122" y="31" text-anchor="middle" class="head">QEMU / sim-uapi</text>
+    <text x="122" y="54" text-anchor="middle" class="small">authorize + callbacks</text>
+  </g>
+  <g transform="translate(1280 130)">
+    <rect class="box" width="275" height="72"/>
+    <text x="137" y="31" text-anchor="middle" class="head">OBMM / GSVA backing</text>
+    <text x="137" y="54" text-anchor="middle" class="small">global shared bytes</text>
+  </g>
+
+  <line x1="162" y1="202" x2="162" y2="920" class="lane"/>
+  <line x1="472" y1="202" x2="472" y2="920" class="lane"/>
+  <line x1="782" y1="202" x2="782" y2="920" class="lane"/>
+  <line x1="1092" y1="202" x2="1092" y2="920" class="lane"/>
+  <line x1="1417" y1="202" x2="1417" y2="920" class="lane"/>
+
+  <rect x="71" y="232" width="182" height="48" class="active"/>
+  <text x="162" y="252" text-anchor="middle" class="mono">open hidden / KV refs</text>
+  <text x="162" y="272" text-anchor="middle" class="small">from earlier node / step</text>
+  <line x1="253" y1="256" x2="466" y2="256" class="msg"/>
+  <text x="350" y="244" text-anchor="middle" class="body">resolve + acquire reader</text>
+
+  <line x1="472" y1="318" x2="1411" y2="318" class="msg"/>
+  <text x="936" y="305" text-anchor="middle" class="body">pin managed mapping; return OBMM view and strict mapping identity</text>
+  <line x1="1417" y1="358" x2="478" y2="358" class="msgBack"/>
+  <text x="946" y="346" text-anchor="middle" class="mono">base · len · map_id · generation · GSVA home</text>
+
+  <line x1="162" y1="416" x2="466" y2="416" class="msg"/>
+  <text x="315" y="403" text-anchor="middle" class="body">allocate node-local output object</text>
+  <line x1="472" y1="456" x2="156" y2="456" class="msgBack"/>
+  <text x="315" y="444" text-anchor="middle" class="mono">writer + output MappingOwner</text>
+
+  <line x1="162" y1="514" x2="776" y2="514" class="msg"/>
+  <text x="468" y="501" text-anchor="middle" class="body">prepare callable 4: control, hidden/token, KV, output memrefs</text>
+  <line x1="782" y1="554" x2="1086" y2="554" class="msg"/>
+  <text x="934" y="542" text-anchor="middle" class="body">enqueue UAPI dispatch</text>
+
+  <rect x="987" y="584" width="210" height="64" class="active"/>
+  <text x="1092" y="607" text-anchor="middle" class="body">authorize every memref</text>
+  <text x="1092" y="632" text-anchor="middle" class="mono">generation + bounds + access</text>
+  <line x1="1197" y1="616" x2="1411" y2="616" class="msg"/>
+  <text x="1304" y="604" text-anchor="middle" class="small">resolve GSVA binding</text>
+
+  <rect x="974" y="681" width="236" height="134" class="warn"/>
+  <text x="1092" y="707" text-anchor="middle" class="head">Current callable 4 adapter</text>
+  <text x="1092" y="738" text-anchor="middle" class="mono">access.read → Vec&lt;u8&gt;</text>
+  <text x="1092" y="764" text-anchor="middle" class="mono">model range compute</text>
+  <text x="1092" y="790" text-anchor="middle" class="mono">Vec&lt;u8&gt; → access.write</text>
+  <line x1="1210" y1="718" x2="1411" y2="718" class="current"/>
+  <text x="1311" y="706" text-anchor="middle" class="small">bulk LOAD</text>
+  <line x1="1417" y1="782" x2="1216" y2="782" class="msgBack"/>
+  <text x="1311" y="770" text-anchor="middle" class="small">bulk STORE + FENCE</text>
+
+  <line x1="1092" y1="850" x2="788" y2="850" class="msgBack"/>
+  <text x="940" y="837" text-anchor="middle" class="body">completion success</text>
+  <line x1="782" y1="884" x2="168" y2="884" class="msgBack"/>
+  <text x="475" y="871" text-anchor="middle" class="body">complete leases; decode output references</text>
+
+  <rect x="50" y="914" width="1500" height="48" fill="#ffffff" stroke="#c7d8d4" stroke-width="2" rx="7"/>
+  <text x="800" y="944" text-anchor="middle" class="body">Node N+1 seals the writer and publishes hidden, KV and terminal references; the next node repeats the same sequence.</text>
+</svg>

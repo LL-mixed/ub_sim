@@ -1,0 +1,117 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Difference between direct PTO UB GM callables and the current W5 managed callable 4</title>
+  <desc id="desc">Comparison diagram. Direct callables create UB GM tensors consumed by PTO TLOAD and TSTORE with zero shared payload staging. Current W5 callable 4 performs bulk reads and writes around a Rust model runtime, leaving direct model-kernel tensor integration incomplete.</desc>
+  <defs>
+    <marker id="greenArrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#16736d"/>
+    </marker>
+    <marker id="amberArrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#b86a18"/>
+    </marker>
+    <style>
+      .title { font: 700 34px system-ui, sans-serif; fill: #172321; }
+      .subtitle { font: 400 17px system-ui, sans-serif; fill: #4d615e; }
+      .section { font: 700 24px system-ui, sans-serif; fill: #172321; }
+      .heading { font: 700 18px system-ui, sans-serif; fill: #172321; }
+      .body { font: 400 15px system-ui, sans-serif; fill: #344845; }
+      .mono { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #173e3a; }
+      .monoAmber { font: 500 14px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #784711; }
+      .panelGood { fill: #eef7f4; stroke: #5d9f96; stroke-width: 2; rx: 8; }
+      .panelCurrent { fill: #fff8ed; stroke: #d29a57; stroke-width: 2; rx: 8; }
+      .box { fill: #ffffff; stroke: #b8cfca; stroke-width: 2; rx: 7; }
+      .boxGreen { fill: #dff1ed; stroke: #4b9389; stroke-width: 2; rx: 7; }
+      .boxAmber { fill: #ffebcb; stroke: #c58438; stroke-width: 2; rx: 7; }
+      .green { stroke: #16736d; stroke-width: 4; marker-end: url(#greenArrow); }
+      .amber { stroke: #b86a18; stroke-width: 4; marker-end: url(#amberArrow); }
+      .missing { stroke: #b86a18; stroke-width: 3; stroke-dasharray: 10 8; marker-end: url(#amberArrow); }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="#f5f8f7"/>
+  <rect width="1600" height="108" fill="#ffffff"/>
+  <text x="54" y="50" class="title">One UB_GM mechanism, two integration levels</text>
+  <text x="54" y="81" class="subtitle">The mechanism is production-shaped; the current W5 model boundary still materializes payload bytes in Rust.</text>
+
+  <rect x="45" y="140" width="1510" height="300" class="panelGood"/>
+  <text x="75" y="181" class="section">A · Direct PTO path, callables 1–3</text>
+  <text x="75" y="209" class="body">Implemented and accepted with zero shared payload staging.</text>
+
+  <g transform="translate(76 244)">
+    <rect width="245" height="118" class="box"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">Managed memref</text>
+    <text x="122" y="66" text-anchor="middle" class="mono">UB_GM aperture</text>
+    <text x="122" y="92" text-anchor="middle" class="mono">shape + strides</text>
+  </g>
+  <g transform="translate(400 244)">
+    <rect width="245" height="118" class="boxGreen"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">Simpler tensor</text>
+    <text x="122" y="66" text-anchor="middle" class="mono">AddressSpace::UB_GM</text>
+    <text x="122" y="92" text-anchor="middle" class="mono">no host payload</text>
+  </g>
+  <g transform="translate(724 244)">
+    <rect width="245" height="118" class="boxGreen"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">PTO kernel</text>
+    <text x="122" y="66" text-anchor="middle" class="mono">TLOAD / TSTORE</text>
+    <text x="122" y="92" text-anchor="middle" class="mono">tile access</text>
+  </g>
+  <g transform="translate(1048 244)">
+    <rect width="245" height="118" class="box"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">QEMU callbacks</text>
+    <text x="122" y="66" text-anchor="middle" class="mono">read / write / fence</text>
+    <text x="122" y="92" text-anchor="middle" class="mono">strict GSVA</text>
+  </g>
+  <g transform="translate(1368 244)">
+    <rect width="145" height="118" class="box"/>
+    <text x="72" y="34" text-anchor="middle" class="heading">OBMM</text>
+    <text x="72" y="66" text-anchor="middle" class="mono">shared</text>
+    <text x="72" y="92" text-anchor="middle" class="mono">backing</text>
+  </g>
+  <line x1="321" y1="303" x2="394" y2="303" class="green"/>
+  <line x1="645" y1="303" x2="718" y2="303" class="green"/>
+  <line x1="969" y1="303" x2="1042" y2="303" class="green"/>
+  <line x1="1293" y1="303" x2="1362" y2="303" class="green"/>
+  <text x="795" y="404" text-anchor="middle" class="mono">shared_payload_staging_bytes=0</text>
+
+  <rect x="45" y="480" width="1510" height="350" class="panelCurrent"/>
+  <text x="75" y="522" class="section">B · Current W5 managed path, callable 4</text>
+  <text x="75" y="550" class="body">Default Qwen and DeepSeek PP path; Memory Service and OBMM/GSVA are active, with a bulk adapter around model execution.</text>
+
+  <g transform="translate(76 594)">
+    <rect width="245" height="130" class="box"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">Managed memrefs</text>
+    <text x="122" y="66" text-anchor="middle" class="mono">control · hidden · KV</text>
+    <text x="122" y="94" text-anchor="middle" class="mono">output</text>
+  </g>
+  <g transform="translate(400 594)">
+    <rect width="245" height="130" class="boxAmber"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">Provider adapter</text>
+    <text x="122" y="66" text-anchor="middle" class="monoAmber">access.read</text>
+    <text x="122" y="94" text-anchor="middle" class="monoAmber">Vec&lt;u8&gt;</text>
+  </g>
+  <g transform="translate(724 594)">
+    <rect width="245" height="130" class="boxAmber"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">Model runtime</text>
+    <text x="122" y="66" text-anchor="middle" class="monoAmber">Qwen / DeepSeek</text>
+    <text x="122" y="94" text-anchor="middle" class="monoAmber">Vec input / output</text>
+  </g>
+  <g transform="translate(1048 594)">
+    <rect width="245" height="130" class="boxAmber"/>
+    <text x="122" y="34" text-anchor="middle" class="heading">Provider adapter</text>
+    <text x="122" y="66" text-anchor="middle" class="monoAmber">access.write</text>
+    <text x="122" y="94" text-anchor="middle" class="monoAmber">fence</text>
+  </g>
+  <g transform="translate(1368 594)">
+    <rect width="145" height="130" class="box"/>
+    <text x="72" y="34" text-anchor="middle" class="heading">OBMM</text>
+    <text x="72" y="66" text-anchor="middle" class="mono">GSVA</text>
+    <text x="72" y="94" text-anchor="middle" class="mono">backing</text>
+  </g>
+  <line x1="321" y1="659" x2="394" y2="659" class="amber"/>
+  <line x1="645" y1="659" x2="718" y2="659" class="amber"/>
+  <line x1="969" y1="659" x2="1042" y2="659" class="amber"/>
+  <line x1="1293" y1="659" x2="1362" y2="659" class="amber"/>
+
+  <path d="M846 724 C846 785 1170 785 1170 730" class="missing" fill="none"/>
+  <text x="1008" y="800" text-anchor="middle" class="monoAmber">remaining: pass UB_GM tensors into model kernels directly</text>
+  <text x="800" y="867" text-anchor="middle" class="body">Therefore current W5 logs prove managed OBMM/GSVA I/O and PP correctness; they do not prove per-operator model TLOAD/TSTORE directness.</text>
+</svg>

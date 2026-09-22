@@ -61,6 +61,11 @@ Current async-load architecture and validation entry points:
 
 Current validation entry points:
 
+- [2026-09-22-w5-pto-tload-tstore-obmm-mem-service-report.md](2026-09-22-w5-pto-tload-tstore-obmm-mem-service-report.md)
+  - current code and two-host 2/4/8-node evidence for Memory Service managed
+    OBMM/GSVA W5 PP; explains PTO `TLOAD/TSTORE` direct access, the callable 4
+    bulk-adapter boundary, exact Qwen/DeepSeek logs, and the remaining work for
+    end-to-end model-kernel UB_GM tensors
 - [plans/2026-08-25-sim-console-unified-control-plane.md](plans/2026-08-25-sim-console-unified-control-plane.md)
   - unified Web and CLI control plane for the simulator demo catalog, typed
     launch configuration, 2/4/8-node topology state, process and node logs, run
