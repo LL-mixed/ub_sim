@@ -407,10 +407,10 @@ case "$SIM_W5_MODEL_IO" in
       exit 2
     fi
     case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
-      qwen3_0_6b_decode|qwen3_14b_decode)
+      qwen3_0_6b_decode|qwen3_14b_decode|deepseek_v4_flash_decode)
         ;;
       *)
-        echo "direct model I/O currently supports Qwen decode profiles" >&2
+        echo "direct model I/O requires a Qwen or DeepSeek decode profile" >&2
         exit 2
         ;;
     esac
@@ -541,23 +541,36 @@ resolve_w5_managed_fingerprint() {
   export SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="$fingerprint"
 }
 
-prepare_w6_qwen_direct_artifacts() {
-  local output_dir manifest fingerprint_json fingerprint sim_cli
+prepare_w6_direct_artifacts() {
+  local artifact_profile output_dir manifest fingerprint_json fingerprint sim_cli
 
   if [[ "${SIM_W5_MODEL_IO:-bulk}" != "direct" ]]; then
     return 0
   fi
-  output_dir="$ROOT_DIR/out/w6-qwen-direct-artifacts"
+  case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
+    qwen3_0_6b_decode|qwen3_14b_decode)
+      artifact_profile="host_qwen3_range"
+      output_dir="$ROOT_DIR/out/w6-qwen-direct-artifacts"
+      ;;
+    deepseek_v4_flash_decode)
+      artifact_profile="host_deepseek_v4_flash_range"
+      output_dir="$ROOT_DIR/out/w6-deepseek-v4-flash-direct-artifacts"
+      ;;
+    *)
+      echo "direct artifact preparation does not support profile: ${SIM_UAPI_W5_PROFILE:-}" >&2
+      return 2
+      ;;
+  esac
   manifest="$(python3 "$SCRIPT_DIR/prepare_simpler_host_artifacts.py" \
-    --profile host_qwen3_range \
+    --profile "$artifact_profile" \
     --output-dir "$output_dir")" || return 2
   if [[ ! -f "$manifest" ]]; then
-    echo "Qwen direct artifact preparation did not produce a manifest: $manifest" >&2
+    echo "direct artifact preparation did not produce a manifest: $manifest" >&2
     return 2
   fi
   sim_cli="${SIM_CLI_BIN:-$ROOT_DIR/../../target/release/sim-cli}"
   if [[ ! -x "$sim_cli" ]]; then
-    echo "Qwen direct artifact inspection requires sim-cli: $sim_cli" >&2
+    echo "direct artifact inspection requires sim-cli: $sim_cli" >&2
     return 2
   fi
   fingerprint_json="$("$sim_cli" lingqu-shmem-pto-e2e \
@@ -565,10 +578,14 @@ prepare_w6_qwen_direct_artifacts() {
   fingerprint="$(printf '%s\n' "$fingerprint_json" | python3 -c \
     'import json,sys; print(json.load(sys.stdin)["artifact_fingerprint_hex"])')" || return 2
   if [[ ! "$fingerprint" =~ '^0x[0-9a-fA-F]+$' || "$fingerprint" == "0x0" ]]; then
-    echo "Qwen direct manifest returned an invalid fingerprint: $fingerprint" >&2
+    echo "direct manifest returned an invalid fingerprint: $fingerprint" >&2
     return 2
   fi
-  export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="$manifest"
+  if [[ "$artifact_profile" == "host_deepseek_v4_flash_range" ]]; then
+    export SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST="$manifest"
+  else
+    export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="$manifest"
+  fi
   export SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="$fingerprint"
 }
 
@@ -655,6 +672,7 @@ print_w5_effective_env() {
   print_env_value SIM_W5_PTO_UB_GM_PROBE "${SIM_W5_PTO_UB_GM_PROBE:-0}"
   print_env_value SIM_W5_MANAGED_ARTIFACT_FINGERPRINT "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
   print_env_value SIMPLER_QWEN3_PTO_RANGE_MANIFEST "${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
+  print_env_value SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST "${SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST:-}"
   print_env_value SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT "${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
   print_env_value SIM_W5_MANAGED_CONNECT "${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
   print_env_value SIM_W5_MANAGED_TIMEOUT_MS "${SIM_W5_MANAGED_TIMEOUT_MS:-}"
@@ -1151,10 +1169,10 @@ resolve_w5_managed_fingerprint || resolve_w5_managed_fingerprint_status=$?
 if (( resolve_w5_managed_fingerprint_status != 0 )); then
   exit "$resolve_w5_managed_fingerprint_status"
 fi
-prepare_w6_qwen_direct_artifacts_status=0
-prepare_w6_qwen_direct_artifacts || prepare_w6_qwen_direct_artifacts_status=$?
-if (( prepare_w6_qwen_direct_artifacts_status != 0 )); then
-  exit "$prepare_w6_qwen_direct_artifacts_status"
+prepare_w6_direct_artifacts_status=0
+prepare_w6_direct_artifacts || prepare_w6_direct_artifacts_status=$?
+if (( prepare_w6_direct_artifacts_status != 0 )); then
+  exit "$prepare_w6_direct_artifacts_status"
 fi
 
 resolve_w5_memory_reuse_config_status=0

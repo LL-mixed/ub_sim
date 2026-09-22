@@ -249,6 +249,51 @@ impl GgufCatalog {
         decode_gpt2_token_text(encoded)
     }
 
+    pub fn pto_token_table(&self) -> Result<Vec<u8>, String> {
+        const MAGIC: u64 = 0x5157_5054_4f54_5854;
+        const ENTRY_BYTES: u64 = 32;
+        const MAX_VOCAB: usize = 1 << 24;
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+        let tokens = self.metadata_strings("tokenizer.ggml.tokens")?;
+        if tokens.len() < 4 || tokens.len() > MAX_VOCAB {
+            return Err(format!(
+                "deepseek_gguf_pto_token_vocab_invalid:{}",
+                tokens.len()
+            ));
+        }
+        let capacity = 32usize
+            .checked_add(
+                tokens
+                    .len()
+                    .checked_mul(ENTRY_BYTES as usize)
+                    .ok_or_else(|| "deepseek_gguf_pto_token_table_size_overflow".to_string())?,
+            )
+            .ok_or_else(|| "deepseek_gguf_pto_token_table_size_overflow".to_string())?;
+        let mut output = Vec::with_capacity(capacity);
+        output.extend_from_slice(&MAGIC.to_le_bytes());
+        output.extend_from_slice(&1u64.to_le_bytes());
+        output.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
+        output.extend_from_slice(&ENTRY_BYTES.to_le_bytes());
+        for (token, encoded) in tokens.iter().enumerate() {
+            let piece = decode_gpt2_token_text(encoded)?.into_bytes();
+            let mut checksum = FNV_OFFSET ^ token as u64;
+            for byte in &piece {
+                checksum = (checksum ^ u64::from(*byte)).wrapping_mul(FNV_PRIME);
+            }
+            let size = piece.len() as u64;
+            checksum ^= size.rotate_left(17);
+            output.extend_from_slice(&checksum.to_le_bytes());
+            output.extend_from_slice(&size.to_le_bytes());
+            let mut words = [0u8; 16];
+            let copied = piece.len().min(words.len());
+            words[..copied].copy_from_slice(&piece[..copied]);
+            output.extend_from_slice(&words);
+        }
+        Ok(output)
+    }
+
     pub fn tokenizer(&self) -> Result<DeepseekV4FlashTokenizer, String> {
         DeepseekV4FlashTokenizer::from_catalog(self)
     }
@@ -1909,6 +1954,25 @@ mod tests {
                 catalog.read_tensor(&q_b.name).unwrap(),
                 vec![9, 8, 7, 6, 5, 4]
             );
+        });
+    }
+
+    #[test]
+    fn builds_fixed_width_pto_token_table_from_gguf_metadata() {
+        with_fixture(&fixture_bytes(), |path| {
+            let catalog = GgufCatalog::open(path).expect("parse GGUF fixture");
+            let table = catalog.pto_token_table().expect("build token table");
+            assert_eq!(table.len(), 32 + 10 * 32);
+            assert_eq!(
+                u64::from_le_bytes(table[0..8].try_into().unwrap()),
+                0x5157_5054_4f54_5854
+            );
+            assert_eq!(u64::from_le_bytes(table[16..24].try_into().unwrap()), 10);
+            assert_eq!(u64::from_le_bytes(table[24..32].try_into().unwrap()), 32);
+            assert_eq!(u64::from_le_bytes(table[40..48].try_into().unwrap()), 1);
+            assert_eq!(&table[48..49], b"A");
+            assert_eq!(u64::from_le_bytes(table[72..80].try_into().unwrap()), 2);
+            assert_eq!(&table[80..82], b" B");
         });
     }
 

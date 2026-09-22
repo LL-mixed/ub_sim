@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
 LOG_DIR="$ROOT_DIR/logs"
 SIM_UAPI_W5_PROFILE="${SIM_UAPI_W5_PROFILE:-}"
+SIM_DEEPSEEK_V4_FLASH="${SIM_DEEPSEEK_V4_FLASH:-}"
 SIM_W5_CLUSTER_NODE_COUNT="${SIM_W5_CLUSTER_NODE_COUNT:-8}"
 TEE_BIN="${TEE_BIN:-/usr/bin/tee}"
 
@@ -148,6 +149,7 @@ SIM_W5_MANAGED_BOOTSTRAP_GENERATION="${SIM_W5_MANAGED_BOOTSTRAP_GENERATION:-$SIM
 SIM_W5_MANAGED_TIMEOUT_MS="${SIM_W5_MANAGED_TIMEOUT_MS:-300000}"
 SIM_W5_MANAGED_PROVIDER_LEASE_MS="${SIM_W5_MANAGED_PROVIDER_LEASE_MS:-120000}"
 export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
+export SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST="${SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST:-}"
 SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
 SIM_W5_PTO_UB_GM_PROGRAM="${SIM_W5_PTO_UB_GM_PROGRAM:-quadratic}"
 SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
@@ -585,11 +587,24 @@ validate_w5_managed_serving() {
     bulk)
       ;;
     direct)
-      if ! is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" ||
-         [[ -z "$SIMPLER_QWEN3_PTO_RANGE_MANIFEST" ||
-            ! -f "$SIMPLER_QWEN3_PTO_RANGE_MANIFEST" ||
-            -z "$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT" ]]; then
-        trace "FAIL: direct managed model I/O requires Qwen callable-3 artifacts"
+      if is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+        if [[ -z "$SIMPLER_QWEN3_PTO_RANGE_MANIFEST" ||
+              ! -f "$SIMPLER_QWEN3_PTO_RANGE_MANIFEST" ]]; then
+          trace "FAIL: direct managed Qwen I/O requires callable-3 artifacts"
+          return 1
+        fi
+      elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+        if [[ -z "$SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST" ||
+              ! -f "$SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST" ]]; then
+          trace "FAIL: direct managed DeepSeek I/O requires callable-5 artifacts"
+          return 1
+        fi
+      else
+        trace "FAIL: direct managed model I/O requires a supported model backend"
+        return 1
+      fi
+      if [[ -z "$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT" ]]; then
+        trace "FAIL: direct managed model I/O requires an artifact fingerprint"
         return 1
       fi
       ;;
@@ -1054,6 +1069,7 @@ export SIM_W5_MANAGED_BOOTSTRAP_GENERATION="$SIM_W5_MANAGED_BOOTSTRAP_GENERATION
 export SIM_W5_MANAGED_TIMEOUT_MS="$SIM_W5_MANAGED_TIMEOUT_MS"
 export SIM_W5_MANAGED_PROVIDER_LEASE_MS="$SIM_W5_MANAGED_PROVIDER_LEASE_MS"
 export SIM_W5_QWEN3_PTO_TOKEN_TABLE="/tmp/qwen3_pto_token_table.bin"
+export SIM_W5_DEEPSEEK_V4_FLASH_PTO_TOKEN_TABLE="/tmp/deepseek_v4_flash_pto_token_table.bin"
 export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
 export SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM"
 export SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT"
@@ -1576,11 +1592,46 @@ EOF
   chmod +x "$runner"
 }
 
-stage_qwen3_pto_token_table() {
+stage_model_direct_token_table() {
+  local cargo_bin repo_dir target_dir token_table_bin
+
   if [[ "$SIM_W5_QWEN3_PTO" != "1" && "$SIM_W5_MODEL_IO" != "direct" ]]; then
     return 0
   fi
   mkdir -p "$RUN_INITRAMFS_DIR/tmp"
+  if [[ "$SIM_W5_MODEL_IO" == "direct" ]] &&
+     is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+    if [[ ! -f "$SIM_DEEPSEEK_V4_FLASH" ]]; then
+      trace "FAIL: DeepSeek direct token table requires a GGUF model file: $SIM_DEEPSEEK_V4_FLASH"
+      return 1
+    fi
+    repo_dir="$ROOT_DIR/../.."
+    cargo_bin="$(command -v cargo 2>/dev/null || true)"
+    if [[ -z "$cargo_bin" && -x "$HOME/.cargo/bin/cargo" ]]; then
+      cargo_bin="$HOME/.cargo/bin/cargo"
+    fi
+    if [[ -z "$cargo_bin" ]]; then
+      trace "FAIL: DeepSeek direct token table requires Cargo"
+      return 1
+    fi
+    if ! (cd "$repo_dir" && "$cargo_bin" build --release -p sim-models \
+          --bin deepseek_v4_flash_pto_token_table); then
+      trace "FAIL: DeepSeek direct token table builder compilation failed"
+      return 1
+    fi
+    target_dir="$(cd "$repo_dir" && "$cargo_bin" metadata \
+      --format-version=1 --no-deps | \
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')" || return 1
+    token_table_bin="$target_dir/release/deepseek_v4_flash_pto_token_table"
+    if [[ ! -x "$token_table_bin" ]]; then
+      trace "FAIL: DeepSeek direct token table builder is missing: $token_table_bin"
+      return 1
+    fi
+    "$token_table_bin" \
+      --model "$SIM_DEEPSEEK_V4_FLASH" \
+      --output "$RUN_INITRAMFS_DIR/tmp/deepseek_v4_flash_pto_token_table.bin"
+    return $?
+  fi
   python3 "$ROOT_DIR/scripts/prepare_qwen3_pto_token_table.py" \
     --weights "$SIM_QWEN3_DENSE_WEIGHTS_PATH" \
     --output "$RUN_INITRAMFS_DIR/tmp/qwen3_pto_token_table.bin"
@@ -1603,7 +1654,7 @@ build_w4_initramfs() {
   stage_w5_memory_shortpath_kv_stream || return 1
   stage_w5_memory_prefix_cache_kv_stream || return 1
   stage_w5_serving_requests_file || return 1
-  stage_qwen3_pto_token_table || return 1
+  stage_model_direct_token_table || return 1
   write_w4_initramfs_runner || return 1
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -1654,7 +1705,7 @@ build_w4_openEuler_initramfs() {
   stage_w5_memory_shortpath_kv_stream || return 1
   stage_w5_memory_prefix_cache_kv_stream || return 1
   stage_w5_serving_requests_file || return 1
-  stage_qwen3_pto_token_table || return 1
+  stage_model_direct_token_table || return 1
   write_w4_initramfs_runner || return 1
   # openEuler boot half: /init becomes init_switch_root; add LVM2 userland and
   # the UB modules that ship as =m on top of the unpacked base tree.
@@ -2065,11 +2116,21 @@ validate_node_log() {
 
     assert_log_has "$log_file" "\\[w4guest8:initramfs\\] managed_service ready node=$((idx - 1)) .*allocation_policy=node-partitioned-kernel-probed" "$node_id managed service readiness" || return 1
     if [[ "$SIM_W5_MODEL_IO" == "direct" ]]; then
-      assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=3 control=mem_service data=obmm model_io_mode=direct model_tensor_address_space=UB_GM pto_instruction_io=1 status=ok" "$node_id direct managed runtime" || return 1
-      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=3 model_io=direct .*status=ok" "$expected_managed_steps" "$node_id direct managed model ranges" || return 1
-      assert_log_count "$log_file" "model-direct: .*callable=3 tensors=6 model_tensor_address_space=UB_GM pto_instruction_io=1 shared_payload_staging_bytes=0 completion_status=1" "$expected_managed_steps" "$node_id direct tensor provenance" || return 1
-      assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable3_direct" "$expected_managed_steps" "$node_id direct managed completion gate" || return 1
-      assert_log_count "$qemu_log" "QWEN3_PTO_OPERATOR_COUNTS .*kernel_complete=1" "$expected_managed_steps" "$node_id direct PTO range completions" || return 1
+      local direct_callable=3
+      local direct_dispatch_path="mem_service_managed_callable3_direct"
+      if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+        direct_callable=5
+        direct_dispatch_path="mem_service_managed_callable5_direct"
+      fi
+      assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=${direct_callable} control=mem_service data=obmm model_io_mode=direct model_tensor_address_space=UB_GM pto_instruction_io=1 status=ok" "$node_id direct managed runtime" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=${direct_callable} model_io=direct .*status=ok" "$expected_managed_steps" "$node_id direct managed model ranges" || return 1
+      assert_log_count "$log_file" "model-direct: .*callable=${direct_callable} tensors=6 model_tensor_address_space=UB_GM pto_instruction_io=1 shared_payload_staging_bytes=0 completion_status=1" "$expected_managed_steps" "$node_id direct tensor provenance" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=${direct_dispatch_path}" "$expected_managed_steps" "$node_id direct managed completion gate" || return 1
+      if (( direct_callable == 5 )); then
+        assert_log_count "$qemu_log" "deepseek-v4-flash-pto-range: .*shared_payload_staging_bytes=0 status=pass" "$expected_managed_steps" "$node_id direct DeepSeek PTO range completions" || return 1
+      else
+        assert_log_count "$qemu_log" "QWEN3_PTO_OPERATOR_COUNTS .*kernel_complete=1" "$expected_managed_steps" "$node_id direct Qwen PTO range completions" || return 1
+      fi
       assert_log_has "$qemu_log" "QEMU_UB_GM_LOAD request=" "$node_id direct PTO TLOAD" || return 1
       assert_log_has "$qemu_log" "QEMU_UB_GM_STORE request=" "$node_id direct PTO TSTORE" || return 1
       assert_log_absent "$qemu_log" "managed-model-provider: .*completion=success" "$node_id callable-4 provider exclusion" || return 1
@@ -2083,7 +2144,12 @@ validate_node_log() {
     if (( idx == SIM_W5_CLUSTER_NODE_COUNT )); then
       assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*terminal=1 status=ok" "$expected_managed_steps" "$node_id managed terminal ranges" || return 1
       if [[ "$SIM_W5_MODEL_IO" == "direct" ]]; then
-        assert_log_count "$log_file" "\\[w4_guest\\] stage model_terminal_token_result_publish local=node${idx} target=node1 .*source=managed_callable3_logits .*model_io=direct status=ok notification=reference_committed publisher=terminal_node" "$expected_managed_steps" "$node_id direct terminal token references" || return 1
+        local direct_logits_source="managed_callable3_logits"
+        if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+          direct_logits_source="managed_callable5_logits"
+          assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_stream_token node=${idx} .*source=managed_callable5_logits .*status=ok" "$expected_managed_steps" "$node_id direct DeepSeek stream" || return 1
+        fi
+        assert_log_count "$log_file" "\\[w4_guest\\] stage model_terminal_token_result_publish local=node${idx} target=node1 .*source=${direct_logits_source} .*model_io=direct status=ok notification=reference_committed publisher=terminal_node" "$expected_managed_steps" "$node_id direct terminal token references" || return 1
       elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
         assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_stream_token node=${idx} .*source=managed_callable4_logits .*status=ok" "$expected_managed_steps" "$node_id managed DeepSeek stream" || return 1
       fi

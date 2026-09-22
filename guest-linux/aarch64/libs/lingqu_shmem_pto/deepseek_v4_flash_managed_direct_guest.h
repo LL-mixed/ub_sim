@@ -67,6 +67,13 @@ struct deepseek_v4_flash_managed_direct_request {
 
 struct deepseek_v4_flash_managed_direct_operation;
 
+int deepseek_v4_flash_managed_direct_geometry_init(
+    uint32_t first,
+    uint32_t end,
+    uint32_t past,
+    uint32_t tokens,
+    struct deepseek_v4_flash_managed_direct_geometry *geometry_out);
+
 /* Describes callable 5 exactly. Hidden tensors contain the four hyper-
  * connection streams as contiguous F32 rows. KV tensors contain the existing
  * versioned DeepSeek range-state byte encoding at the exact past/next length.

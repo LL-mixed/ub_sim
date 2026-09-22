@@ -96,6 +96,8 @@ LINGQU_SHMEM_MEM_SERVICE_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem_mem_s
 LINGQU_SHMEM_MEM_SERVICE_OBMM_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_shmem_mem_service_obmm.c"
 QWEN3_PTO_GUEST_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/qwen3_pto_guest.c"
 LINGQU_MODEL_DIRECT_GUEST_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/lingqu_model_direct_guest.c"
+DEEPSEEK_V4_FLASH_MANAGED_DIRECT_GUEST_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/deepseek_v4_flash_managed_direct_guest.c"
+DEEPSEEK_V4_FLASH_MANAGED_SERVING_GUEST_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/deepseek_v4_flash_managed_serving_guest.c"
 QWEN3_MANAGED_DIRECT_GUEST_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/qwen3_managed_direct_guest.c"
 QWEN3_MANAGED_SERVING_GUEST_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/qwen3_managed_serving_guest.c"
 W5_MANAGED_MODEL_GUEST_SRC="$ROOT_DIR/libs/lingqu_shmem_pto/w5_managed_model_guest.c"
@@ -321,6 +323,12 @@ current_initramfs_signature() {
   done
   write_signature_line "qwen3_pto_guest_src" "$QWEN3_PTO_GUEST_SRC"
   write_signature_line "lingqu_model_direct_guest_src" "$LINGQU_MODEL_DIRECT_GUEST_SRC"
+  write_signature_line \
+    "deepseek_v4_flash_managed_direct_guest_src" \
+    "$DEEPSEEK_V4_FLASH_MANAGED_DIRECT_GUEST_SRC"
+  write_signature_line \
+    "deepseek_v4_flash_managed_serving_guest_src" \
+    "$DEEPSEEK_V4_FLASH_MANAGED_SERVING_GUEST_SRC"
   write_signature_line "qwen3_managed_direct_guest_src" "$QWEN3_MANAGED_DIRECT_GUEST_SRC"
   write_signature_line "qwen3_managed_serving_guest_src" "$QWEN3_MANAGED_SERVING_GUEST_SRC"
   write_signature_line "w5_managed_model_guest_src" "$W5_MANAGED_MODEL_GUEST_SRC"

@@ -169,6 +169,43 @@ static int validate_geometry(
     return total > DS4_MAX_TOKENS ? -ERANGE : 0;
 }
 
+int deepseek_v4_flash_managed_direct_geometry_init(
+    uint32_t first,
+    uint32_t end,
+    uint32_t past,
+    uint32_t tokens,
+    struct deepseek_v4_flash_managed_direct_geometry *geometry_out)
+{
+    if (!geometry_out)
+        return -EINVAL;
+    *geometry_out = (struct deepseek_v4_flash_managed_direct_geometry) {
+        .first = first,
+        .end = end,
+        .layers = DS4_LAYERS,
+        .past = past,
+        .tokens = tokens,
+        .hidden = DS4_HIDDEN,
+        .hc_mult = DS4_HC_MULT,
+        .vocab = DS4_VOCAB,
+        .attention_heads = DS4_ATTENTION_HEADS,
+        .kv_heads = DS4_KV_HEADS,
+        .head_dim = DS4_HEAD_DIM,
+        .rope_head_dim = DS4_ROPE_HEAD_DIM,
+        .q_lora_rank = DS4_Q_LORA_RANK,
+        .o_lora_rank = DS4_O_LORA_RANK,
+        .output_groups = DS4_OUTPUT_GROUPS,
+        .experts = DS4_EXPERTS,
+        .experts_used = DS4_EXPERTS_USED,
+        .shared_experts = DS4_SHARED_EXPERTS,
+        .moe_intermediate = DS4_MOE_INTERMEDIATE,
+        .sliding_window = DS4_SLIDING_WINDOW,
+        .indexer_heads = DS4_INDEXER_HEADS,
+        .indexer_head_dim = DS4_INDEXER_HEAD_DIM,
+        .indexer_top_k = DS4_INDEXER_TOP_K,
+    };
+    return validate_geometry(geometry_out);
+}
+
 static void set_1d(struct lingqu_shmem_memref_spec *spec, uint64_t elements,
                    uint16_t dtype, uint8_t access, uint64_t width)
 {

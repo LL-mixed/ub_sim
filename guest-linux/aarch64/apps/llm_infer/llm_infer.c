@@ -33,6 +33,7 @@
 #include "lingqu_shmem_sim.h"
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
+#include "deepseek_v4_flash_managed_serving_guest.h"
 #include "qwen3_managed_serving_guest.h"
 #include "qwen3_pto_guest.h"
 #include "w5_managed_request_guest.h"
@@ -278,6 +279,22 @@ struct w5_pto_ub_gm_hidden_result {
     uint64_t tile_count;
 };
 
+enum w6_managed_direct_model {
+    W6_MANAGED_DIRECT_NONE = 0,
+    W6_MANAGED_DIRECT_QWEN3 = 1,
+    W6_MANAGED_DIRECT_DEEPSEEK_V4_FLASH = 2,
+};
+
+struct w6_managed_direct_config {
+    enum w6_managed_direct_model model;
+    union {
+        struct qwen3_pto_guest_geometry qwen3;
+        struct deepseek_v4_flash_managed_direct_geometry deepseek;
+    } geometry;
+    const uint32_t *token_ids;
+    uint32_t token_count;
+};
+
 struct w5_managed_round_state {
     struct w5_managed_object_guest *writer;
     struct w5_managed_object_guest *token;
@@ -288,6 +305,9 @@ struct w5_managed_round_state {
     struct qwen3_managed_serving_operation *direct_operation;
     struct qwen3_managed_serving_output direct_output;
     struct qwen3_managed_serving_result direct_result;
+    struct deepseek_v4_flash_managed_serving_operation *deepseek_operation;
+    struct deepseek_v4_flash_managed_serving_output deepseek_output;
+    struct deepseek_v4_flash_managed_serving_result deepseek_result;
     void *metadata;
 };
 
@@ -1730,6 +1750,21 @@ static bool is_deepseek_v4_flash_profile(void)
     return llm_infer_is_deepseek_v4_flash_profile_name(profile);
 }
 
+static uint32_t w6_model_direct_callable_id(void)
+{
+    if (is_deepseek_v4_flash_profile())
+        return DEEPSEEK_V4_FLASH_MANAGED_DIRECT_CALLABLE_ID;
+    if (is_qwen3_profile())
+        return QWEN3_MANAGED_DIRECT_CALLABLE_ID;
+    return 0;
+}
+
+static const char *w6_model_direct_logits_source(void)
+{
+    return is_deepseek_v4_flash_profile() ?
+        "managed_callable5_logits" : "managed_callable3_logits";
+}
+
 static const char *w4_runtime_model_key(void)
 {
     if (is_deepseek_v4_flash_profile()) {
@@ -2333,13 +2368,15 @@ static int model_read_terminal_token_record_for_step(
     return 0;
 }
 
-static int model_pto_terminal_record(const struct qwen3_pto_guest_output *output,
-                                     uint64_t decode_step,
-                                     struct llm_terminal_token_record *record)
+static int model_direct_terminal_record(
+    const struct qwen3_pto_guest_output *output,
+    uint64_t decode_step,
+    const char *token_table_env,
+    uint64_t vocab,
+    struct llm_terminal_token_record *record)
 {
-    const char *path = getenv("SIM_W5_QWEN3_PTO_TOKEN_TABLE");
+    const char *path = getenv(token_table_env);
     uint64_t header[4];
-    uint64_t vocab = llm_infer_qwen3_vocab_size();
     uint64_t top[4] = {0};
     float scores[4] = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
     FILE *file;
@@ -2393,6 +2430,25 @@ static int model_pto_terminal_record(const struct qwen3_pto_guest_output *output
     record->piece_word0 = record->candidate_piece_word0[0];
     record->piece_word1 = record->candidate_piece_word1[0];
     return 0;
+}
+
+static int model_pto_terminal_record(const struct qwen3_pto_guest_output *output,
+                                     uint64_t decode_step,
+                                     struct llm_terminal_token_record *record)
+{
+    return model_direct_terminal_record(output, decode_step,
+        "SIM_W5_QWEN3_PTO_TOKEN_TABLE", llm_infer_qwen3_vocab_size(),
+        record);
+}
+
+static int deepseek_v4_flash_direct_terminal_record(
+    const struct qwen3_pto_guest_output *output,
+    uint64_t decode_step,
+    struct llm_terminal_token_record *record)
+{
+    return model_direct_terminal_record(output, decode_step,
+        "SIM_W5_DEEPSEEK_V4_FLASH_PTO_TOKEN_TABLE",
+        mem_service_deepseek_v4_flash_vocab_size(), record);
 }
 
 static uint64_t w5_managed_identity_hash(const char *text)
@@ -2512,6 +2568,11 @@ static int w5_managed_round_close(struct w5_managed_round_state *state)
         rc = qwen3_managed_serving_release(&state->direct_operation);
         if (rc) return rc;
     }
+    if (state->deepseek_operation) {
+        rc = deepseek_v4_flash_managed_serving_release(
+            &state->deepseek_operation);
+        if (rc) return rc;
+    }
     if (state->hidden) {
         rc = w5_managed_object_close(&state->hidden, &status);
         if (rc) return rc;
@@ -2538,6 +2599,8 @@ static int w5_managed_round_close(struct w5_managed_round_state *state)
     memset(&state->result, 0, sizeof(state->result));
     memset(&state->direct_output, 0, sizeof(state->direct_output));
     memset(&state->direct_result, 0, sizeof(state->direct_result));
+    memset(&state->deepseek_output, 0, sizeof(state->deepseek_output));
+    memset(&state->deepseek_result, 0, sizeof(state->deepseek_result));
     return 0;
 }
 
@@ -2793,6 +2856,194 @@ static int w6_qwen3_managed_execute(
     return 0;
 }
 
+static int w6_deepseek_v4_flash_managed_execute(
+    struct w5_managed_runtime_guest *runtime,
+    struct w5_managed_round_state *state,
+    const struct deepseek_v4_flash_managed_direct_geometry *geometry,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t local_node,
+    uint32_t next_node,
+    uint64_t decode_step,
+    uint64_t writer_base_offset,
+    uint64_t op_id,
+    uint64_t request_id,
+    uint64_t artifact_fingerprint,
+    uint32_t requester_cna,
+    uint64_t metadata_iova,
+    uint64_t timeout_ms,
+    struct llm_model_range_runtime_forward *forward_out,
+    struct llm_terminal_token_record *terminal_out,
+    bool *terminal_ready_out)
+{
+    struct deepseek_v4_flash_managed_serving_request request = {0};
+    struct qwen3_pto_guest_output pto_output = {0};
+    struct lingqu_shmem_pto_completion completion;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    uint64_t token_words[8] = {0};
+    uint64_t started_ms;
+    bool terminal;
+    int rc;
+
+    if (!runtime || !state || !geometry || !token_ids || !token_count ||
+        !forward_out || !terminal_out || !terminal_ready_out ||
+        !state->writer || state->deepseek_operation)
+        return -EINVAL;
+    if (!request_id)
+        request_id = decode_step + 1U;
+    terminal = geometry->end == geometry->layers;
+    request = (struct deepseek_v4_flash_managed_serving_request) {
+        .writer = state->writer,
+        .hidden_input = state->hidden,
+        .previous_state = state->kv,
+        .geometry = *geometry,
+        .token_ids = token_ids,
+        .token_count = token_count,
+        .writer_base_offset = writer_base_offset,
+        .compute = w5_managed_runtime_compute(runtime),
+        .endpoint = w5_managed_runtime_endpoint(runtime),
+        .op_id = op_id,
+        .request_id = request_id,
+        .artifact_fingerprint = artifact_fingerprint,
+        .requester_cna = requester_cna,
+        .producer_node = local_node,
+        .decode_step = decode_step,
+        .metadata = state->metadata,
+        .metadata_bytes = W5_PTO_UB_GM_METADATA_BYTES,
+        .metadata_iova = metadata_iova,
+    };
+    rc = deepseek_v4_flash_managed_serving_prepare(
+        &request, &state->deepseek_operation);
+    if (!rc)
+        rc = deepseek_v4_flash_managed_serving_submit(
+            state->deepseek_operation);
+    if (rc)
+        return rc;
+    started_ms = monotonic_ms();
+    do {
+        rc = deepseek_v4_flash_managed_serving_poll(
+            state->deepseek_operation, &completion);
+        if (rc != -EAGAIN)
+            break;
+        usleep(10000);
+    } while (monotonic_ms() - started_ms < timeout_ms);
+    if (rc == -EAGAIN)
+        return -ETIMEDOUT;
+    if (rc || !lingqu_shmem_pto_completion_succeeded(&completion))
+        return rc ? rc : -EIO;
+    rc = deepseek_v4_flash_managed_serving_complete(
+        state->deepseek_operation, &state->deepseek_output);
+    if (rc)
+        return rc;
+
+    pto_output.hidden = (struct lingqu_shmem_mem_service_local_buffer) {
+        .data = state->deepseek_output.hidden,
+        .len = state->deepseek_output.layout
+            .views[DEEPSEEK_V4_FLASH_MANAGED_WRITER_HIDDEN_OUTPUT].bytes,
+        .backing_offset = state->deepseek_output.layout
+            .views[DEEPSEEK_V4_FLASH_MANAGED_WRITER_HIDDEN_OUTPUT].offset,
+        .owner_node = local_node,
+    };
+    pto_output.kv = (struct lingqu_shmem_mem_service_local_buffer) {
+        .data = state->deepseek_output.state,
+        .len = state->deepseek_output.layout
+            .views[DEEPSEEK_V4_FLASH_MANAGED_WRITER_NEXT_STATE].bytes,
+        .backing_offset = state->deepseek_output.layout
+            .views[DEEPSEEK_V4_FLASH_MANAGED_WRITER_NEXT_STATE].offset,
+        .owner_node = local_node,
+    };
+    pto_output.logits = (struct lingqu_shmem_mem_service_local_buffer) {
+        .data = state->deepseek_output.logits,
+        .len = state->deepseek_output.layout
+            .views[DEEPSEEK_V4_FLASH_MANAGED_WRITER_LOGITS].bytes,
+        .backing_offset = state->deepseek_output.layout
+            .views[DEEPSEEK_V4_FLASH_MANAGED_WRITER_LOGITS].offset,
+        .owner_node = local_node,
+    };
+    if (terminal) {
+        rc = deepseek_v4_flash_direct_terminal_record(
+            &pto_output, decode_step, terminal_out);
+        if (rc)
+            return rc;
+        token_words[0] = decode_step;
+        token_words[1] = terminal_out->sampled_token;
+        token_words[2] = terminal_out->runner_up_token;
+        token_words[3] = terminal_out->margin_milli;
+        token_words[4] = terminal_out->logits_checksum;
+        token_words[5] = terminal_out->text_checksum;
+        token_words[6] = terminal_out->piece_word0;
+        token_words[7] = terminal_out->piece_word1;
+    }
+    memset(forward_out, 0, sizeof(*forward_out));
+    forward_out->node = local_node;
+    forward_out->layer_start = geometry->first;
+    forward_out->layer_end = geometry->end;
+    forward_out->layer_count = geometry->end - geometry->first;
+    forward_out->real_layers = forward_out->layer_count;
+    forward_out->next_node = next_node;
+    forward_out->input_checksum = state->deepseek_output.input_checksum;
+    forward_out->output_checksum = state->deepseek_output.hidden_checksum;
+    forward_out->payload_offset = pto_output.hidden.backing_offset;
+    forward_out->payload_bytes = pto_output.hidden.len;
+    forward_out->payload_checksum = state->deepseek_output.hidden_checksum;
+    forward_out->kv_payload_offset = pto_output.kv.backing_offset;
+    forward_out->kv_payload_bytes = pto_output.kv.len;
+    forward_out->kv_payload_checksum = state->deepseek_output.state_checksum;
+    forward_out->range_checksum =
+        forward_out->payload_checksum ^ forward_out->kv_payload_checksum;
+    rc = deepseek_v4_flash_managed_serving_publish(
+        state->deepseek_operation, terminal ? token_words : NULL,
+        &state->deepseek_result, &status);
+    if (rc)
+        return rc;
+    if (terminal) {
+        const struct lingqu_object_ref_wire_v2 *token_reference =
+            &state->deepseek_result.references[
+                DEEPSEEK_V4_FLASH_MANAGED_SERVING_OUTPUT_COUNT - 1U];
+        uint64_t token_checksum = mem_service_provider_checksum64(
+            token_words, MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES);
+
+        if (state->deepseek_result.reference_count !=
+                DEEPSEEK_V4_FLASH_MANAGED_SERVING_OUTPUT_COUNT ||
+            lingqu_object_ref_v2_validate(token_reference) != 0 ||
+            token_reference->access != LINGQU_OBJECT_REF_V2_READ ||
+            token_reference->object.object_kind !=
+                MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT ||
+            token_reference->object.payload_bytes !=
+                MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES ||
+            token_reference->object.payload_checksum != token_checksum)
+            return -EPROTO;
+        printf("[w4_guest] stage model_terminal_token_result_publish"
+               " local=node%u target=node1 step=%" PRIu64
+               " token=%" PRIu64 " runner_up=%" PRIu64
+               " margin_milli=%" PRIu64
+               " logits_checksum=0x%016" PRIx64
+               " text_checksum=0x%016" PRIx64
+               " piece_word0=0x%016" PRIx64
+               " piece_word1=0x%016" PRIx64
+               " allocation_key=%s home_node=%s"
+               " allocation_generation=%" PRIu64
+               " provider_incarnation=%" PRIu64
+               " payload_offset=0x%016" PRIx64
+               " bytes=%" PRIu64 " checksum=0x%016" PRIx64
+               " source=managed_callable5_logits"
+               " target_kind=mem_service_reference_v2 model_io=direct"
+               " status=ok notification=reference_committed"
+               " publisher=terminal_node broadcast_targets=1\n",
+               local_node + 1U, decode_step, token_words[1], token_words[2],
+               token_words[3], token_words[4], token_words[5], token_words[6],
+               token_words[7], token_reference->allocation_key,
+               token_reference->home_node,
+               token_reference->allocation_generation,
+               token_reference->provider_incarnation,
+               token_reference->object.payload_offset,
+               token_reference->object.payload_bytes,
+               token_reference->object.payload_checksum);
+    }
+    *terminal_ready_out = terminal;
+    return 0;
+}
+
 static int w5_managed_run_model_range(
     struct w5_managed_runtime_guest *runtime,
     struct w5_managed_round_state *state,
@@ -2812,9 +3063,7 @@ static int w5_managed_run_model_range(
     uint32_t requester_cna,
     uint64_t timeout_ms,
     uint64_t output_capacity,
-    const struct qwen3_pto_guest_geometry *direct_geometry,
-    const uint32_t *direct_token_ids,
-    uint32_t direct_token_count,
+    const struct w6_managed_direct_config *direct,
     struct llm_model_range_runtime_forward *forward_out,
     struct llm_terminal_token_record *terminal_out,
     bool *terminal_ready_out)
@@ -2849,7 +3098,8 @@ static int w5_managed_run_model_range(
         !artifact_fingerprint || !requester_cna || !timeout_ms ||
         !output_capacity || !forward_out || !terminal_out ||
         !terminal_ready_out || state->writer || state->hidden || state->kv ||
-        state->operation || state->direct_operation || state->metadata)
+        state->operation || state->direct_operation ||
+        state->deepseek_operation || state->metadata)
         return -EINVAL;
     if (decode_step > 0 && local_node == 0U && !state->token)
         return -EINVAL;
@@ -2929,16 +3179,31 @@ static int w5_managed_run_model_range(
     rc = lingqu_shmem_sim_phys_for_virt(state->metadata, &metadata_iova);
     if (rc)
         return rc;
-    if (direct_geometry)
-        return w6_qwen3_managed_execute(runtime, state, direct_geometry,
-            direct_token_ids, direct_token_count, local_node, next_node,
-            decode_step, output_offset,
+    if (direct && direct->model == W6_MANAGED_DIRECT_QWEN3)
+        return w6_qwen3_managed_execute(runtime, state,
+            &direct->geometry.qwen3, direct->token_ids,
+            direct->token_count, local_node, next_node, decode_step,
+            output_offset,
             UINT64_C(0x6d00000000000000) |
                 ((uint64_t)local_node << 48) | (decode_step + 1U),
             run ^ ((serving_request << 17) | (serving_request >> 47)) ^
                 ((uint64_t)local_node << 32) ^ (decode_step + 1U),
             artifact_fingerprint, requester_cna, metadata_iova, timeout_ms,
             forward_out, terminal_out, terminal_ready_out);
+    if (direct &&
+        direct->model == W6_MANAGED_DIRECT_DEEPSEEK_V4_FLASH)
+        return w6_deepseek_v4_flash_managed_execute(runtime, state,
+            &direct->geometry.deepseek, direct->token_ids,
+            direct->token_count, local_node, next_node, decode_step,
+            output_offset,
+            UINT64_C(0x6e00000000000000) |
+                ((uint64_t)local_node << 48) | (decode_step + 1U),
+            run ^ ((serving_request << 17) | (serving_request >> 47)) ^
+                ((uint64_t)local_node << 32) ^ (decode_step + 1U),
+            artifact_fingerprint, requester_cna, metadata_iova, timeout_ms,
+            forward_out, terminal_out, terminal_ready_out);
+    if (direct)
+        return -EINVAL;
     read_segment_bytes(ep_mmio, 0, prompt_prefix, sizeof(prompt_prefix));
     memset(&operation_request, 0, sizeof(operation_request));
     operation_request.writer = state->writer;
@@ -11032,10 +11297,12 @@ int main(int argc, char **argv)
                 "[w4_guest] fail managed callable 4 conflicts with callable 3\n");
         return 1;
     }
-    if (w6_model_direct && (!w5_managed_serving || !is_qwen3_profile())) {
+    if (w6_model_direct &&
+        (!w5_managed_serving ||
+         (!is_qwen3_profile() && !is_deepseek_v4_flash_profile()))) {
         fprintf(stderr,
-                "[w4_guest] fail direct model I/O requires managed Qwen"
-                " serving\n");
+                "[w4_guest] fail direct model I/O requires managed Qwen or"
+                " DeepSeek serving\n");
         return 1;
     }
     if (w5_qwen3_pto && (w5_pto_ub_gm_probe_enabled || !is_qwen3_profile())) {
@@ -11524,7 +11791,7 @@ int main(int argc, char **argv)
                w5_managed_allocation_granularity_bytes,
                provider_bootstrap_generation,
                managed_client_node, client_provider_incarnation,
-               w6_model_direct ? 3U : 4U,
+               w6_model_direct ? w6_model_direct_callable_id() : 4U,
                w6_model_direct ? "direct" : "bulk_provider_callbacks",
                w6_model_direct ? "UB_GM" : "HOST",
                w6_model_direct ? 1U : 0U);
@@ -12740,7 +13007,9 @@ int main(int argc, char **argv)
 decode_round_start:
     if (w5_managed_round.writer || w5_managed_round.token ||
         w5_managed_round.hidden || w5_managed_round.kv ||
-        w5_managed_round.operation || w5_managed_round.metadata) {
+        w5_managed_round.operation || w5_managed_round.direct_operation ||
+        w5_managed_round.deepseek_operation ||
+        w5_managed_round.metadata) {
         fprintf(stderr,
                 "[w4_guest] fail managed serving previous round retained"
                 " step=%" PRIu64 "\n",
@@ -13331,7 +13600,7 @@ decode_round_start:
                " callable=%u status=ok\n",
                local_node + 1U, guest_decode_step, cluster_node_count,
                guest_decode_step - 1U, previous_token,
-               w6_model_direct ? 3U : 4U);
+               w6_model_direct ? w6_model_direct_callable_id() : 4U);
     }
     if (!w5_managed_serving && enable_db_cluster && guest_decode_step > 0 &&
         qwen3_terminal_token_count < guest_decode_step &&
@@ -13415,6 +13684,28 @@ decode_round_start:
         qwen3_round_decode_position =
             qwen3_prompt_base_token_count + guest_decode_step;
         printf("[w4_guest] stage qwen3_decode_position_resolved"
+               " step=%" PRIu64 " base_tokens=%" PRIu64
+               " local_prompt_tokens=%" PRIu64
+               " decode_position=%" PRIu64
+               " source=step_local_work_item status=ok\n",
+               guest_decode_step,
+               qwen3_prompt_base_token_count,
+               qwen3_round_input_token_count,
+               qwen3_round_decode_position);
+    } else if (is_deepseek_v4_flash_profile() && enable_db_cluster &&
+               w4_runtime_range_pipeline_enabled(cluster_node_count)) {
+        qwen3_round_input_token_count =
+            read_qwen3_prompt_tokens(ep_mmio,
+                                     qwen3_round_input_tokens,
+                                     sizeof(qwen3_round_input_tokens) /
+                                         sizeof(qwen3_round_input_tokens[0]));
+        if (!qwen3_prompt_base_token_count_ready) {
+            qwen3_prompt_base_token_count = qwen3_round_input_token_count;
+            qwen3_prompt_base_token_count_ready = true;
+        }
+        qwen3_round_decode_position =
+            qwen3_prompt_base_token_count + guest_decode_step;
+        printf("[w4_guest] stage deepseek_v4_flash_decode_position_resolved"
                " step=%" PRIu64 " base_tokens=%" PRIu64
                " local_prompt_tokens=%" PRIu64
                " decode_position=%" PRIu64
@@ -14272,11 +14563,9 @@ decode_round_start:
     compute_start_ms = monotonic_ms();
     compute_window_ms = compute_start_ms;
     if (w5_managed_serving) {
-        struct qwen3_pto_guest_geometry direct_geometry = {0};
-        struct qwen3_managed_direct_description direct_description = {0};
-        const struct qwen3_pto_guest_geometry *direct_geometry_ptr = NULL;
+        struct w6_managed_direct_config direct_config = {0};
+        const struct w6_managed_direct_config *direct_config_ptr = NULL;
         uint32_t direct_tokens[1024] = {0};
-        uint32_t direct_token_count = 0;
         uint64_t raw_sampled_token = 0;
         uint64_t managed_expected_hidden_bytes =
             w4_runtime_handoff_hidden_bytes(guest_decode_step);
@@ -14285,65 +14574,114 @@ decode_round_start:
         int managed_rc;
 
         if (w6_model_direct) {
-            float scale;
-
-            direct_geometry = (struct qwen3_pto_guest_geometry) {
-                .first = round_layer_start,
-                .end = round_layer_end,
-                .layers = llm_infer_qwen3_total_layers(),
-                .past = guest_decode_step ?
-                    qwen3_round_decode_position - 1U : 0,
-                .tokens = guest_decode_step ?
-                    1U : (uint32_t)qwen3_round_input_token_count,
-                .hidden = env_u64_or_default(
-                    "SIM_QWEN3_DENSE_HIDDEN_SIZE", 0),
-                .intermediate = env_u64_or_default(
-                    "SIM_QWEN3_DENSE_INTERMEDIATE_SIZE", 0),
-                .query_heads = env_u64_or_default(
-                    "SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS", 0),
-                .kv_heads = llm_infer_qwen3_kv_heads(),
-                .head_dim = llm_infer_qwen3_head_dim(),
-                .vocab = llm_infer_qwen3_vocab_size(),
-            };
             if (!qwen3_round_input_token_count ||
-                direct_geometry.tokens > 1024U ||
+                qwen3_round_input_token_count > 1024U ||
                 qwen3_engram_config.enabled ||
                 qwen3_memory_decision_config.shortpath_execute) {
                 fprintf(stderr,
-                        "[w4_guest] fail W6 Qwen direct input configuration\n");
+                        "[w4_guest] fail W6 direct input configuration\n");
                 goto out;
             }
-            scale = 1.0f / sqrtf((float)direct_geometry.head_dim);
-            memcpy(&direct_geometry.scale_bits, &scale, sizeof(scale));
-            managed_rc = qwen3_managed_direct_describe(
-                &direct_geometry, &direct_description);
-            if (managed_rc != 0) {
-                fprintf(stderr,
-                        "[w4_guest] fail W6 Qwen direct tensor ABI"
-                        " node=%u step=%" PRIu64 " rc=%d\n",
-                        round_dispatch_node + 1U, guest_decode_step,
-                        managed_rc);
-                goto out;
-            }
-            managed_expected_hidden_bytes = direct_description
-                .tensors[QWEN3_MANAGED_DIRECT_HIDDEN_OUTPUT].byte_length;
-            if (!direct_geometry.first) {
-                direct_token_count = direct_geometry.tokens;
-                for (uint32_t i = 0; i < direct_token_count; ++i) {
-                    uint64_t token = qwen3_round_input_tokens[
-                        guest_decode_step ?
-                            qwen3_round_input_token_count - 1U : i];
-                    if (token >= direct_geometry.vocab) {
-                        fprintf(stderr,
-                                "[w4_guest] fail W6 Qwen direct token"
-                                " out of range token=%" PRIu64 "\n",
-                                token);
-                        goto out;
-                    }
-                    direct_tokens[i] = (uint32_t)token;
+            if (is_qwen3_profile()) {
+                struct qwen3_managed_direct_description description = {0};
+                struct qwen3_pto_guest_geometry *geometry =
+                    &direct_config.geometry.qwen3;
+                float scale;
+
+                direct_config.model = W6_MANAGED_DIRECT_QWEN3;
+                *geometry = (struct qwen3_pto_guest_geometry) {
+                    .first = round_layer_start,
+                    .end = round_layer_end,
+                    .layers = llm_infer_qwen3_total_layers(),
+                    .past = guest_decode_step ?
+                        qwen3_round_decode_position - 1U : 0,
+                    .tokens = guest_decode_step ?
+                        1U : (uint32_t)qwen3_round_input_token_count,
+                    .hidden = env_u64_or_default(
+                        "SIM_QWEN3_DENSE_HIDDEN_SIZE", 0),
+                    .intermediate = env_u64_or_default(
+                        "SIM_QWEN3_DENSE_INTERMEDIATE_SIZE", 0),
+                    .query_heads = env_u64_or_default(
+                        "SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS", 0),
+                    .kv_heads = llm_infer_qwen3_kv_heads(),
+                    .head_dim = llm_infer_qwen3_head_dim(),
+                    .vocab = llm_infer_qwen3_vocab_size(),
+                };
+                scale = 1.0f / sqrtf((float)geometry->head_dim);
+                memcpy(&geometry->scale_bits, &scale, sizeof(scale));
+                managed_rc = qwen3_managed_direct_describe(
+                    geometry, &description);
+                if (managed_rc != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail W6 Qwen direct tensor ABI"
+                            " node=%u step=%" PRIu64 " rc=%d\n",
+                            round_dispatch_node + 1U, guest_decode_step,
+                            managed_rc);
+                    goto out;
                 }
+                managed_expected_hidden_bytes = description
+                    .tensors[QWEN3_MANAGED_DIRECT_HIDDEN_OUTPUT]
+                    .byte_length;
+                if (!geometry->first)
+                    direct_config.token_count = geometry->tokens;
+            } else if (is_deepseek_v4_flash_profile()) {
+                struct deepseek_v4_flash_managed_direct_description
+                    description = {0};
+                struct deepseek_v4_flash_managed_direct_geometry *geometry =
+                    &direct_config.geometry.deepseek;
+
+                direct_config.model =
+                    W6_MANAGED_DIRECT_DEEPSEEK_V4_FLASH;
+                managed_rc =
+                    deepseek_v4_flash_managed_direct_geometry_init(
+                        round_layer_start, round_layer_end,
+                        guest_decode_step ?
+                            qwen3_round_decode_position - 1U : 0,
+                        guest_decode_step ?
+                            1U : (uint32_t)qwen3_round_input_token_count,
+                        geometry);
+                if (!managed_rc)
+                    managed_rc = deepseek_v4_flash_managed_direct_describe(
+                        geometry, &description);
+                if (managed_rc != 0) {
+                    fprintf(stderr,
+                            "[w4_guest] fail W6 DeepSeek direct tensor ABI"
+                            " node=%u step=%" PRIu64 " rc=%d\n",
+                            round_dispatch_node + 1U, guest_decode_step,
+                            managed_rc);
+                    goto out;
+                }
+                managed_expected_hidden_bytes = description
+                    .tensors[
+                        DEEPSEEK_V4_FLASH_MANAGED_DIRECT_HIDDEN_OUTPUT]
+                    .byte_length;
+                direct_config.token_count = geometry->tokens;
+            } else {
+                fprintf(stderr,
+                        "[w4_guest] fail W6 direct model profile missing\n");
+                goto out;
             }
-            direct_geometry_ptr = &direct_geometry;
+            for (uint32_t i = 0; i < direct_config.token_count; ++i) {
+                uint64_t vocab = is_deepseek_v4_flash_profile() ?
+                    direct_config.geometry.deepseek.vocab :
+                    direct_config.geometry.qwen3.vocab;
+                uint64_t token = qwen3_round_input_tokens[
+                    guest_decode_step ?
+                        qwen3_round_input_token_count - 1U : i];
+
+                if (token >= vocab) {
+                    fprintf(stderr,
+                            "[w4_guest] fail W6 direct token"
+                            " out of range token=%" PRIu64 "\n",
+                            token);
+                    goto out;
+                }
+                direct_tokens[i] = (uint32_t)token;
+            }
+            if (direct_config.token_count) {
+                direct_config.token_ids = direct_tokens;
+            }
+            direct_config_ptr = &direct_config;
         }
         managed_rc = w5_managed_run_model_range(w5_managed_runtime,
             &w5_managed_round, ep_mmio, w5_managed_run,
@@ -14357,10 +14695,7 @@ decode_round_start:
             w5_pto_ub_gm_requester_cna,
             w6_model_direct ? w5_pto_ub_gm_timeout_ms :
                               w5_managed_timeout_ms,
-            w5_managed_output_capacity, direct_geometry_ptr,
-            direct_geometry_ptr && !direct_geometry.first ?
-                direct_tokens : NULL,
-            direct_token_count,
+            w5_managed_output_capacity, direct_config_ptr,
             &runtime_forward, &w5_managed_terminal_token,
             &w5_managed_terminal_ready);
         if (managed_rc != 0 ||
@@ -14415,7 +14750,7 @@ decode_round_start:
             }
             model_log_terminal_logits_observation(round_dispatch_node,
                 guest_decode_step, &w5_managed_terminal_token,
-                w6_model_direct ? "managed_callable3_logits" :
+                w6_model_direct ? w6_model_direct_logits_source() :
                                   "managed_callable4_logits");
             qwen3_step_terminal_observed = true;
             if (guest_decode_step <
@@ -14429,23 +14764,28 @@ decode_round_start:
                        " node=%u step=%" PRIu64 " token=%" PRIu64
                        " runner_up=%" PRIu64
                        " logits_checksum=0x%016" PRIx64
-                       " source=managed_callable4_logits"
+                       " source=%s"
                        " target=stream_output status=ok\n",
                        round_dispatch_node + 1U, guest_decode_step,
                        w5_managed_terminal_token.sampled_token,
                        w5_managed_terminal_token.runner_up_token,
-                       w5_managed_terminal_token.logits_checksum);
+                       w5_managed_terminal_token.logits_checksum,
+                       w6_model_direct ? w6_model_direct_logits_source() :
+                                         "managed_callable4_logits");
                 if (guest_decode_step == 0U) {
                     printf("[w4_guest] stage deepseek_v4_flash_first_token"
                            " node=%u step=0 token=%" PRIu64
                            " runner_up=%" PRIu64
                            " logits_checksum=0x%016" PRIx64
-                           " source=managed_callable4_logits"
+                           " source=%s"
                            " target=stream_output status=ok\n",
                            round_dispatch_node + 1U,
                            w5_managed_terminal_token.sampled_token,
                            w5_managed_terminal_token.runner_up_token,
-                           w5_managed_terminal_token.logits_checksum);
+                           w5_managed_terminal_token.logits_checksum,
+                           w6_model_direct ?
+                               w6_model_direct_logits_source() :
+                               "managed_callable4_logits");
                 }
             }
             terminal_publish_done_ms = compute_done_ms;
@@ -14459,12 +14799,15 @@ decode_round_start:
                " terminal=%u status=ok\n",
                round_dispatch_node + 1U, guest_decode_step,
                round_layer_start, round_layer_end, round_next_node + 1U,
-               w6_model_direct ? 3U : 4U,
+               w6_model_direct ? w6_model_direct_callable_id() : 4U,
                w6_model_direct ? "direct" : "bulk",
                (round_layer_start > 0U || guest_decode_step > 0U) +
                    (guest_decode_step > 0U),
-               w6_model_direct ? w5_managed_round.direct_result.reference_count :
-                                 w5_managed_round.result.reference_count,
+               w6_model_direct ?
+                   (is_deepseek_v4_flash_profile() ?
+                        w5_managed_round.deepseek_result.reference_count :
+                        w5_managed_round.direct_result.reference_count) :
+                   w5_managed_round.result.reference_count,
                runtime_forward.payload_bytes,
                runtime_forward.kv_payload_bytes, round_dispatch_node,
                w5_managed_terminal_ready ? 1U : 0U);
@@ -15369,6 +15712,7 @@ qwen3_no_work_item_service_coverage:
             w5_managed_round.writer || w5_managed_round.token ||
             w5_managed_round.hidden || w5_managed_round.kv ||
             w5_managed_round.operation || w5_managed_round.direct_operation ||
+            w5_managed_round.deepseek_operation ||
             w5_managed_round.metadata) {
             fprintf(stderr,
                     "[w4_guest] fail managed serving round incomplete"
@@ -15379,8 +15723,11 @@ qwen3_no_work_item_service_coverage:
         printf("[w4_guest] assessment managed_model_complete=true"
                " legacy_range_publish=not_run service_probe=not_run"
                " dispatch_path=%s\n",
-               w6_model_direct ? "mem_service_managed_callable3_direct" :
-                                 "mem_service_managed_callable4");
+               w6_model_direct ?
+                   (is_deepseek_v4_flash_profile() ?
+                        "mem_service_managed_callable5_direct" :
+                        "mem_service_managed_callable3_direct") :
+                   "mem_service_managed_callable4");
         goto qwen3_after_service_coverage;
     }
     if (w5_qwen3_pto) {
@@ -15850,7 +16197,9 @@ out:
     }
     if (w5_managed_round.writer || w5_managed_round.token ||
         w5_managed_round.hidden || w5_managed_round.kv ||
-        w5_managed_round.operation || w5_managed_round.metadata) {
+        w5_managed_round.operation || w5_managed_round.direct_operation ||
+        w5_managed_round.deepseek_operation ||
+        w5_managed_round.metadata) {
         int cleanup_rc = w5_managed_round_close(&w5_managed_round);
 
         if (cleanup_rc != 0) {

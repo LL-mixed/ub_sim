@@ -35,8 +35,12 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.sim_cli = Path(self.tool_dir.name) / "sim-cli"
         self.sim_cli.write_text(
             "#!/bin/sh\n"
-            "[ \"$1\" = managed-model-provider-fingerprint ] || exit 2\n"
-            "echo 424242\n",
+            "case \"$1\" in\n"
+            "  managed-model-provider-fingerprint) echo 424242 ;;\n"
+            "  lingqu-shmem-pto-e2e)\n"
+            "    echo '{\"artifact_fingerprint_hex\":\"0x4242\"}' ;;\n"
+            "  *) exit 2 ;;\n"
+            "esac\n",
             encoding="utf-8",
         )
         self.sim_cli.chmod(0o755)
@@ -100,13 +104,22 @@ class W5ClusterTopologyTest(unittest.TestCase):
         )
         self.assertIn("SIM_W5_TEST_MEMORY_GSVA_KV=0\n", result.stdout)
 
-    def test_cli_rejects_direct_model_io_for_deepseek_until_implemented(self):
+    def test_cli_accepts_direct_model_io_for_deepseek(self):
         result = self.run_config("--print-env", "--model-io", "direct")
 
-        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SIM_W5_MODEL_IO=direct\n", result.stdout)
         self.assertIn(
-            "direct model I/O currently supports Qwen decode profiles",
-            result.stderr,
+            "SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST=",
+            result.stdout,
+        )
+        self.assertIn(
+            "deepseek_v4_flash_pto_range_manifest.json\n",
+            result.stdout,
+        )
+        self.assertIn(
+            "SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT=0x4242\n",
+            result.stdout,
         )
 
     def test_cli_legacy_serving_requires_explicit_option(self):
@@ -344,11 +357,10 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("shared_payload_staging_bytes=0", runner)
         self.assertIn("target=managed_model_provider", infer)
         self.assertIn("provider_address_space=UB_GM", infer)
-        self.assertIn(
-            "qwen3_managed_direct_describe(\n"
-            "                &direct_geometry, &direct_description)",
-            infer,
-        )
+        self.assertIn("w6_qwen3_managed_execute(", infer)
+        self.assertIn("w6_deepseek_v4_flash_managed_execute(", infer)
+        self.assertIn("deepseek_v4_flash_managed_serving_prepare(", infer)
+        self.assertIn("W6_MANAGED_DIRECT_DEEPSEEK_V4_FLASH", infer)
         self.assertIn(
             "runtime_forward.payload_bytes != managed_expected_hidden_bytes",
             infer,
