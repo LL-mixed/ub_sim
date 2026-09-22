@@ -149,10 +149,11 @@ cmd_up() {
     -v "$REPO_ROOT:/work" -w /work \
     -v "$SHARED_DIR:$SHARED_DIR" \
     "$IMAGE" tail -f /dev/null >/dev/null
-  # Runtime libs the prebuilt QEMU links against (liburing/pixman) live in the
-  # image's dnf repo, not the host; install the two runtime packages only.
+  # Runtime libs the prebuilt QEMU links against (liburing/pixman, plus the
+  # GTK stack because the current n4 build was configured with GTK enabled)
+  # live in the image's dnf repo, not the host; install the runtime packages.
   docker exec "$CONTAINER" sh -c \
-    'ldd /work/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64 2>/dev/null | grep -q "not found" && dnf install -y -q pixman liburing || true'
+    'ldd /work/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64 2>/dev/null | grep -q "not found" && dnf install -y -q pixman liburing libepoxy gtk3 cairo gdk-pixbuf2 libX11 || true'
 
   echo "[shell-mode] launching 8-node openEuler cluster (UB full-mesh)..."
   # UB_USE_PREBUILT_QEMU=1 / UB_SYNC_ARTIFACTS=0: reuse the verified prebuilt
