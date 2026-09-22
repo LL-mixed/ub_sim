@@ -10909,23 +10909,35 @@ int main(int argc, char **argv)
             return 1;
         }
         w5_pto_ub_gm_requester_cna = (uint32_t)requester_cna_value;
-        printf("[w4_guest] stage %s"
-               " fingerprint=0x%016" PRIx64
-               " requester_cna=0x%08" PRIx32
-               " timeout_ms=%" PRIu64
-               " publish_output=%u"
-               " program=%s"
-               " source=lingqu_memory_service target=simpler_pto"
-               " address_space=UB_GM status=ok\n",
-               w5_managed_serving ? "w5_managed_serving_transport_config" :
-                                    "w5_pto_ub_gm_probe_config",
-               w5_managed_serving ? w5_managed_artifact_fingerprint :
-                                    w5_pto_ub_gm_artifact_fingerprint,
-               w5_pto_ub_gm_requester_cna,
-               w5_managed_serving ? w5_managed_timeout_ms :
-                                    w5_pto_ub_gm_timeout_ms,
-               w5_pto_ub_gm_publish_output ? 1U : 0U,
-               w5_pto_ub_gm_program);
+        if (w5_managed_serving) {
+            printf("[w4_guest] stage w5_managed_serving_transport_config"
+                   " fingerprint=0x%016" PRIx64
+                   " requester_cna=0x%08" PRIx32
+                   " timeout_ms=%" PRIu64
+                   " source=lingqu_memory_service"
+                   " target=managed_model_provider"
+                   " provider_address_space=UB_GM"
+                   " model_io_mode=bulk_provider_callbacks"
+                   " model_tensor_address_space=HOST"
+                   " pto_instruction_io=0 status=ok\n",
+                   w5_managed_artifact_fingerprint,
+                   w5_pto_ub_gm_requester_cna,
+                   w5_managed_timeout_ms);
+        } else {
+            printf("[w4_guest] stage w5_pto_ub_gm_probe_config"
+                   " fingerprint=0x%016" PRIx64
+                   " requester_cna=0x%08" PRIx32
+                   " timeout_ms=%" PRIu64
+                   " publish_output=%u"
+                   " program=%s"
+                   " source=lingqu_memory_service target=simpler_pto"
+                   " address_space=UB_GM status=ok\n",
+                   w5_pto_ub_gm_artifact_fingerprint,
+                   w5_pto_ub_gm_requester_cna,
+                   w5_pto_ub_gm_timeout_ms,
+                   w5_pto_ub_gm_publish_output ? 1U : 0U,
+                   w5_pto_ub_gm_program);
+        }
     }
     guest_decode_step = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEP", 0);
     guest_decode_steps = env_u64_or_default("SIM_QWEN3_GUEST_DECODE_STEPS", 1);
@@ -11275,7 +11287,10 @@ int main(int argc, char **argv)
                " allocation_granularity=%" PRIu64
                " provider_bootstrap_generation=%" PRIu64
                " holder_node=%s holder_incarnation=%" PRIu64
-               " callable=4 control=mem_service data=obmm status=ok\n",
+               " callable=4 control=mem_service data=obmm"
+               " model_io_mode=bulk_provider_callbacks"
+               " model_tensor_address_space=HOST"
+               " pto_instruction_io=0 status=ok\n",
                w5_managed_run, w5_managed_request, cluster_node_count,
                w5_managed_output_capacity, w5_managed_import_region_bytes,
                w5_managed_allocation_granularity_bytes,

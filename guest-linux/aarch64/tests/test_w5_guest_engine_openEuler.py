@@ -33,6 +33,16 @@ class W5GuestEngineOpenEulerTest(unittest.TestCase):
         source = GUEST_RUNNER.read_text(encoding="utf-8")
         self.assertIn("ub_root_overlay", source)
         self.assertIn("/bin/linqu_*", source)
+        self.assertIn('ln -sf busybox "$overlay_dir/bin/insmod"', source)
+        self.assertIn(
+            '"$RUN_INITRAMFS_DIR/lib/modules/linqu_ub_drv.ko"', source
+        )
+        self.assertIn(
+            '"$overlay_dir/lib/modules/linqu_ub_drv.ko"', source
+        )
+        self.assertIn(
+            "openEuler managed serving requires linqu_ub_drv.ko", source
+        )
         self.assertIn("write_w5_openEuler_systemd_unit", source)
         self.assertIn("ExecStart=/bin/busybox sh /bin/run_app", source)
         self.assertIn("WantedBy=multi-user.target", source)

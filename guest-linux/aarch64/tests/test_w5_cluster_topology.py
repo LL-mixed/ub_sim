@@ -30,6 +30,22 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.deepseek_openeuler_config = (
             self.repo / "w5.deepseek-v4-flash-simpler-openeuler.env"
         )
+        self.tool_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tool_dir.cleanup)
+        self.sim_cli = Path(self.tool_dir.name) / "sim-cli"
+        self.sim_cli.write_text(
+            "#!/bin/sh\n"
+            "[ \"$1\" = managed-model-provider-fingerprint ] || exit 2\n"
+            "echo 424242\n",
+            encoding="utf-8",
+        )
+        self.sim_cli.chmod(0o755)
+
+    def managed_env(self):
+        env = os.environ.copy()
+        env["SIM_CLI_BIN"] = str(self.sim_cli)
+        env.pop("SIM_W5_MANAGED_SERVING", None)
+        return env
 
     def run_config(self, *args):
         return subprocess.run(
@@ -39,6 +55,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=self.managed_env(),
         )
 
     def test_per_run_initramfs_honors_caller_base_image(self):
@@ -69,6 +86,51 @@ class W5ClusterTopologyTest(unittest.TestCase):
                 self.assertIn(
                     f"SIM_W5_CLUSTER_NODE_COUNT={node_count}\n", result.stdout
                 )
+
+    def test_cli_defaults_to_managed_serving(self):
+        result = self.run_config("--print-env")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SIM_W5_MANAGED_SERVING=1\n", result.stdout)
+        self.assertIn("SIM_LINGQU_SHMEM_PTO_ENABLE=1\n", result.stdout)
+        self.assertIn(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE=deepseek-v4-flash-simpler\n",
+            result.stdout,
+        )
+        self.assertIn("SIM_W5_TEST_MEMORY_GSVA_KV=0\n", result.stdout)
+
+    def test_cli_legacy_serving_requires_explicit_option(self):
+        result = self.run_config("--print-env", "--legacy-serving")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SIM_W5_MANAGED_SERVING=0\n", result.stdout)
+
+    def test_cli_rejects_conflicting_serving_modes(self):
+        result = self.run_config(
+            "--print-env", "--managed-serving", "--legacy-serving"
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "--managed-serving and --legacy-serving are mutually exclusive",
+            result.stderr,
+        )
+
+    def test_cli_rejects_legacy_cache_switches_in_managed_mode(self):
+        result = self.run_config("--print-env", "--gsva-kv")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "managed serving cannot use legacy memory-reuse test options",
+            result.stderr,
+        )
+
+    def test_cli_can_find_user_cargo_for_managed_sim_cli_build(self):
+        source = self.config_runner.read_text(encoding="utf-8")
+
+        self.assertIn('cargo_bin="$(command -v cargo', source)
+        self.assertIn('-x "$HOME/.cargo/bin/cargo"', source)
+        self.assertIn('cargo_bin="$HOME/.cargo/bin/cargo"', source)
 
     def test_cli_managed_serving_refreshes_callable_fingerprint(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -255,6 +317,23 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn('"SIM_W5_MANAGED_TIMEOUT_MS", 300000ULL', infer)
         self.assertIn(".timeout_ms = w5_managed_timeout_ms", infer)
 
+    def test_w5_managed_logs_report_bulk_host_model_io(self):
+        runner = self.guest_runner.read_text(encoding="utf-8")
+        infer = self.infer_source.read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(
+            infer.count("model_io_mode=bulk_provider_callbacks"), 2
+        )
+        self.assertGreaterEqual(
+            infer.count("model_tensor_address_space=HOST"), 2
+        )
+        self.assertGreaterEqual(infer.count("pto_instruction_io=0"), 2)
+        self.assertIn("model_io_mode=bulk_provider_callbacks", runner)
+        self.assertIn("model_tensor_address_space=HOST", runner)
+        self.assertIn("pto_instruction_io=0", runner)
+        self.assertIn("target=managed_model_provider", infer)
+        self.assertIn("provider_address_space=UB_GM", infer)
+
     def test_cli_rejects_unsupported_cluster_size(self):
         result = self.run_config("--print-env", "--nodes", "5")
         self.assertEqual(result.returncode, 2)
@@ -314,10 +393,15 @@ class W5ClusterTopologyTest(unittest.TestCase):
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=self.managed_env(),
             )
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"SIM_QWEN3_DENSE_WEIGHTS_PATH={model}\n", result.stdout)
+        self.assertIn("SIM_W5_MANAGED_SERVING=1\n", result.stdout)
+        self.assertIn(
+            "SIM_UAPI_W4_CHIPBACKEND_PROFILE=qwen3_dense\n", result.stdout
+        )
 
     def test_cli_overrides_target_open_euler_disk_image(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -340,6 +424,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=self.managed_env(),
             )
 
         self.assertEqual(result.returncode, 0, result.stderr)

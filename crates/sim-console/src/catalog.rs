@@ -245,6 +245,36 @@ mod tests {
     }
 
     #[test]
+    fn every_w5_model_demo_uses_managed_obmm_io_by_default() {
+        let catalog = DemoCatalog::load_default().unwrap();
+
+        for demo in catalog
+            .demos
+            .iter()
+            .filter(|demo| demo.category == "W5 Inference")
+        {
+            assert!(
+                demo.command
+                    .args
+                    .iter()
+                    .any(|arg| arg == "--managed-serving"),
+                "W5 demo {} does not select managed serving",
+                demo.id
+            );
+            assert!(
+                demo.command.args.iter().all(|arg| arg != "--gsva-kv"),
+                "W5 demo {} still selects the legacy GSVA KV test path",
+                demo.id
+            );
+            assert!(demo.data_plane.iter().any(|item| item == "OBMM"));
+            assert!(demo
+                .data_plane
+                .iter()
+                .any(|item| item == "Managed UB_GM I/O"));
+        }
+    }
+
+    #[test]
     fn only_w5_model_demos_require_the_simpler_toolchain() {
         let catalog = DemoCatalog::load_default().unwrap();
         let simpler_demos: Vec<_> = catalog

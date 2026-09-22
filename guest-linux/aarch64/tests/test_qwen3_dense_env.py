@@ -8,6 +8,17 @@ from pathlib import Path
 
 
 class Qwen3DenseEnvTest(unittest.TestCase):
+    def setUp(self):
+        self._managed_serving = os.environ.get("SIM_W5_MANAGED_SERVING")
+        os.environ["SIM_W5_MANAGED_SERVING"] = "0"
+        self.addCleanup(self._restore_serving_mode)
+
+    def _restore_serving_mode(self):
+        if self._managed_serving is None:
+            os.environ.pop("SIM_W5_MANAGED_SERVING", None)
+        else:
+            os.environ["SIM_W5_MANAGED_SERVING"] = self._managed_serving
+
     def write_qwen3_14b_stub_weights(self, model_dir):
         model_dir.mkdir()
         (model_dir / "config.json").write_text(
@@ -963,6 +974,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn('--model "$SIM_DEEPSEEK_V4_FLASH"', runner_text)
         self.assertNotIn('--model "$deepseek_runtime_dir/ds4flash.gguf"', runner_text)
         self.assertIn("--gsva-kv", config_runner_text)
+        self.assertIn("--legacy-serving", config_runner_text)
         self.assertIn("--require-prefix-cache", config_runner_text)
         self.assertIn("--no-memory-reuse", config_runner_text)
         self.assertIn("STEPS_OVERRIDE", config_runner_text)
@@ -994,8 +1006,8 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertIn("w5_serving_entry.py", config_runner_text)
         self.assertIn("SERVING_CONTROL_APP_SRC", build_initramfs_text)
         self.assertIn("linqu_w5_serving_control", build_initramfs_text)
-        self.assertIn("SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
-        self.assertIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
+        self.assertNotIn("SIM_W5_TEST_MEMORY_POST_RUN_PROMOTE=1", stable_w5_runner_text)
+        self.assertNotIn("SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=1", stable_w5_runner_text)
         self.assertIn("SIM_W5_PROGRESS_INTERVAL_SECS", stable_w5_runner_text)
         self.assertNotIn("printf 'W4_GUEST_PROGRESS_INTERVAL_SECS=", stable_w5_runner_text)
         self.assertIn('exec "$SCRIPT_DIR/run_w5_cluster_config.sh" "$CONFIG_PATH"', stable_w5_runner_text)
@@ -1122,6 +1134,20 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_PROGRESS_INTERVAL_SECS=",
                 "SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE=",
                 "SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED=0",
+                "SIM_W5_MANAGED_SERVING=0",
+                "SIM_LINGQU_SHMEM_PTO_ENABLE=0",
+                "SIM_W5_QWEN3_PTO=0",
+                "SIM_W5_PTO_UB_GM_PROBE=0",
+                "SIM_W5_MANAGED_ARTIFACT_FINGERPRINT=",
+                "SIM_W5_MANAGED_CONNECT=tcp:10.0.0.1:9700",
+                "SIM_W5_MANAGED_TIMEOUT_MS=",
+                "SIM_W5_MANAGED_PROVIDER_LEASE_MS=",
+                "SIM_W5_MANAGED_APERTURE_SIZE=0x200000000",
+                "SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES=67108864",
+                "SIM_W5_MANAGED_IMPORT_REGION_BYTES=268435456",
+                "SIM_W5_MANAGED_BOOTSTRAP_GENERATION=1000000",
+                "SIM_W5_MANAGED_MAX_MAPPINGS=8",
+                f"SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR={script_dir}",
                 "# model",
                 "SIM_UAPI_W4_CHIPBACKEND_PROFILE=",
                 "SIM_DEEPSEEK_V4_FLASH=",
@@ -1435,6 +1461,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
         self.assertEqual(result.stdout.count("--no-memory-reuse"), 1)
         self.assertEqual(result.stdout.count("--require-prefix-cache"), 2)
         self.assertEqual(result.stdout.count("--compare-prefix-cache-benefit"), 2)
+        self.assertEqual(result.stdout.count("--legacy-serving"), 3)
         self.assertIn("run_w5_cluster_config.sh", result.stdout)
         self.assertIn("w5_inference_run_report.py", result.stdout)
 

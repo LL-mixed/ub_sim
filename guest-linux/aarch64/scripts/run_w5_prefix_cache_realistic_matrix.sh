@@ -122,11 +122,11 @@ run_case() {
   shift
   echo "[w5_prefix_cache_realistic_matrix] run=$label steps=$STEPS profile=$PROFILE"
   if (( DRY_RUN )); then
-    printf '%q ' "$RUNNER" --steps "$STEPS" --gsva-kv "$@" "$CONFIG_PATH"
+    printf '%q ' "$RUNNER" --legacy-serving --steps "$STEPS" --gsva-kv "$@" "$CONFIG_PATH"
     printf '\n'
     return 0
   fi
-  "$RUNNER" --steps "$STEPS" --gsva-kv "$@" "$CONFIG_PATH"
+  "$RUNNER" --legacy-serving --steps "$STEPS" --gsva-kv "$@" "$CONFIG_PATH"
 }
 
 echo "=== W5 Prefix Cache Realistic Matrix ==="

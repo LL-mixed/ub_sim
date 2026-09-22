@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_model_timeout_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--managed-serving] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--managed-serving|--legacy-serving] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -16,6 +16,12 @@ not a dynamically-expanded env-prefixed shell command.
 
 --print-env prints the effective environment grouped by runtime surface,
 serving surface, and test/validation controls.
+
+Managed serving is the default. It executes Qwen and DeepSeek model ranges
+against Memory Service managed OBMM objects through authorized UB_GM provider
+callbacks. The current callable 4 materializes model I/O at its Rust boundary;
+W6 owns direct model-kernel PTO TLOAD/TSTORE. Use --legacy-serving only for an
+explicit legacy regression.
 
 RUN_ID in config files is rejected by default to avoid logappend pollution from
 accidental run reuse. Set SIM_W5_ALLOW_FIXED_RUN_ID=1 only for intentional
@@ -28,6 +34,7 @@ READINESS_ONLY=0
 VALIDATE_ONLY=0
 SERVE_QUEUE=0
 MANAGED_SERVING_OVERRIDE=0
+LEGACY_SERVING_OVERRIDE=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
 NODES_OVERRIDE=""
@@ -63,6 +70,10 @@ while (( $# > 0 )); do
       ;;
     --managed-serving)
       MANAGED_SERVING_OVERRIDE=1
+      shift
+      ;;
+    --legacy-serving)
+      LEGACY_SERVING_OVERRIDE=1
       shift
       ;;
     --serve-requests)
@@ -244,6 +255,17 @@ set -a
 source "$CONFIG_PATH"
 set +a
 
+bool_enabled() {
+  case "${1:-}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 export SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR="${SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR:-$SCRIPT_DIR}"
 
 if [[ -n "$OPEN_EULER_DISK_IMAGE_OVERRIDE" ]]; then
@@ -345,7 +367,44 @@ fi
 if (( DISABLE_MEMORY_REUSE_OVERRIDE )); then
   export SIM_W5_TEST_MEMORY_REUSE_DISABLE=1
 fi
-if (( MANAGED_SERVING_OVERRIDE )); then
+
+if (( MANAGED_SERVING_OVERRIDE && LEGACY_SERVING_OVERRIDE )); then
+  echo "--managed-serving and --legacy-serving are mutually exclusive" >&2
+  exit 2
+fi
+if (( LEGACY_SERVING_OVERRIDE )); then
+  export SIM_W5_MANAGED_SERVING=0
+elif (( MANAGED_SERVING_OVERRIDE )); then
+  export SIM_W5_MANAGED_SERVING=1
+else
+  export SIM_W5_MANAGED_SERVING="${SIM_W5_MANAGED_SERVING:-1}"
+fi
+
+if bool_enabled "$SIM_W5_MANAGED_SERVING"; then
+  case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
+    qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
+      echo "managed serving does not support Engram profiles; use --legacy-serving" >&2
+      exit 2
+      ;;
+    deepseek_v4_flash_decode)
+      export SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-deepseek-v4-flash-simpler}"
+      ;;
+    *)
+      export SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-qwen3_dense}"
+      ;;
+  esac
+  case "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" in
+    qwen3_dense|deepseek-v4-flash-simpler|deepseek_v4_flash_simpler)
+      ;;
+    *)
+      echo "managed serving does not support backend $SIM_UAPI_W4_CHIPBACKEND_PROFILE; use --legacy-serving" >&2
+      exit 2
+      ;;
+  esac
+  if (( GSVA_KV_OVERRIDE || REQUIRE_PREFIX_CACHE_OVERRIDE || DISABLE_MEMORY_REUSE_OVERRIDE )); then
+    echo "managed serving cannot use legacy memory-reuse test options; use --legacy-serving for those regressions" >&2
+    exit 2
+  fi
   export SIM_W5_MANAGED_SERVING=1
   export SIM_LINGQU_SHMEM_PTO_ENABLE=1
   export SIM_W5_QWEN3_PTO=0
@@ -355,7 +414,18 @@ if (( MANAGED_SERVING_OVERRIDE )); then
   export SIM_W5_TEST_MEMORY_RUNTIME_BOUNDARY_LOOKUP=0
   export SIM_W5_TEST_MEMORY_ONLINE_BOUNDARY_LOOKUP=0
   export SIM_W5_TEST_MEMORY_PREFIX_CACHE_LOOKUP=0
+  export SIM_W5_TEST_MEMORY_GSVA_KV=0
   export SIM_W5_TEST_MEMORY_REUSE_DISABLE=1
+else
+  case "$SIM_W5_MANAGED_SERVING" in
+    0|false|FALSE|no|NO)
+      export SIM_W5_MANAGED_SERVING=0
+      ;;
+    *)
+      echo "SIM_W5_MANAGED_SERVING must be a boolean: $SIM_W5_MANAGED_SERVING" >&2
+      exit 2
+      ;;
+  esac
 fi
 if [[ -n "$REQUESTS_OVERRIDE" ]]; then
   export SIM_W5_SERVING_REQUESTS_FILE="$REQUESTS_OVERRIDE"
@@ -381,27 +451,39 @@ case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
     ;;
 esac
 
-bool_enabled() {
-  case "${1:-}" in
-    1|true|TRUE|yes|YES)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
 resolve_w5_managed_fingerprint() {
-  local sim_cli fingerprint configured_fingerprint
+  local cargo_bin repo_dir sim_cli target_dir fingerprint configured_fingerprint
 
   if ! bool_enabled "${SIM_W5_MANAGED_SERVING:-0}"; then
     return 0
   fi
-  sim_cli="${SIM_CLI_BIN:-$ROOT_DIR/../../target/release/sim-cli}"
+  repo_dir="$ROOT_DIR/../.."
+  sim_cli="${SIM_CLI_BIN:-$repo_dir/target/release/sim-cli}"
   if [[ ! -x "$sim_cli" ]]; then
-    echo "managed serving requires SIM_CLI_BIN or a built target/release/sim-cli to fingerprint callable 4" >&2
-    return 2
+    if [[ -n "${SIM_CLI_BIN:-}" ]]; then
+      echo "managed serving SIM_CLI_BIN is not executable: $SIM_CLI_BIN" >&2
+      return 2
+    fi
+    cargo_bin="$(command -v cargo 2>/dev/null || true)"
+    if [[ -z "$cargo_bin" && -x "$HOME/.cargo/bin/cargo" ]]; then
+      cargo_bin="$HOME/.cargo/bin/cargo"
+    fi
+    if [[ -z "$cargo_bin" ]]; then
+      echo "managed serving requires Cargo to build sim-cli" >&2
+      return 2
+    fi
+    echo "[w5_cluster_config] building sim-cli for managed serving" >&2
+    if ! (cd "$repo_dir" && "$cargo_bin" build --release -p sim-cli); then
+      echo "managed serving failed to build sim-cli" >&2
+      return 2
+    fi
+    target_dir="$(cd "$repo_dir" && "$cargo_bin" metadata --format-version=1 --no-deps | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')" || return 2
+    sim_cli="$target_dir/release/sim-cli"
+    if [[ ! -x "$sim_cli" ]]; then
+      echo "managed serving sim-cli build did not produce an executable: $sim_cli" >&2
+      return 2
+    fi
+    export SIM_CLI_BIN="$sim_cli"
   fi
   fingerprint="$(SIM_UAPI_W4_CHIPBACKEND_PROFILE="${SIM_UAPI_W4_CHIPBACKEND_PROFILE:-}" \
     "$sim_cli" managed-model-provider-fingerprint)" || return 2
@@ -495,6 +577,9 @@ print_w5_effective_env() {
   print_env_value SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE "${SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE:-}"
   print_env_value SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"
   print_env_value SIM_W5_MANAGED_SERVING "${SIM_W5_MANAGED_SERVING:-0}"
+  print_env_value SIM_LINGQU_SHMEM_PTO_ENABLE "${SIM_LINGQU_SHMEM_PTO_ENABLE:-0}"
+  print_env_value SIM_W5_QWEN3_PTO "${SIM_W5_QWEN3_PTO:-0}"
+  print_env_value SIM_W5_PTO_UB_GM_PROBE "${SIM_W5_PTO_UB_GM_PROBE:-0}"
   print_env_value SIM_W5_MANAGED_ARTIFACT_FINGERPRINT "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
   print_env_value SIM_W5_MANAGED_CONNECT "${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
   print_env_value SIM_W5_MANAGED_TIMEOUT_MS "${SIM_W5_MANAGED_TIMEOUT_MS:-}"

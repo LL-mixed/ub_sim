@@ -286,11 +286,11 @@ run_case() {
   shift 2
   echo "[w5_prefix_cache_serving_matrix] run=$label steps=$STEPS profile=$PROFILE config=$case_config"
   if (( DRY_RUN )); then
-    printf '%q ' "$RUNNER" --steps "$STEPS" --gsva-kv "$@" "$case_config"
+    printf '%q ' "$RUNNER" --legacy-serving --steps "$STEPS" --gsva-kv "$@" "$case_config"
     printf '\n'
     return 0
   fi
-  "$RUNNER" --steps "$STEPS" --gsva-kv "$@" "$case_config"
+  "$RUNNER" --legacy-serving --steps "$STEPS" --gsva-kv "$@" "$case_config"
 }
 
 run_expected_fail_closed() {
@@ -300,12 +300,12 @@ run_expected_fail_closed() {
   echo "[w5_prefix_cache_serving_matrix] run=$label expect_fail_closed=true"
   if (( DRY_RUN )); then
     printf 'expect-fail '
-    printf '%q ' "$RUNNER" --steps "$STEPS" --gsva-kv --require-prefix-cache "$case_config"
+    printf '%q ' "$RUNNER" --legacy-serving --steps "$STEPS" --gsva-kv --require-prefix-cache "$case_config"
     printf '\n'
     return 0
   fi
   set +e
-  "$RUNNER" --steps "$STEPS" --gsva-kv --require-prefix-cache "$case_config" 2>"$log_path"
+  "$RUNNER" --legacy-serving --steps "$STEPS" --gsva-kv --require-prefix-cache "$case_config" 2>"$log_path"
   local rc=$?
   set -e
   if (( rc == 0 )); then

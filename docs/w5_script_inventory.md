@@ -12,6 +12,11 @@ submission:
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh /path/to/w5.env
 ```
 
+This command defaults to Memory Service managed serving with OBMM-backed,
+authorized UB_GM provider I/O. The current callable 4 uses bulk provider
+callbacks around model execution. `--legacy-serving` is reserved for explicit
+legacy regression matrices.
+
 For nodeA ingress serving requests:
 
 ```sh

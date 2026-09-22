@@ -431,7 +431,7 @@ Qwen3 和 DeepSeek V4 Flash 都进入同一个 managed serving object/data lifec
 7. 创建 Memory Service access domain；
 8. 打开 managed compute context 和 PTO endpoint。
 
-启动日志要求出现：
+本报告采集运行时，启动日志为：
 
 ```text
 w5_managed_serving_runtime_open ...
@@ -440,6 +440,16 @@ callable=4 control=mem_service data=obmm status=ok
 
 该 marker 表示当前节点已经具备 Memory Service control plane、OBMM data provider 和
 PTO dispatch endpoint。任一部分失败都会终止 W5 节点启动。
+
+后续收尾已经把容易误解的字段改成显式执行模式。当前 callable 4 应打印：
+
+```text
+target=managed_model_provider provider_address_space=UB_GM
+model_io_mode=bulk_provider_callbacks model_tensor_address_space=HOST
+pto_instruction_io=0 status=ok
+```
+
+W6 完成 direct model tensor 后才允许把后两项切换为 `UB_GM` 和 `1`。
 
 ### 5.3 一个 PP range 的输入对象
 

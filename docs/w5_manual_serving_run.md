@@ -91,11 +91,26 @@ Run one-shot W5 stream inference:
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh /path/to/w5.env
 ```
 
+The stable entrypoint defaults to Memory Service managed serving. Qwen and
+DeepSeek model ranges consume and publish OBMM-backed shared objects through
+authorized UB_GM provider callbacks. The current callable 4 materializes model
+inputs and outputs at the Rust model boundary; W6 owns direct model-kernel PTO
+`TLOAD/TSTORE`. Startup fails when the managed callable, backend, or fingerprint
+cannot be prepared.
+
 Run the same model profile on two or three simulated nodes:
 
 ```sh
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh --nodes 2 /path/to/w5.env
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh --nodes 3 /path/to/w5.env
+```
+
+Legacy prefix-cache and GSVA-KV regression matrices must select their old
+execution path explicitly:
+
+```bash
+./guest-linux/aarch64/scripts/run_w5_cluster_config.sh \
+  --legacy-serving --gsva-kv /path/to/w5.env
 ```
 
 Use `run_w5_cluster_config.sh` directly only when already inside a prepared

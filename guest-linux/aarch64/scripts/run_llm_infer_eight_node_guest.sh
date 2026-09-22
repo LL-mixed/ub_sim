@@ -577,7 +577,7 @@ validate_w5_managed_serving() {
         "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" != "0" ||
         "$SIM_QWEN3_GUEST_ENGRAM" != "0" ||
         "$SIM_QWEN3_SAMPLER_TOP_K" != "1" ]]; then
-    trace "FAIL: managed serving requires a W5 profile, direct access, top_k=1, and disables callable-1/callable-3/engram"
+    trace "FAIL: managed serving requires a W5 profile, managed UB_GM I/O, top_k=1, and disables callable-1/callable-3/engram"
     return 1
   fi
   if [[ -z "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" ||
@@ -1645,8 +1645,17 @@ build_w4_openEuler_initramfs() {
   # systemd unit so openEuler starts run_app after multi-user.target.
   overlay_dir="$RUN_INITRAMFS_DIR/ub_root_overlay"
   mkdir -p "$overlay_dir/bin" "$overlay_dir/tmp" \
+    "$overlay_dir/lib/modules" \
     "$overlay_dir/etc/systemd/system/multi-user.target.wants"
   cp -a "$RUN_INITRAMFS_DIR/bin/busybox" "$overlay_dir/bin/busybox"
+  ln -sf busybox "$overlay_dir/bin/insmod"
+  if [[ -f "$RUN_INITRAMFS_DIR/lib/modules/linqu_ub_drv.ko" ]]; then
+    cp -a "$RUN_INITRAMFS_DIR/lib/modules/linqu_ub_drv.ko" \
+      "$overlay_dir/lib/modules/linqu_ub_drv.ko"
+  else
+    echo "[w4guest8] FAIL: openEuler managed serving requires linqu_ub_drv.ko" >&2
+    return 1
+  fi
   for app_bin in "$RUN_INITRAMFS_DIR"/bin/linqu_*; do
     [[ -f "$app_bin" ]] || continue
     cp -a "$app_bin" "$overlay_dir/bin/"
@@ -2036,7 +2045,7 @@ validate_node_log() {
     local expected_managed_steps="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
 
     assert_log_has "$log_file" "\\[w4guest8:initramfs\\] managed_service ready node=$((idx - 1)) .*allocation_policy=node-partitioned-kernel-probed" "$node_id managed service readiness" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=4 control=mem_service data=obmm status=ok" "$node_id managed runtime" || return 1
+    assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=4 control=mem_service data=obmm model_io_mode=bulk_provider_callbacks model_tensor_address_space=HOST pto_instruction_io=0 status=ok" "$node_id managed runtime" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=4 .*status=ok" "$expected_managed_steps" "$node_id managed model ranges" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable4" "$expected_managed_steps" "$node_id managed completion gate" || return 1
     assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_request_cleanup node=${idx} steps=${expected_managed_steps} allocations=$((SIM_W5_CLUSTER_NODE_COUNT * expected_managed_steps)) .*live_objects=0 backing_bytes=0 address_bytes=0 export_mappings=0 import_mappings=0 live_refs=0 in_flight=0 quarantined_objects=0 quarantined_bytes=0 status=ok" 1 "$node_id managed request cleanup" || return 1

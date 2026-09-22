@@ -132,6 +132,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             result = subprocess.run(
                 [
                     str(self.config_runner),
+                    "--legacy-serving",
                     "--validate-only",
                     "--serve-queue",
                     str(env_file),
@@ -187,7 +188,12 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             }
 
             result = subprocess.run(
-                [str(self.config_runner), "--readiness-only", str(env_file)],
+                [
+                    str(self.config_runner),
+                    "--legacy-serving",
+                    "--readiness-only",
+                    str(env_file),
+                ],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -272,7 +278,12 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             }
 
             subprocess.run(
-                [str(self.config_runner), "--readiness-only", str(env_file)],
+                [
+                    str(self.config_runner),
+                    "--legacy-serving",
+                    "--readiness-only",
+                    str(env_file),
+                ],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -336,6 +347,7 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             subprocess.run(
                 [
                     str(self.config_runner),
+                    "--legacy-serving",
                     "--readiness-only",
                     "--flash-payload-dir",
                     str(payload_dir),
@@ -402,7 +414,12 @@ class W5MemoryServiceBootstrapTest(unittest.TestCase):
             }
 
             subprocess.run(
-                [str(self.config_runner), "--readiness-only", str(env_file)],
+                [
+                    str(self.config_runner),
+                    "--legacy-serving",
+                    "--readiness-only",
+                    str(env_file),
+                ],
                 env=env,
                 capture_output=True,
                 text=True,
