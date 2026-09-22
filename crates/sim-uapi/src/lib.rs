@@ -7,6 +7,7 @@ mod deepseek_v4_flash_official_model_runtime;
 mod deepseek_v4_flash_official_range_runtime;
 mod deepseek_v4_flash_official_runtime;
 mod deepseek_v4_flash_official_vector_runtime;
+mod deepseek_v4_flash_pto_range;
 mod deepseek_v4_flash_runtime;
 mod qwen3_pto_range;
 pub mod managed_model_input;
@@ -231,6 +232,7 @@ pub struct PtoUbGmDispatchV2Req {
 pub const PTO_UB_GM_HOST_VECTOR_CALLABLE_ID: u64 = 1;
 pub const PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID: u64 = 2;
 pub const PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID: u64 = 3;
+pub const PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID: u64 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRangeDispatchReq {
