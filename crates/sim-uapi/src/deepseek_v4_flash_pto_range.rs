@@ -234,11 +234,7 @@ impl DeepseekV4FlashPtoRangeGeometry {
                 BufferUsage::Input,
             ),
             (vec![previous], 5, BufferUsage::Input),
-            (
-                vec![if self.first == 0 { self.tokens } else { 1 }],
-                2,
-                BufferUsage::Input,
-            ),
+            (vec![self.tokens], 2, BufferUsage::Input),
             (vec![self.tokens, hidden_width], 0, BufferUsage::Output),
             (vec![next], 5, BufferUsage::Output),
             (
@@ -419,6 +415,12 @@ mod tests {
         ] {
             assert_eq!(validate(&request(&geometry)).unwrap(), geometry);
         }
+        let middle = DeepseekV4FlashPtoRangeGeometry::profile(15, 29, 3, 4);
+        let request = request(&middle);
+        let SimplerRuntimeArg::UbGmMemref { view, .. } = &request.args[2] else {
+            panic!("token IDs must be a managed memref");
+        };
+        assert_eq!(view.shape, vec![4]);
     }
 
     #[test]

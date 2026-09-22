@@ -10,9 +10,9 @@ mod deepseek_v4_flash_official_vector_runtime;
 mod deepseek_v4_flash_pto_range;
 mod deepseek_v4_flash_pto_weights;
 mod deepseek_v4_flash_runtime;
-mod qwen3_pto_range;
-pub mod managed_model_input;
 pub mod managed_model_dispatch;
+pub mod managed_model_input;
+mod qwen3_pto_range;
 use managed_model_input::{resolve_managed_operands, ManagedModelInput};
 pub use qwen3_pto_range::Qwen3PtoRangeGeometry;
 
@@ -2557,8 +2557,7 @@ fn resolve_qwen3_range_dispatch_operands(
                         operand.bytes().len()
                     ));
                 }
-                if operand.metadata().object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE
-                {
+                if operand.metadata().object_kind != QWEN3_DENSE_PROFILE_OBMM_KIND_QWEN3_KV_STATE {
                     return Err("qwen3_range_dispatch_kv_operand_kind_mismatch".to_string());
                 }
                 operands.previous_kv = Some(operand);
@@ -16095,6 +16094,9 @@ fn run_pto_ub_gm_chipbackend(
         PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID => {
             qwen3_pto_range::validate(req)?;
         }
+        PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID => {
+            deepseek_v4_flash_pto_range::validate(req)?;
+        }
         _ => return Err("pto_ub_gm_unsupported_callable".to_string()),
     }
     let manifest_path = pto_ub_gm_manifest_path(req.callable_id)?;
@@ -16113,18 +16115,26 @@ fn run_pto_ub_gm_chipbackend(
         .map(|ubpu| ubpu.node_id)
         .ok_or_else(|| "missing_ubpu_node".to_string())?;
     let mut runtime_args = req.args.clone();
-    let private_constants = if req.callable_id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID {
-        Some(qwen3_pto_range::private_constants(
+    let private_payload = match req.callable_id {
+        PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID => Some(qwen3_pto_range::private_constants(
             &qwen3_pto_range::validate(req)?,
-        )?)
-    } else {
-        None
+        )?),
+        PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID => {
+            let source = deepseek_v4_flash_model_source()?;
+            if source.format != DeepseekV4FlashModelFormat::Gguf {
+                return Err("deepseek_pto_range_requires_gguf_weights".into());
+            }
+            Some(deepseek_v4_flash_pto_weights::private_weight_index(
+                &source.path,
+            )?)
+        }
+        _ => None,
     };
-    let private_constant_bytes = private_constants
+    let private_payload_bytes = private_payload
         .as_ref()
         .map_or(0, |bytes| bytes.len() as u64);
     let private_segment = SegmentHandle(0x5157_5054_4f00_0001);
-    if private_constants.is_some() {
+    if private_payload.is_some() {
         runtime_args.insert(
             6,
             SimplerRuntimeArg::InputSegment {
@@ -16133,7 +16143,7 @@ fn run_pto_ub_gm_chipbackend(
                     segment: private_segment,
                     offset: 0,
                 },
-                bytes: private_constant_bytes,
+                bytes: private_payload_bytes,
             },
         );
     }
@@ -16141,8 +16151,8 @@ fn run_pto_ub_gm_chipbackend(
         host_vector_backend_spec_from_manifest_envelope(manifest, platform, runtime_args);
     let _dispatch_lock = host_vector_dispatch_lock_guard()?;
     let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
-    if let Some(constants) = private_constants {
-        runtime.seed_host_segment(ubpu_node, private_segment, constants);
+    if let Some(payload) = private_payload {
+        runtime.seed_host_segment(ubpu_node, private_segment, payload);
     }
     runtime
         .register_pto_ub_gm_access(access)
@@ -16186,12 +16196,16 @@ fn run_pto_ub_gm_chipbackend(
         }
     })();
     runtime.clear_pto_ub_gm_access();
-    if runtime.host_payload_bytes() != private_constant_bytes {
+    if runtime.host_payload_bytes() != private_payload_bytes {
         return Err("pto_ub_gm_payload_staging_detected".to_string());
     }
     if req.callable_id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID {
         eprintln!("qwen3-pto-range: request={} private_constants_bytes={} shared_payload_staging_bytes=0 status={}",
-            req.request_id, private_constant_bytes, if run_result.is_ok() { "pass" } else { "fail" });
+            req.request_id, private_payload_bytes, if run_result.is_ok() { "pass" } else { "fail" });
+    }
+    if req.callable_id == PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID {
+        eprintln!("deepseek-v4-flash-pto-range: request={} private_weight_index_bytes={} shared_payload_staging_bytes=0 status={}",
+            req.request_id, private_payload_bytes, if run_result.is_ok() { "pass" } else { "fail" });
     }
     run_result
 }
@@ -16830,6 +16844,14 @@ fn pto_ub_gm_manifest_callable_id(
         {
             Ok(contract.id)
         }
+        Some(contract)
+            if contract.id == PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID
+                && contract.contract == "deepseek_v4_flash_range_v1"
+                && manifest.simpler_runtime.orch_function_name
+                    == "build_deepseek_v4_flash_pto_range_graph" =>
+        {
+            Ok(contract.id)
+        }
         _ => Err("pto_ub_gm_unsupported_callable".to_string()),
     }
 }
@@ -16852,6 +16874,15 @@ fn pto_ub_gm_manifest_path(callable_id: u64) -> Result<PathBuf, String> {
                 .map_err(|_| "missing_simpler_qwen3_pto_range_manifest")?;
             if !simpler_manifest_has_compatible_capi_abi(&path) {
                 return Err("incompatible_simpler_qwen3_pto_range_manifest".into());
+            }
+            Ok(path)
+        }
+        PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID => {
+            let path = std::env::var("SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST")
+                .map(PathBuf::from)
+                .map_err(|_| "missing_simpler_deepseek_v4_flash_pto_range_manifest")?;
+            if !simpler_manifest_has_compatible_capi_abi(&path) {
+                return Err("incompatible_simpler_deepseek_v4_flash_pto_range_manifest".into());
             }
             Ok(path)
         }
@@ -17731,6 +17762,9 @@ fn pto_ub_gm_callable_fingerprint(
         }
         PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID => {
             fingerprint_field(&mut hash, b"lingqu.pto.ub_gm.qwen3_range.v1")
+        }
+        PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID => {
+            fingerprint_field(&mut hash, b"lingqu.pto.ub_gm.deepseek_v4_flash_range.v1")
         }
         _ => return Err("pto_ub_gm_unsupported_callable".to_string()),
     }
@@ -45327,6 +45361,21 @@ outputs:
         let (id, fingerprint) = super::pto_ub_gm_callable_from_manifest(&manifest_path).unwrap();
         assert_eq!(id, 2);
         assert_ne!(fingerprint, changed);
+        let mut deepseek_manifest = qwen3_manifest.clone();
+        deepseek_manifest["pto_ub_gm_callable"] = serde_json::json!({
+            "id": 5, "contract": "deepseek_v4_flash_range_v1"
+        });
+        deepseek_manifest["simpler_runtime"]["orch_function_name"] =
+            serde_json::json!("build_deepseek_v4_flash_pto_range_graph");
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec(&deepseek_manifest).unwrap(),
+        )
+        .unwrap();
+        let (id, deepseek_fingerprint) =
+            super::pto_ub_gm_callable_from_manifest(&manifest_path).unwrap();
+        assert_eq!(id, 5);
+        assert_ne!(deepseek_fingerprint, fingerprint);
         qwen3_manifest["pto_ub_gm_callable"]["contract"] = serde_json::json!("unknown");
         std::fs::write(&manifest_path, serde_json::to_vec(&qwen3_manifest).unwrap()).unwrap();
         assert!(super::pto_ub_gm_callable_from_manifest(&manifest_path).is_err());

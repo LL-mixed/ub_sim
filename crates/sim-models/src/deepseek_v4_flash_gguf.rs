@@ -6,6 +6,10 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+pub fn iq2_xxs_codebook() -> (&'static [u64; 256], &'static [u8; 128]) {
+    (&IQ2_XXS_GRID, &IQ2_XS_SIGNS)
+}
+
 const GGUF_MAGIC: u32 = 0x4655_4747;
 const GGUF_VERSION: u32 = 3;
 const MAX_CATALOG_ENTRIES: u64 = 1_000_000;

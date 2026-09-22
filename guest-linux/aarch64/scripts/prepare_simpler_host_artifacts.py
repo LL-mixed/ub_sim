@@ -186,6 +186,54 @@ class ProfileSpec:
 
 
 PROFILE_SPECS = {
+    "host_deepseek_v4_flash_range": ProfileSpec(
+        profile="HostVector",
+        example="qwen3_pto",
+        manifest_name="deepseek_v4_flash_pto_range_manifest.json",
+        callable_hint="deepseek_v4_flash_pto_range",
+        orch_source="deepseek_v4_flash_pto_range_orch.cpp",
+        orch_function="build_deepseek_v4_flash_pto_range_graph",
+        kernels=(
+            KernelSpec(0, "deepseek_v4_flash_pto_range_kernel.cpp", "aiv"),
+        ),
+        args_template=(
+            {"kind": "input", "name": "hidden"},
+            {"kind": "input", "name": "previous_state"},
+            {"kind": "input", "name": "token_ids"},
+            {"kind": "output", "name": "hidden_output"},
+            {"kind": "output", "name": "next_state"},
+            {"kind": "output", "name": "logits"},
+            {"kind": "input", "name": "private_weight_index"},
+        )
+        + tuple(
+            {"kind": "scalar_u64", "name": name}
+            for name in (
+                "first",
+                "end",
+                "layers",
+                "past",
+                "tokens",
+                "hidden",
+                "hc_mult",
+                "vocab",
+                "attention_heads",
+                "kv_heads",
+                "head_dim",
+                "rope_head_dim",
+                "q_lora_rank",
+                "o_lora_rank",
+                "output_groups",
+                "experts",
+                "experts_used",
+                "shared_experts",
+                "moe_intermediate",
+                "sliding_window",
+                "indexer_heads",
+                "indexer_head_dim",
+                "indexer_top_k",
+            )
+        ),
+    ),
     "host_qwen3_range": ProfileSpec(
         profile="HostVector",
         example="qwen3_pto",
@@ -3456,6 +3504,11 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
         manifest["pto_ub_gm_callable"] = {"id": 2, "contract": "qwen3_operator_v1"}
     if args.profile == "host_qwen3_range":
         manifest["pto_ub_gm_callable"] = {"id": 3, "contract": "qwen3_range_v1"}
+    if args.profile == "host_deepseek_v4_flash_range":
+        manifest["pto_ub_gm_callable"] = {
+            "id": 5,
+            "contract": "deepseek_v4_flash_range_v1",
+        }
     if args.profile == "host_gemm":
         manifest["host_gemm_manifest_version"] = 3
         manifest["host_gemm"] = {

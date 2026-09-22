@@ -103,18 +103,22 @@ using I32Row = pto::Tile<pto::TileType::Vec, int32_t, 1, kVectorCapacity,
 inline std::vector<uint32_t> token_ids(const I32View &source,
                                        uint32_t count) {
     source.validate();
-    if (!count || count > source.elements || count > kVectorCapacity) {
+    if (!count || count > source.elements) {
         throw std::invalid_argument("deepseek_pto_token_geometry");
     }
-    I32Row tile(count);
     std::vector<int32_t> private_ids(count);
-    auto input = global_row<int32_t>(source.address, count);
-    auto output = global_row<int32_t>(
-        reinterpret_cast<uintptr_t>(private_ids.data()), count);
-    pto::TLOAD(tile, input);
-    pto::TSTORE(output, tile);
-    ++operator_counts.tload;
-    ++operator_counts.tstore;
+    for (uint32_t offset = 0; offset < count; offset += kVectorCapacity) {
+        const uint32_t width = std::min(kVectorCapacity, count - offset);
+        I32Row tile(width);
+        auto input = global_row<int32_t>(
+            source.address + uint64_t(offset) * sizeof(int32_t), width);
+        auto output = global_row<int32_t>(
+            reinterpret_cast<uintptr_t>(private_ids.data() + offset), width);
+        pto::TLOAD(tile, input);
+        pto::TSTORE(output, tile);
+        ++operator_counts.tload;
+        ++operator_counts.tstore;
+    }
     std::vector<uint32_t> result;
     result.reserve(count);
     for (int32_t value : private_ids) {
@@ -174,16 +178,45 @@ inline F32View f32_weight_view(const WeightTensor &weight,
                     expected_elements, expected_elements, 1};
 }
 
+inline WeightTensor f16_vector_row(const WeightTensor &weight, uint32_t row,
+                                   uint32_t rows, uint32_t width) {
+    const uint64_t elements = uint64_t(rows) * width;
+    const bool matrix = weight.rank == 2 && weight.dimensions[0] == width &&
+                        weight.dimensions[1] == rows;
+    const bool flat = weight.rank == 1 && weight.dimensions[0] == elements;
+    if (weight.tensor_type != kGgufTypeF16 || (!matrix && !flat) ||
+        row >= rows || weight.bytes != elements * 2) {
+        throw std::invalid_argument("deepseek_pto_f16_vector_row");
+    }
+    WeightTensor result = weight;
+    result.payload += uint64_t(row) * width * 2;
+    result.bytes = uint64_t(width) * 2;
+    result.elements = width;
+    result.dimensions[0] = width;
+    result.dimensions[1] = 0;
+    result.rank = 1;
+    return result;
+}
+
+inline F32View prefix_rows(const F32View &view, uint32_t rows) {
+    view.validate();
+    if (!rows || rows > view.rows) {
+        throw std::invalid_argument("deepseek_pto_prefix_rows");
+    }
+    return F32View {view.address, rows, view.columns, view.row_stride,
+                    view.column_stride};
+}
+
 struct RopeFactors {
     std::vector<float> cosine;
     std::vector<float> sine;
 
-    F32View cos_view() {
+    F32View cos_view() const {
         return F32View {reinterpret_cast<uintptr_t>(cosine.data()), 1,
                         static_cast<uint32_t>(cosine.size()),
                         static_cast<uint32_t>(cosine.size()), 1};
     }
-    F32View sin_view() {
+    F32View sin_view() const {
         return F32View {reinterpret_cast<uintptr_t>(sine.data()), 1,
                         static_cast<uint32_t>(sine.size()),
                         static_cast<uint32_t>(sine.size()), 1};
@@ -334,19 +367,480 @@ hash_router_experts(const MappedWeights &weights, uint32_t layer,
         table.dimensions[1] != kVocab || token >= kVocab) {
         throw std::invalid_argument("deepseek_pto_hash_router_geometry");
     }
-    const uint8_t *row =
-        table.payload + uint64_t(token) * kExpertsUsed * sizeof(int32_t);
+    std::array<int32_t, kExpertsUsed> private_experts {};
+    I32Row tile(kExpertsUsed);
+    auto source = global_row<int32_t>(
+        reinterpret_cast<uintptr_t>(
+            table.payload + uint64_t(token) * kExpertsUsed * sizeof(int32_t)),
+        kExpertsUsed);
+    auto destination = global_row<int32_t>(
+        reinterpret_cast<uintptr_t>(private_experts.data()), kExpertsUsed);
+    pto::TLOAD(tile, source);
+    pto::TSTORE(destination, tile);
+    ++operator_counts.tload;
+    ++operator_counts.tstore;
     std::vector<uint32_t> result;
     result.reserve(kExpertsUsed);
-    for (uint32_t slot = 0; slot < kExpertsUsed; ++slot) {
-        int32_t expert;
-        std::memcpy(&expert, row + slot * sizeof(expert), sizeof(expert));
+    for (int32_t expert : private_experts) {
         if (expert < 0 || uint32_t(expert) >= kExperts) {
             throw std::invalid_argument("deepseek_pto_hash_router_expert");
         }
         result.push_back(uint32_t(expert));
     }
     return result;
+}
+
+inline bool compressor_step(const MappedWeights &weights, uint32_t layer,
+                            std::string_view prefix, uint32_t position,
+                            const F32View &normalized_hidden,
+                            const CompressorStateView &state,
+                            const F32View &output) {
+    state.validate();
+    normalized_hidden.validate();
+    output.validate();
+    if (normalized_hidden.rows != 1 ||
+        normalized_hidden.columns != kHidden || output.rows != 1 ||
+        output.columns != state.head_dim) {
+        throw std::invalid_argument("deepseek_pto_compressor_step_geometry");
+    }
+    const std::string base(prefix);
+    LocalMatrix projected_kv(1, state.width());
+    LocalMatrix projected_gate(1, state.width());
+    f16_linear(normalized_hidden,
+               layer_tensor(weights, layer, base + "_kv"),
+               projected_kv.view());
+    f16_linear(normalized_hidden,
+               layer_tensor(weights, layer, base + "_gate"),
+               projected_gate.view());
+    const uint32_t ape_row = position % state.compress_ratio;
+    const WeightTensor ape = f16_vector_row(
+        layer_tensor(weights, layer, base + "_ape"), ape_row,
+        state.compress_ratio, state.width());
+    LocalMatrix ape_values(1, state.width());
+    decode_f16_vector(ape, ape_values.view());
+    LocalMatrix projected_score(1, state.width());
+    residual(projected_gate.view(), ape_values.view(),
+             projected_score.view());
+    LocalMatrix pooled(1, state.head_dim);
+    if (!compressor_update_pre_scored(position, projected_kv.view(),
+                                      projected_score.view(), state,
+                                      pooled.view())) {
+        return false;
+    }
+
+    const F32View norm = f32_weight_view(
+        layer_tensor(weights, layer, base + "_norm"), state.head_dim);
+    rms_norm(pooled.view(), &norm, output, kEpsilon);
+    const uint32_t compressed_position =
+        position + 1 - state.compress_ratio;
+    RopeFactors rope = rope_factors(layer, compressed_position);
+    rope_tail(output, kRopeDim, rope.cos_view(), rope.sin_view(), false,
+              output);
+    if (state.head_dim == kHeadDim) {
+        fp8_kv_roundtrip(output, kRopeDim);
+    } else if (state.head_dim == kIndexerHeadDim) {
+        indexer_qat(output);
+    } else {
+        throw std::invalid_argument("deepseek_pto_compressor_head_dim");
+    }
+    return true;
+}
+
+inline std::vector<uint32_t>
+selected_compressed_rows(const MappedWeights &weights, uint32_t layer,
+                         const F32View &normalized_q_lora,
+                         const F32View &normalized_hidden,
+                         const LayerStateView &state,
+                         uint32_t compressed_rows,
+                         const RopeFactors &rope) {
+    if (!compressed_rows) return {};
+    if (!state.compressed || compressed_rows > state.compressed->rows) {
+        throw std::invalid_argument("deepseek_pto_compressed_frontier");
+    }
+    if (state.ratio != 4) {
+        std::vector<uint32_t> result(compressed_rows);
+        for (uint32_t row = 0; row < compressed_rows; ++row) {
+            result[row] = row;
+        }
+        return result;
+    }
+    if (!state.indexer_compressed ||
+        compressed_rows > state.indexer_compressed->rows) {
+        throw std::invalid_argument("deepseek_pto_indexer_frontier");
+    }
+
+    LocalMatrix query(1, kIndexerHeads * kIndexerHeadDim);
+    const WeightTensor query_weight =
+        layer_tensor(weights, layer, "indexer.attn_q_b");
+    if (query_weight.tensor_type == kGgufTypeF16) {
+        f16_linear(normalized_q_lora, query_weight, query.view());
+    } else if (query_weight.tensor_type == kGgufTypeQ8_0) {
+        q8_0_linear(normalized_q_lora, query_weight, query.view());
+    } else {
+        throw std::invalid_argument("deepseek_pto_indexer_query_type");
+    }
+    const F32View query_heads {query.view().address, kIndexerHeads,
+                               kIndexerHeadDim, kIndexerHeadDim, 1};
+    rope_tail(query_heads, kRopeDim, rope.cos_view(), rope.sin_view(), false,
+              query_heads);
+    indexer_qat(query_heads);
+    LocalMatrix head_weights(1, kIndexerHeads);
+    f16_linear(normalized_hidden,
+               layer_tensor(weights, layer, "indexer.proj"),
+               head_weights.view());
+    const F32View active_indexer =
+        prefix_rows(*state.indexer_compressed, compressed_rows);
+    return sparse_indexer(query_heads, active_indexer, head_weights.view(),
+                          kIndexerTopK);
+}
+
+inline LocalMatrix mixed_kv(const LayerStateView &state, uint32_t raw_rows,
+                            uint32_t compressed_rows,
+                            std::span<const uint32_t> selected_rows) {
+    const F32View active_raw = prefix_rows(state.raw, raw_rows);
+    if (selected_rows.size() > compressed_rows ||
+        (!selected_rows.empty() && !state.compressed)) {
+        throw std::invalid_argument("deepseek_pto_mixed_kv_geometry");
+    }
+    LocalMatrix result(raw_rows + selected_rows.size(), kHeadDim);
+    const F32View raw_destination {result.view().address, raw_rows, kHeadDim,
+                                   kHeadDim, 1};
+    copy(active_raw, raw_destination);
+    if (!selected_rows.empty()) {
+        const F32View active_compressed =
+            prefix_rows(*state.compressed, compressed_rows);
+        const F32View compressed_destination {
+            result.view().at(raw_rows),
+            static_cast<uint32_t>(selected_rows.size()), kHeadDim, kHeadDim,
+            1};
+        gather_kv_rows(active_compressed, selected_rows,
+                       compressed_destination);
+    }
+    return result;
+}
+
+inline LocalMatrix attention_layer(const MappedWeights &weights,
+                                   uint32_t layer, uint32_t position,
+                                   const F32View &residual_hc,
+                                   LayerStateView &state) {
+    HcPrepared prepared = prepare_hc(
+        weights, layer, "hc_attn_fn", "hc_attn_scale", "hc_attn_base",
+        "attn_norm", residual_hc);
+    LocalMatrix q_lora(1, kQLora);
+    q8_0_linear(prepared.normalized.view(),
+                layer_tensor(weights, layer, "attn_q_a"), q_lora.view());
+    const F32View q_lora_norm = f32_weight_view(
+        layer_tensor(weights, layer, "attn_q_a_norm"), kQLora);
+    rms_norm(q_lora.view(), &q_lora_norm, q_lora.view(), kEpsilon);
+
+    LocalMatrix q_flat(1, kAttentionHeads * kHeadDim);
+    q8_0_linear(q_lora.view(), layer_tensor(weights, layer, "attn_q_b"),
+                q_flat.view());
+    const F32View q {q_flat.view().address, kAttentionHeads, kHeadDim,
+                     kHeadDim, 1};
+    head_rms_norm(q, nullptr, q, kEpsilon);
+    RopeFactors rope = rope_factors(layer, position);
+    rope_tail(q, kRopeDim, rope.cos_view(), rope.sin_view(), false, q);
+
+    LocalMatrix current_kv(1, kHeadDim);
+    q8_0_linear(prepared.normalized.view(),
+                layer_tensor(weights, layer, "attn_kv"),
+                current_kv.view());
+    const F32View kv_norm = f32_weight_view(
+        layer_tensor(weights, layer, "attn_kv_a_norm"), kHeadDim);
+    rms_norm(current_kv.view(), &kv_norm, current_kv.view(), kEpsilon);
+    rope_tail(current_kv.view(), kRopeDim, rope.cos_view(), rope.sin_view(),
+              false, current_kv.view());
+    fp8_kv_roundtrip(current_kv.view(), kRopeDim);
+    f16_roundtrip(current_kv.view());
+    const uint32_t previous_raw_rows =
+        std::min(position, kSlidingWindow);
+    append_bounded_row(state.raw, previous_raw_rows, kSlidingWindow,
+                       current_kv.view());
+    const uint32_t raw_rows =
+        std::min(position + 1, kSlidingWindow);
+
+    uint32_t compressed_rows = 0;
+    if (state.ratio) {
+        if (!state.attention_compressor) {
+            throw std::invalid_argument("deepseek_pto_attention_state");
+        }
+        LocalMatrix compressed(1, kHeadDim);
+        if (compressor_step(weights, layer, "attn_compressor", position,
+                            prepared.normalized.view(),
+                            *state.attention_compressor,
+                            compressed.view())) {
+            if (!state.compressed) {
+                throw std::invalid_argument(
+                    "deepseek_pto_attention_compressed_state");
+            }
+            const uint32_t previous =
+                std::min(position / state.ratio, kIndexerTopK);
+            append_bounded_row(*state.compressed, previous, kIndexerTopK,
+                               compressed.view());
+        }
+        if (state.ratio == 4) {
+            if (!state.indexer_compressor) {
+                throw std::invalid_argument("deepseek_pto_indexer_state");
+            }
+            LocalMatrix indexer_compressed(1, kIndexerHeadDim);
+            if (compressor_step(weights, layer, "indexer_compressor",
+                                position, prepared.normalized.view(),
+                                *state.indexer_compressor,
+                                indexer_compressed.view())) {
+                if (!state.indexer_compressed) {
+                    throw std::invalid_argument(
+                        "deepseek_pto_indexer_compressed_state");
+                }
+                const uint32_t previous =
+                    std::min(position / state.ratio, kIndexerTopK);
+                append_bounded_row(*state.indexer_compressed, previous,
+                                   kIndexerTopK,
+                                   indexer_compressed.view());
+            }
+        }
+        compressed_rows =
+            std::min((position + 1) / state.ratio, kIndexerTopK);
+    }
+
+    const auto selected = selected_compressed_rows(
+        weights, layer, q_lora.view(), prepared.normalized.view(), state,
+        compressed_rows, rope);
+    LocalMatrix attention_kv =
+        mixed_kv(state, raw_rows, compressed_rows, selected);
+    LocalMatrix heads(kAttentionHeads, kHeadDim);
+    const F32View sinks = f32_weight_view(
+        layer_tensor(weights, layer, "attn_sinks"), kAttentionHeads);
+    sink_attention(q, attention_kv.view(), sinks, heads.view());
+    rope_tail(heads.view(), kRopeDim, rope.cos_view(), rope.sin_view(), true,
+              heads.view());
+
+    LocalMatrix output_a(1, kOLora);
+    const F32View flat_heads {heads.view().address, 1,
+                              kAttentionHeads * kHeadDim,
+                              kAttentionHeads * kHeadDim, 1};
+    grouped_q8_0_linear(flat_heads,
+                        layer_tensor(weights, layer, "attn_output_a"),
+                        kOutputGroups, output_a.view());
+    LocalMatrix attention_output(1, kHidden);
+    q8_0_linear(output_a.view(),
+                layer_tensor(weights, layer, "attn_output_b"),
+                attention_output.view());
+    LocalMatrix output_hc(kHcMult, kHidden);
+    hc_post(attention_output.view(), residual_hc, prepared.post.view(),
+            prepared.combine.view(), output_hc.view());
+    return output_hc;
+}
+
+inline LocalMatrix ffn_layer(const MappedWeights &weights,
+                            const Iq2Codebook &codebook, uint32_t layer,
+                            uint32_t token, const F32View &residual_hc) {
+    HcPrepared prepared = prepare_hc(
+        weights, layer, "hc_ffn_fn", "hc_ffn_scale", "hc_ffn_base",
+        "ffn_norm", residual_hc);
+    LocalMatrix logits(1, kExperts);
+    f16_linear(prepared.normalized.view(),
+               layer_tensor(weights, layer, "ffn_gate_inp"),
+               logits.view());
+    std::optional<F32View> selection_bias;
+    const std::string selection_bias_name =
+        layer_tensor_name(layer, "ffn_exp_probs_b");
+    if (weights.contains(selection_bias_name)) {
+        selection_bias =
+            f32_weight_view(weights.tensor(selection_bias_name), kExperts);
+    }
+    std::vector<uint32_t> selected_experts;
+    if (layer < 3) {
+        selected_experts = hash_router_experts(weights, layer, token);
+    }
+    LocalMatrix probabilities(1, kExperts);
+    const RouterSelection selection = router(
+        logits.view(), selection_bias ? &*selection_bias : nullptr,
+        selected_experts, kExpertsUsed, kExpertWeightScale,
+        probabilities.view());
+
+    LocalMatrix routed(1, kHidden);
+    routed_experts(prepared.normalized.view(),
+                   layer_tensor(weights, layer, "ffn_gate_exps"),
+                   layer_tensor(weights, layer, "ffn_up_exps"),
+                   layer_tensor(weights, layer, "ffn_down_exps"), codebook,
+                   selection.expert_indices, selection.expert_weights,
+                   kSwigluClamp, routed.view());
+    LocalMatrix shared(1, kHidden);
+    shared_expert(prepared.normalized.view(),
+                  layer_tensor(weights, layer, "ffn_gate_shexp"),
+                  layer_tensor(weights, layer, "ffn_up_shexp"),
+                  layer_tensor(weights, layer, "ffn_down_shexp"),
+                  kSwigluClamp, shared.view());
+    LocalMatrix moe(1, kHidden);
+    residual(routed.view(), shared.view(), moe.view());
+    LocalMatrix output_hc(kHcMult, kHidden);
+    hc_post(moe.view(), residual_hc, prepared.post.view(),
+            prepared.combine.view(), output_hc.view());
+    return output_hc;
+}
+
+inline void output_head(const MappedWeights &weights,
+                        const F32View &hidden_hc,
+                        const F32View &logits) {
+    hidden_hc.validate();
+    logits.validate();
+    if (hidden_hc.rows != kHcMult || hidden_hc.columns != kHidden ||
+        hidden_hc.row_stride != kHidden || hidden_hc.column_stride != 1 ||
+        logits.rows != 1 || logits.columns != kVocab) {
+        throw std::invalid_argument("deepseek_pto_output_head_geometry");
+    }
+    LocalMatrix normalized_hc(kHcMult, kHidden);
+    rms_norm(hidden_hc, nullptr, normalized_hc.view(), kEpsilon);
+    const F32View flat_hc {normalized_hc.view().address, 1,
+                           kHcMult * kHidden, kHcMult * kHidden, 1};
+    LocalMatrix projected(1, kHcMult);
+    f16_linear(flat_hc, weights.tensor("output_hc_fn.weight"),
+               projected.view());
+    const F32View scale =
+        f32_weight_view(weights.tensor("output_hc_scale.weight"), 1);
+    const F32View base =
+        f32_weight_view(weights.tensor("output_hc_base.weight"), kHcMult);
+    F32Scalar scale_value;
+    load_scalar(scale_value, scale, 0, 0);
+    LocalMatrix hc_weights(1, kHcMult);
+    sigmoid_affine(projected.view(), base, 0, kHcMult, scale_value, 1.0f,
+                   kEpsilon, hc_weights.view(), 0);
+    LocalMatrix embedding(1, kHidden);
+    hc_weighted_sum(hidden_hc, hc_weights.view(), embedding.view());
+    const F32View norm =
+        f32_weight_view(weights.tensor("output_norm.weight"), kHidden);
+    rms_norm(embedding.view(), &norm, embedding.view(), kEpsilon);
+    q8_0_linear(embedding.view(), weights.tensor("output.weight"), logits);
+}
+
+inline void initialize_compressors(RangeStateView &state) {
+    for (LayerStateView &layer : state.layers) {
+        if (layer.attention_compressor) {
+            fill(layer.attention_compressor->kv, 0.0f);
+            fill(layer.attention_compressor->score,
+                 -std::numeric_limits<float>::infinity());
+        }
+        if (layer.indexer_compressor) {
+            fill(layer.indexer_compressor->kv, 0.0f);
+            fill(layer.indexer_compressor->score,
+                 -std::numeric_limits<float>::infinity());
+        }
+    }
+}
+
+inline void validate_range_io(const RangeGeometry &geometry,
+                              const F32View &hidden_input,
+                              const ByteView &previous_state,
+                              const I32View &token_input,
+                              const F32View &hidden_output,
+                              const ByteView &next_state,
+                              const F32View &logits) {
+    geometry.validate();
+    hidden_input.validate();
+    previous_state.validate();
+    token_input.validate();
+    hidden_output.validate();
+    next_state.validate();
+    logits.validate();
+    const uint32_t hc_width = kHcMult * kHidden;
+    const bool first_hidden =
+        geometry.first == 0 && hidden_input.rows == 1 &&
+        hidden_input.columns == 1 && hidden_input.row_stride == 1 &&
+        hidden_input.column_stride == 1;
+    const bool intermediate_hidden =
+        geometry.first != 0 && hidden_input.rows == geometry.tokens &&
+        hidden_input.columns == hc_width &&
+        hidden_input.row_stride == hc_width &&
+        hidden_input.column_stride == 1;
+    const uint32_t expected_tokens = geometry.tokens;
+    const uint32_t expected_logits =
+        geometry.end == geometry.layers ? kVocab : 1;
+    if ((!first_hidden && !intermediate_hidden) ||
+        token_input.elements != expected_tokens ||
+        hidden_output.rows != geometry.tokens ||
+        hidden_output.columns != hc_width ||
+        hidden_output.row_stride != hc_width ||
+        hidden_output.column_stride != 1 ||
+        (geometry.past == 0 && previous_state.bytes != 1) ||
+        logits.rows != 1 || logits.columns != expected_logits ||
+        logits.row_stride != expected_logits || logits.column_stride != 1) {
+        throw std::invalid_argument("deepseek_pto_range_io_geometry");
+    }
+}
+
+inline void decoder_range(const MappedWeights &weights,
+                          const Iq2Codebook &codebook,
+                          const RangeGeometry &geometry,
+                          const F32View &hidden_input,
+                          const ByteView &previous_state,
+                          const I32View &token_input,
+                          const F32View &hidden_output,
+                          const ByteView &next_state,
+                          const F32View &logits) {
+    validate_range_io(geometry, hidden_input, previous_state, token_input,
+                      hidden_output, next_state, logits);
+    codebook.validate();
+    const RangeStateGeometry next_geometry {
+        geometry.first,
+        geometry.end,
+        geometry.past + geometry.tokens,
+        kHeadDim,
+        kIndexerHeadDim,
+        kSlidingWindow,
+        kIndexerTopK,
+    };
+    RangeStateView next = range_state(next_state, next_geometry, true);
+    if (geometry.past) {
+        const RangeStateGeometry previous_geometry {
+            geometry.first,
+            geometry.end,
+            geometry.past,
+            kHeadDim,
+            kIndexerHeadDim,
+            kSlidingWindow,
+            kIndexerTopK,
+        };
+        const RangeStateView previous =
+            range_state(previous_state, previous_geometry, false);
+        copy_range_state(previous, next);
+    } else {
+        initialize_compressors(next);
+    }
+
+    const std::vector<uint32_t> tokens =
+        token_ids(token_input, geometry.tokens);
+    for (uint32_t token_index = 0; token_index < geometry.tokens;
+         ++token_index) {
+        LocalMatrix hidden_hc(kHcMult, kHidden);
+        if (geometry.first == 0) {
+            embedding(weights, tokens[token_index], hidden_hc.view());
+        } else {
+            const F32View source {
+                hidden_input.at(token_index), kHcMult, kHidden, kHidden, 1};
+            copy(source, hidden_hc.view());
+        }
+        const uint32_t position = geometry.past + token_index;
+        for (uint32_t layer = geometry.first; layer < geometry.end;
+             ++layer) {
+            LayerStateView &layer_state =
+                next.layers.at(layer - geometry.first);
+            hidden_hc = attention_layer(weights, layer, position,
+                                        hidden_hc.view(), layer_state);
+            hidden_hc = ffn_layer(weights, codebook, layer,
+                                  tokens[token_index], hidden_hc.view());
+        }
+        const F32View flattened {hidden_hc.view().address, 1,
+                                 kHcMult * kHidden, kHcMult * kHidden, 1};
+        const F32View destination {
+            hidden_output.at(token_index), 1, kHcMult * kHidden,
+            hidden_output.row_stride, hidden_output.column_stride};
+        copy(flattened, destination);
+        if (geometry.end == geometry.layers &&
+            token_index + 1 == geometry.tokens) {
+            output_head(weights, hidden_hc.view(), logits);
+        }
+    }
 }
 
 } // namespace lingqu::deepseek_v4_flash_pto

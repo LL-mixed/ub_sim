@@ -49,6 +49,12 @@ static std::vector<uint8_t> descriptor(
     append_u32(output, 2);
     output.insert(output.end(), name, name + sizeof(name) - 1);
     output.insert(output.end(), path.begin(), path.end());
+    for (uint32_t index = 0; index < ds::kIq2GridEntries; ++index) {
+        append_u64(output, 0x0808080808080808ULL + index);
+    }
+    for (uint32_t index = 0; index < ds::kIq2SignEntries; ++index) {
+        output.push_back(static_cast<uint8_t>(index));
+    }
     return output;
 }
 
@@ -68,6 +74,11 @@ int main() {
         CHECK(index.tensor_count() == 1);
         CHECK(index.model_bytes() == model.size());
         CHECK(index.catalog_fingerprint() == 0x123456789abcdef0ULL);
+        CHECK(index.iq2_grid().front() == 0x0808080808080808ULL);
+        CHECK(index.iq2_grid().back() ==
+              0x0808080808080808ULL + ds::kIq2GridEntries - 1);
+        CHECK(index.iq2_signs().front() == 0);
+        CHECK(index.iq2_signs().back() == ds::kIq2SignEntries - 1);
         ds::MappedWeights weights(index);
         const ds::WeightTensor tensor = weights.tensor("blk.0.attn_q_a.weight");
         CHECK(tensor.bytes == 16);

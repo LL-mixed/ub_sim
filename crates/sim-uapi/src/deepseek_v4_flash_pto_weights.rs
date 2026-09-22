@@ -5,13 +5,17 @@
 //! simulation weight provider. Managed hidden, KV and logits never enter this
 //! private descriptor.
 
-use sim_models::deepseek_v4_flash_gguf::{GgufCatalog, GgufTensorInfo};
+use sim_models::deepseek_v4_flash_gguf::{iq2_xxs_codebook, GgufCatalog, GgufTensorInfo};
 use std::path::Path;
 
-pub(crate) const MAGIC: u64 = u64::from_le_bytes(*b"DS4PTOI1");
-pub(crate) const VERSION: u32 = 1;
+pub(crate) const MAGIC: u64 = u64::from_le_bytes(*b"DS4PTOI2");
+pub(crate) const VERSION: u32 = 2;
 pub(crate) const HEADER_BYTES: usize = 64;
 pub(crate) const RECORD_BYTES: usize = 112;
+pub(crate) const IQ2_GRID_ENTRIES: usize = 256;
+pub(crate) const IQ2_SIGN_ENTRIES: usize = 128;
+pub(crate) const IQ2_CODEBOOK_BYTES: usize =
+    IQ2_GRID_ENTRIES * std::mem::size_of::<u64>() + IQ2_SIGN_ENTRIES;
 const MAX_TENSORS: usize = 1_000_000;
 const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024 * 1024;
 
@@ -83,6 +87,7 @@ pub(crate) fn encode(catalog: &GgufCatalog) -> Result<Vec<u8>, String> {
     let total_bytes = strings_offset
         .checked_add(strings_bytes)
         .and_then(|value| value.checked_add(path.len()))
+        .and_then(|value| value.checked_add(IQ2_CODEBOOK_BYTES))
         .ok_or("deepseek_pto_weight_index_size")?;
     if total_bytes > MAX_DESCRIPTOR_BYTES
         || catalog.tensors.len() > u32::MAX as usize
@@ -143,6 +148,11 @@ pub(crate) fn encode(catalog: &GgufCatalog) -> Result<Vec<u8>, String> {
         bytes.extend_from_slice(tensor.name.as_bytes());
     }
     bytes.extend_from_slice(path);
+    let (iq2_grid, iq2_signs) = iq2_xxs_codebook();
+    for value in iq2_grid {
+        append_u64(&mut bytes, *value);
+    }
+    bytes.extend_from_slice(iq2_signs);
     debug_assert_eq!(bytes.len(), total_bytes);
     Ok(bytes)
 }
@@ -242,6 +252,14 @@ mod tests {
             &bytes[strings_offset + strings_bytes..strings_offset + strings_bytes + path_bytes],
             catalog.path.to_str().unwrap().as_bytes()
         );
+        let codebook_offset = strings_offset + strings_bytes + path_bytes;
+        let (grid, signs) = iq2_xxs_codebook();
+        assert_eq!(u64_at(&bytes, codebook_offset), grid[0]);
+        assert_eq!(
+            u64_at(&bytes, codebook_offset + (IQ2_GRID_ENTRIES - 1) * 8),
+            grid[IQ2_GRID_ENTRIES - 1]
+        );
+        assert_eq!(&bytes[codebook_offset + IQ2_GRID_ENTRIES * 8..], signs);
         for (record, tensor) in catalog.tensors.values().enumerate() {
             let offset = HEADER_BYTES + record * RECORD_BYTES;
             assert_eq!(u64_at(&bytes, offset), fnv1a(tensor.name.as_bytes()));

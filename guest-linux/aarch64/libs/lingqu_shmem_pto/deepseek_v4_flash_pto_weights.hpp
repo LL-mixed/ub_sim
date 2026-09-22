@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -14,11 +15,15 @@
 
 namespace lingqu::deepseek_v4_flash_pto {
 
-constexpr uint64_t kWeightIndexMagic = 0x31494f5450345344ULL;
-constexpr uint32_t kWeightIndexVersion = 1;
+constexpr uint64_t kWeightIndexMagic = 0x32494f5450345344ULL;
+constexpr uint32_t kWeightIndexVersion = 2;
 constexpr uint32_t kWeightIndexHeaderBytes = 64;
 constexpr uint32_t kWeightIndexRecordBytes = 112;
 constexpr uint32_t kWeightIndexMaxRank = 8;
+constexpr uint32_t kIq2GridEntries = 256;
+constexpr uint32_t kIq2SignEntries = 128;
+constexpr uint64_t kIq2CodebookBytes =
+    uint64_t(kIq2GridEntries) * sizeof(uint64_t) + kIq2SignEntries;
 
 inline uint32_t read_u32(const uint8_t *bytes) {
     uint32_t value;
@@ -84,7 +89,10 @@ public:
             throw std::invalid_argument("deepseek_pto_weight_index_layout");
         }
         path_offset_ = checked_add(strings_offset_, strings_bytes_);
-        if (!path_bytes_ || checked_add(path_offset_, path_bytes_) != descriptor_bytes_) {
+        codebook_offset_ = checked_add(path_offset_, path_bytes_);
+        if (!path_bytes_ ||
+            checked_add(codebook_offset_, kIq2CodebookBytes) !=
+                descriptor_bytes_) {
             throw std::invalid_argument("deepseek_pto_weight_index_layout");
         }
         const auto path = model_path();
@@ -94,11 +102,24 @@ public:
         for (uint32_t index = 0; index < record_count_; ++index) {
             validate_record(record(index));
         }
+        for (uint32_t index = 0; index < kIq2GridEntries; ++index) {
+            iq2_grid_[index] =
+                read_u64(descriptor_ + codebook_offset_ + uint64_t(index) * 8);
+        }
+        std::memcpy(iq2_signs_.data(),
+                    descriptor_ + codebook_offset_ + kIq2GridEntries * 8,
+                    iq2_signs_.size());
     }
 
     uint64_t model_bytes() const { return model_bytes_; }
     uint64_t catalog_fingerprint() const { return catalog_fingerprint_; }
     uint32_t tensor_count() const { return record_count_; }
+    const std::array<uint64_t, kIq2GridEntries> &iq2_grid() const {
+        return iq2_grid_;
+    }
+    const std::array<uint8_t, kIq2SignEntries> &iq2_signs() const {
+        return iq2_signs_;
+    }
 
     std::string_view model_path() const {
         return std::string_view(
@@ -191,9 +212,12 @@ private:
     uint64_t records_offset_ = 0;
     uint64_t strings_offset_ = 0;
     uint64_t path_offset_ = 0;
+    uint64_t codebook_offset_ = 0;
     uint32_t record_count_ = 0;
     uint32_t strings_bytes_ = 0;
     uint32_t path_bytes_ = 0;
+    std::array<uint64_t, kIq2GridEntries> iq2_grid_ {};
+    std::array<uint8_t, kIq2SignEntries> iq2_signs_ {};
 };
 
 class MappedWeights {

@@ -1,0 +1,91 @@
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import sys
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[3]
+LIB = ROOT / "guest-linux" / "aarch64" / "libs" / "lingqu_shmem_pto"
+
+
+class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
+    def test_range_header_compiles_with_strict_warnings(self):
+        compiler = os.environ.get("CXX", "c++")
+        source = '#include "deepseek_v4_flash_pto_range.hpp"\nint main() { return 0; }\n'
+        command = [
+            compiler,
+            "-std=c++20",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-D__CPU_SIM",
+            "-pthread",
+            "-isystem",
+            str(ROOT / "vendor" / "pto-isa" / "include"),
+            "-I",
+            str(LIB),
+            "-x",
+            "c++",
+            "-fsyntax-only",
+            "-",
+        ]
+        version = subprocess.run(
+            [compiler, "--version"], check=True, capture_output=True, text=True
+        ).stdout
+        if "clang" in version.lower():
+            command.insert(6, "-Wno-pass-failed")
+        subprocess.run(command, input=source, text=True, check=True)
+
+    def test_range_graph_contains_complete_direct_model_stages(self):
+        source = (LIB / "deepseek_v4_flash_pto_range.hpp").read_text()
+        for stage in (
+            "attention_layer(",
+            "compressor_step(",
+            "selected_compressed_rows(",
+            "sink_attention(",
+            "ffn_layer(",
+            "routed_experts(",
+            "shared_expert(",
+            "output_head(",
+            "decoder_range(",
+        ):
+            self.assertIn(stage, source)
+        self.assertNotIn("std::memcpy(", source)
+
+    def test_artifact_profile_freezes_callable_five_contract(self):
+        path = ROOT / "guest-linux/aarch64/scripts/prepare_simpler_host_artifacts.py"
+        spec = importlib.util.spec_from_file_location(
+            "deepseek_pto_range_artifact_contract", path
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        profile = module.PROFILE_SPECS["host_deepseek_v4_flash_range"]
+        self.assertEqual(len(profile.args_template), 30)
+        self.assertEqual(
+            profile.orch_function,
+            "build_deepseek_v4_flash_pto_range_graph",
+        )
+        self.assertEqual(profile.kernels[0].source,
+                         "deepseek_v4_flash_pto_range_kernel.cpp")
+        self.assertEqual(
+            module.resolve_example_root(Path("unused"), profile), LIB
+        )
+
+    def test_kernel_uses_private_weight_index_and_direct_decoder(self):
+        kernel = (LIB / "deepseek_v4_flash_pto_range_kernel.cpp").read_text()
+        orchestration = (
+            LIB / "deepseek_v4_flash_pto_range_orch.cpp"
+        ).read_text()
+        self.assertIn("WeightIndex index", kernel)
+        self.assertIn("MappedWeights weights", kernel)
+        self.assertIn("decoder_range(", kernel)
+        self.assertIn("expected_arg_count = 30", orchestration)
+        self.assertIn("task.add_output(args.tensor(3).ref(), args.tensor(4).ref())",
+                      orchestration)
+
+
+if __name__ == "__main__":
+    unittest.main()

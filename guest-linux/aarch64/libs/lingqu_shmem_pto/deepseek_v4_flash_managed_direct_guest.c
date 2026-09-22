@@ -229,7 +229,7 @@ int deepseek_v4_flash_managed_direct_describe(
         previous_bytes, DS4_DTYPE_U8, LINGQU_SHMEM_ACCESS_READ, 1);
     set_1d(&description_out
                ->tensors[DEEPSEEK_V4_FLASH_MANAGED_DIRECT_TOKEN_IDS],
-        geometry->first ? 1 : geometry->tokens, DS4_DTYPE_I32,
+        geometry->tokens, DS4_DTYPE_I32,
         LINGQU_SHMEM_ACCESS_READ, sizeof(uint32_t));
     set_2d(&description_out
                ->tensors[DEEPSEEK_V4_FLASH_MANAGED_DIRECT_HIDDEN_OUTPUT],
