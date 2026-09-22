@@ -2082,7 +2082,9 @@ validate_node_log() {
     assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_request_cleanup node=${idx} steps=${expected_managed_steps} allocations=$((SIM_W5_CLUSTER_NODE_COUNT * expected_managed_steps)) .*live_objects=0 backing_bytes=0 address_bytes=0 export_mappings=0 import_mappings=0 live_refs=0 in_flight=0 quarantined_objects=0 quarantined_bytes=0 status=ok" 1 "$node_id managed request cleanup" || return 1
     if (( idx == SIM_W5_CLUSTER_NODE_COUNT )); then
       assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*terminal=1 status=ok" "$expected_managed_steps" "$node_id managed terminal ranges" || return 1
-      if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
+      if [[ "$SIM_W5_MODEL_IO" == "direct" ]]; then
+        assert_log_count "$log_file" "\\[w4_guest\\] stage model_terminal_token_result_publish local=node${idx} target=node1 .*source=managed_callable3_logits .*model_io=direct status=ok notification=reference_committed publisher=terminal_node" "$expected_managed_steps" "$node_id direct terminal token references" || return 1
+      elif is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then
         assert_log_count "$log_file" "\\[w4_guest\\] stage deepseek_v4_flash_stream_token node=${idx} .*source=managed_callable4_logits .*status=ok" "$expected_managed_steps" "$node_id managed DeepSeek stream" || return 1
       fi
     else

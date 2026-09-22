@@ -310,6 +310,8 @@ int main(void)
 
     memcpy(&geometry.scale_bits, &scale, sizeof(scale));
     CHECK(!qwen3_managed_direct_describe(&geometry, &description));
+    CHECK(description.tensors[QWEN3_MANAGED_DIRECT_HIDDEN_OUTPUT].byte_length ==
+          (uint64_t)geometry.tokens * geometry.hidden * sizeof(uint16_t));
     init_object(&writer, "writer", 1U << 20, 1, 0);
     init_object(&hidden, "hidden",
         description.tensors[QWEN3_MANAGED_DIRECT_HIDDEN_INPUT].byte_length,
@@ -366,6 +368,14 @@ int main(void)
           expected_layout.views[QWEN3_MANAGED_WRITER_LOGITS].offset);
     CHECK(result.references[3].object.payload_offset ==
           expected_layout.views[QWEN3_MANAGED_WRITER_TOKEN_RESULT].offset);
+    CHECK(!lingqu_object_ref_v2_validate(&result.references[3]));
+    CHECK(result.references[3].object.object_kind ==
+          MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT);
+    CHECK(result.references[3].object.payload_bytes ==
+          MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES);
+    CHECK(result.references[3].object.payload_checksum ==
+          mem_service_provider_checksum64(
+              token_words, MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES));
     CHECK(!qwen3_managed_serving_release(&operation));
     CHECK(!operation && acquires == 2 && publishes == 3 && waits == 3 &&
           wait_attempts == 4 && stages == 4);

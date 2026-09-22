@@ -344,6 +344,23 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn("shared_payload_staging_bytes=0", runner)
         self.assertIn("target=managed_model_provider", infer)
         self.assertIn("provider_address_space=UB_GM", infer)
+        self.assertIn(
+            "qwen3_managed_direct_describe(\n"
+            "                &direct_geometry, &direct_description)",
+            infer,
+        )
+        self.assertIn(
+            "runtime_forward.payload_bytes != managed_expected_hidden_bytes",
+            infer,
+        )
+        self.assertIn(
+            "stage model_terminal_token_result_publish",
+            infer,
+        )
+        self.assertIn(
+            "notification=reference_committed",
+            self.guest_runner.read_text(encoding="utf-8"),
+        )
 
     def test_cli_rejects_unsupported_cluster_size(self):
         result = self.run_config("--print-env", "--nodes", "5")

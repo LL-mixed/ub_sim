@@ -2744,6 +2744,51 @@ static int w6_qwen3_managed_execute(
     rc = qwen3_managed_serving_publish(state->direct_operation,
         terminal ? token_words : NULL, &state->direct_result, &status);
     if (rc) return rc;
+    if (terminal) {
+        const struct lingqu_object_ref_wire_v2 *token_reference =
+            &state->direct_result
+                 .references[QWEN3_MANAGED_SERVING_OUTPUT_COUNT - 1U];
+        uint64_t token_checksum = mem_service_provider_checksum64(
+            token_words, MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES);
+
+        if (state->direct_result.reference_count !=
+                QWEN3_MANAGED_SERVING_OUTPUT_COUNT ||
+            lingqu_object_ref_v2_validate(token_reference) != 0 ||
+            token_reference->access != LINGQU_OBJECT_REF_V2_READ ||
+            token_reference->object.object_kind !=
+                MEM_SERVICE_OBMM_KIND_MODEL_TOKEN_RESULT ||
+            token_reference->object.payload_bytes !=
+                MEM_SERVICE_OBMM_MODEL_TOKEN_RESULT_BYTES ||
+            token_reference->object.payload_checksum != token_checksum) {
+            return -EPROTO;
+        }
+        printf("[w4_guest] stage model_terminal_token_result_publish"
+               " local=node%u target=node1 step=%" PRIu64
+               " token=%" PRIu64 " runner_up=%" PRIu64
+               " margin_milli=%" PRIu64
+               " logits_checksum=0x%016" PRIx64
+               " text_checksum=0x%016" PRIx64
+               " piece_word0=0x%016" PRIx64
+               " piece_word1=0x%016" PRIx64
+               " allocation_key=%s home_node=%s"
+               " allocation_generation=%" PRIu64
+               " provider_incarnation=%" PRIu64
+               " payload_offset=0x%016" PRIx64
+               " bytes=%" PRIu64 " checksum=0x%016" PRIx64
+               " source=managed_callable3_logits"
+               " target_kind=mem_service_reference_v2 model_io=direct"
+               " status=ok notification=reference_committed"
+               " publisher=terminal_node broadcast_targets=1\n",
+               local_node + 1U, decode_step, token_words[1], token_words[2],
+               token_words[3], token_words[4], token_words[5], token_words[6],
+               token_words[7], token_reference->allocation_key,
+               token_reference->home_node,
+               token_reference->allocation_generation,
+               token_reference->provider_incarnation,
+               token_reference->object.payload_offset,
+               token_reference->object.payload_bytes,
+               token_reference->object.payload_checksum);
+    }
     *terminal_ready_out = terminal;
     return 0;
 }
@@ -14228,10 +14273,13 @@ decode_round_start:
     compute_window_ms = compute_start_ms;
     if (w5_managed_serving) {
         struct qwen3_pto_guest_geometry direct_geometry = {0};
+        struct qwen3_managed_direct_description direct_description = {0};
         const struct qwen3_pto_guest_geometry *direct_geometry_ptr = NULL;
         uint32_t direct_tokens[1024] = {0};
         uint32_t direct_token_count = 0;
         uint64_t raw_sampled_token = 0;
+        uint64_t managed_expected_hidden_bytes =
+            w4_runtime_handoff_hidden_bytes(guest_decode_step);
         bool terminal_owner =
             round_dispatch_node + 1U == cluster_node_count;
         int managed_rc;
@@ -14267,6 +14315,18 @@ decode_round_start:
             }
             scale = 1.0f / sqrtf((float)direct_geometry.head_dim);
             memcpy(&direct_geometry.scale_bits, &scale, sizeof(scale));
+            managed_rc = qwen3_managed_direct_describe(
+                &direct_geometry, &direct_description);
+            if (managed_rc != 0) {
+                fprintf(stderr,
+                        "[w4_guest] fail W6 Qwen direct tensor ABI"
+                        " node=%u step=%" PRIu64 " rc=%d\n",
+                        round_dispatch_node + 1U, guest_decode_step,
+                        managed_rc);
+                goto out;
+            }
+            managed_expected_hidden_bytes = direct_description
+                .tensors[QWEN3_MANAGED_DIRECT_HIDDEN_OUTPUT].byte_length;
             if (!direct_geometry.first) {
                 direct_token_count = direct_geometry.tokens;
                 for (uint32_t i = 0; i < direct_token_count; ++i) {
@@ -14305,8 +14365,7 @@ decode_round_start:
             &w5_managed_terminal_ready);
         if (managed_rc != 0 ||
             w5_managed_terminal_ready != terminal_owner ||
-            runtime_forward.payload_bytes !=
-                w4_runtime_handoff_hidden_bytes(guest_decode_step)) {
+            runtime_forward.payload_bytes != managed_expected_hidden_bytes) {
             fprintf(stderr,
                     "[w4_guest] fail managed model range"
                     " node=%u step=%" PRIu64 " layers=[%u,%u)"
@@ -14318,7 +14377,7 @@ decode_round_start:
                     w5_managed_terminal_ready ? 1U : 0U,
                     terminal_owner ? 1U : 0U,
                     runtime_forward.payload_bytes,
-                    w4_runtime_handoff_hidden_bytes(guest_decode_step));
+                    managed_expected_hidden_bytes);
             goto out;
         }
         compute_done_ms = monotonic_ms();
