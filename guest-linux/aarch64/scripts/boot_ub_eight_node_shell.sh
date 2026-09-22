@@ -154,6 +154,19 @@ cmd_up() {
   # live in the image's dnf repo, not the host; install the runtime packages.
   docker exec "$CONTAINER" sh -c \
     'ldd /work/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64 2>/dev/null | grep -q "not found" && dnf install -y -q pixman liburing libepoxy gtk3 cairo gdk-pixbuf2 libX11 || true'
+  # Exception: the prebuilt binary links the HOST's liburing.so.1, but the
+  # image's dnf repo only ships liburing 2.4 (liburing.so.2). Copy the host's
+  # .so.1 into the container when the binary cannot find it there.
+  if docker exec "$CONTAINER" sh -c \
+    'ldd /work/vendor/qemu_8.2.0_ub/build/qemu-system-aarch64 2>/dev/null | grep -q "liburing.so.1 => not found"'; then
+    host_liburing="$(ldconfig -p | awk '/liburing\.so\.1 \(/{print $NF; exit}')"
+    if [[ -n "$host_liburing" && -e "$host_liburing" ]]; then
+      docker cp -L "$host_liburing" "$CONTAINER:/usr/lib64/liburing.so.1" >/dev/null
+      docker exec "$CONTAINER" ldconfig
+    else
+      echo "[shell-mode] warning: host liburing.so.1 not found; prebuilt QEMU may fail to start" >&2
+    fi
+  fi
 
   echo "[shell-mode] launching 8-node openEuler cluster (UB full-mesh)..."
   # UB_USE_PREBUILT_QEMU=1 / UB_SYNC_ARTIFACTS=0: reuse the verified prebuilt
