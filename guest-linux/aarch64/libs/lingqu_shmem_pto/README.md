@@ -1,5 +1,22 @@
 # Lingqu shmem PTO guest adaptor
 
+## Managed model-direct dispatch
+
+`lingqu_model_direct_guest.h/.c` is the model-neutral W6 dispatch boundary.
+Callers provide Memory Service mapping owners, bounded tensor descriptors,
+scalars and a callable identity. The adapter acquires every owner through the
+existing compute context, keeps its lease through the matching CQ completion
+and releases only after all leases complete. Its public API carries no model
+payload pointer. Completion reports `model_tensor_address_space=UB_GM`,
+`pto_instruction_io=1` and `shared_payload_staging_bytes=0`.
+
+`qwen3_managed_direct_guest.h/.c` maps Qwen first, middle and terminal range
+geometry onto callable 3's six managed tensors and twelve scalars. It reuses
+the caller's managed compute context, endpoint and object owners. Token IDs and
+KV headers are bounded control content initialized by the caller before
+prepare. Qwen W6 serving-loop integration is tracked in
+`docs/plans/2026-09-22-w6-managed-model-direct-plan.md`.
+
 ## Managed W5 Rust/Simpler range adapter
 
 `w5_managed_model_guest.h/.c` prepares callable 4 on the existing authorized

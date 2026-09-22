@@ -61,6 +61,10 @@ Current async-load architecture and validation entry points:
 
 Current validation entry points:
 
+- [plans/2026-09-22-w6-managed-model-direct-plan.md](plans/2026-09-22-w6-managed-model-direct-plan.md)
+  - W6 target, implemented managed-direct dispatch and Qwen tensor contract,
+    DeepSeek direct-kernel gap, execution sequence and zero-staging acceptance
+    gates for complete Qwen/DeepSeek ranges
 - [2026-09-22-w5-pto-tload-tstore-obmm-mem-service-report.md](2026-09-22-w5-pto-tload-tstore-obmm-mem-service-report.md)
   - current code and two-host 2/4/8-node evidence for Memory Service managed
     OBMM/GSVA W5 PP; explains PTO `TLOAD/TSTORE` direct access, the callable 4
