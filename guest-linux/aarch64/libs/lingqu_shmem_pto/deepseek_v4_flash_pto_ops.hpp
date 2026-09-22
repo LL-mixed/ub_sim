@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -17,15 +18,36 @@ namespace lingqu::deepseek_v4_flash_pto {
 constexpr uint32_t kVectorCapacity = 4096;
 constexpr uint32_t kQ8BlockElements = 32;
 constexpr uint32_t kQ8BlockBytes = 34;
+constexpr uint32_t kQ8KBlockElements = 256;
+constexpr uint32_t kQ2KBlockBytes = 84;
+constexpr uint32_t kIq2XxsBlockBytes = 66;
 constexpr uint32_t kGgufTypeF16 = 1;
 constexpr uint32_t kGgufTypeQ8_0 = 8;
+constexpr uint32_t kGgufTypeQ2_K = 10;
+constexpr uint32_t kGgufTypeIq2Xxs = 16;
 
 struct OperatorCounts {
     uint64_t tload = 0;
     uint64_t tstore = 0;
     uint64_t q8_linear = 0;
+    uint64_t q2_k_linear = 0;
+    uint64_t iq2_xxs_linear = 0;
     uint64_t f16_linear = 0;
+    uint64_t grouped_q8_linear = 0;
+    uint64_t fp8_kv_roundtrip = 0;
+    uint64_t f16_roundtrip = 0;
     uint64_t rms_norm = 0;
+    uint64_t head_rms_norm = 0;
+    uint64_t rope_tail = 0;
+    uint64_t kv_write = 0;
+    uint64_t kv_gather = 0;
+    uint64_t sink_attention = 0;
+    uint64_t compressor_update = 0;
+    uint64_t indexer_qat = 0;
+    uint64_t sparse_indexer = 0;
+    uint64_t router = 0;
+    uint64_t routed_experts = 0;
+    uint64_t shared_expert = 0;
     uint64_t hc_split = 0;
     uint64_t hc_weighted_sum = 0;
     uint64_t hc_post = 0;
@@ -73,6 +95,9 @@ using F16Row = pto::Tile<pto::TileType::Vec, half, 1, kVectorCapacity,
                          pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
 using I8Block = pto::Tile<pto::TileType::Vec, int8_t, 1, kQ8BlockElements,
                           pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
+using I8SuperBlock =
+    pto::Tile<pto::TileType::Vec, int8_t, 1, kQ8KBlockElements,
+              pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
 using RowShape = pto::Shape<1, 1, 1, 1, pto::DYNAMIC>;
 using RowStride = pto::Stride<pto::DYNAMIC, pto::DYNAMIC, pto::DYNAMIC,
                               pto::DYNAMIC, pto::DYNAMIC>;
@@ -122,6 +147,32 @@ inline void load_scalar(F32Scalar &tile, const F32View &view, uint32_t row,
     ++operator_counts.tload;
 }
 
+inline void store_scalar(const F32View &view, uint32_t row, uint32_t column,
+                         F32Scalar &tile) {
+    view.validate();
+    auto destination = global_row<float>(view.at(row, column), 1);
+    pto::TSTORE(destination, tile);
+    ++operator_counts.tstore;
+}
+
+inline void copy(const F32View &input, const F32View &output) {
+    input.validate();
+    output.validate();
+    if (input.rows != output.rows || input.columns != output.columns) {
+        throw std::invalid_argument("deepseek_pto_copy_geometry");
+    }
+    for (uint32_t row = 0; row < input.rows; ++row) {
+        for (uint32_t column = 0; column < input.columns;
+             column += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, input.columns - column);
+            F32Row values(count);
+            load(values, input, row, column);
+            store(output, row, values, column);
+        }
+    }
+}
+
 inline void rms_norm(const F32View &input, const F32View *weight,
                      const F32View &output, float epsilon) {
     ++operator_counts.rms_norm;
@@ -169,6 +220,494 @@ inline void rms_norm(const F32View &input, const F32View *weight,
             store(output, row, normalized, column);
         }
     }
+}
+
+inline void head_rms_norm(const F32View &input, const F32View *weight,
+                          const F32View &output, float epsilon) {
+    ++operator_counts.head_rms_norm;
+    input.validate();
+    output.validate();
+    if (input.rows != output.rows || input.columns != output.columns ||
+        (weight && (weight->rows != 1 || weight->columns != input.columns))) {
+        throw std::invalid_argument("deepseek_pto_head_rms_norm_geometry");
+    }
+    for (uint32_t head = 0; head < input.rows; ++head) {
+        const F32View input_head {input.at(head), 1, input.columns,
+                                  input.row_stride, input.column_stride};
+        const F32View output_head {output.at(head), 1, output.columns,
+                                   output.row_stride, output.column_stride};
+        rms_norm(input_head, weight, output_head, epsilon);
+    }
+}
+
+inline void rope_tail(const F32View &input, uint32_t rope_dim,
+                      const F32View &cos, const F32View &sin, bool inverse,
+                      const F32View &output) {
+    ++operator_counts.rope_tail;
+    input.validate();
+    cos.validate();
+    sin.validate();
+    output.validate();
+    const uint32_t pairs = rope_dim / 2;
+    if (!rope_dim || rope_dim > input.columns || rope_dim % 2 ||
+        pairs > kVectorCapacity || output.rows != input.rows ||
+        output.columns != input.columns || cos.rows != 1 || sin.rows != 1 ||
+        cos.columns != pairs || sin.columns != pairs) {
+        throw std::invalid_argument("deepseek_pto_rope_tail_geometry");
+    }
+    const uint32_t tail_start = input.columns - rope_dim;
+    for (uint32_t head = 0; head < input.rows; ++head) {
+        for (uint32_t column = 0; column < tail_start;
+             column += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, tail_start - column);
+            F32Row prefix(count);
+            load(prefix, input, head, column);
+            store(output, head, prefix, column);
+        }
+
+        const F32View even_input {input.at(head, tail_start), 1, pairs,
+                                  input.row_stride, input.column_stride * 2};
+        const F32View odd_input {input.at(head, tail_start + 1), 1, pairs,
+                                 input.row_stride, input.column_stride * 2};
+        const F32View even_output {output.at(head, tail_start), 1, pairs,
+                                   output.row_stride,
+                                   output.column_stride * 2};
+        const F32View odd_output {output.at(head, tail_start + 1), 1, pairs,
+                                  output.row_stride,
+                                  output.column_stride * 2};
+        F32Row even(pairs), odd(pairs), cosine(pairs), sine(pairs);
+        F32Row even_cos(pairs), odd_sin(pairs), even_sin(pairs), odd_cos(pairs);
+        F32Row rotated_even(pairs), rotated_odd(pairs);
+        load(even, even_input, 0);
+        load(odd, odd_input, 0);
+        load(cosine, cos, 0);
+        load(sine, sin, 0);
+        if (inverse) pto::TMULS(sine, sine, -1.0f);
+        pto::TMUL(even_cos, even, cosine);
+        pto::TMUL(odd_sin, odd, sine);
+        pto::TSUB(rotated_even, even_cos, odd_sin);
+        pto::TMUL(even_sin, even, sine);
+        pto::TMUL(odd_cos, odd, cosine);
+        pto::TADD(rotated_odd, even_sin, odd_cos);
+        store(even_output, 0, rotated_even);
+        store(odd_output, 0, rotated_odd);
+    }
+}
+
+inline void write_kv_row(const F32View &cache, uint32_t slot,
+                         const F32View &kv) {
+    ++operator_counts.kv_write;
+    cache.validate();
+    kv.validate();
+    if (kv.rows != 1 || kv.columns != cache.columns || slot >= cache.rows) {
+        throw std::invalid_argument("deepseek_pto_kv_write_geometry");
+    }
+    const F32View destination {cache.at(slot), 1, cache.columns,
+                               cache.row_stride, cache.column_stride};
+    copy(kv, destination);
+}
+
+inline void gather_kv_rows(const F32View &cache,
+                           std::span<const uint32_t> row_indices,
+                           const F32View &output) {
+    ++operator_counts.kv_gather;
+    cache.validate();
+    output.validate();
+    if (row_indices.empty() || output.rows != row_indices.size() ||
+        output.columns != cache.columns) {
+        throw std::invalid_argument("deepseek_pto_kv_gather_geometry");
+    }
+    for (uint32_t destination = 0; destination < output.rows;
+         ++destination) {
+        const uint32_t source = row_indices[destination];
+        if (source >= cache.rows) {
+            throw std::invalid_argument("deepseek_pto_kv_gather_row");
+        }
+        const F32View source_row {cache.at(source), 1, cache.columns,
+                                  cache.row_stride, cache.column_stride};
+        const F32View destination_row {
+            output.at(destination), 1, output.columns, output.row_stride,
+            output.column_stride};
+        copy(source_row, destination_row);
+    }
+}
+
+inline void sink_attention(const F32View &q, const F32View &kv_rows,
+                           const F32View &sinks, const F32View &output) {
+    ++operator_counts.sink_attention;
+    q.validate();
+    kv_rows.validate();
+    sinks.validate();
+    output.validate();
+    if (q.rows != output.rows || q.columns != output.columns ||
+        kv_rows.columns != q.columns || sinks.rows != 1 ||
+        sinks.columns != q.rows) {
+        throw std::invalid_argument("deepseek_pto_sink_attention_geometry");
+    }
+
+    const float scale = 1.0f / std::sqrt(float(q.columns));
+    std::vector<float> score_storage(kv_rows.rows);
+    const F32View scores {reinterpret_cast<uintptr_t>(score_storage.data()), 1,
+                          kv_rows.rows, kv_rows.rows, 1};
+    for (uint32_t head = 0; head < q.rows; ++head) {
+        for (uint32_t row = 0; row < kv_rows.rows; ++row) {
+            F32Scalar dot;
+            pto::TEXPANDS(dot, 0.0f);
+            for (uint32_t column = 0; column < q.columns;
+                 column += kVectorCapacity) {
+                const uint32_t count =
+                    std::min(kVectorCapacity, q.columns - column);
+                F32Row query(count), key(count), product(count), scratch(count);
+                F32Scalar partial;
+                load(query, q, head, column);
+                load(key, kv_rows, row, column);
+                pto::TMUL(product, query, key);
+                pto::TROWSUM(partial, product, scratch);
+                pto::TADD(dot, dot, partial);
+            }
+            pto::TMULS(dot, dot, scale);
+            store_scalar(scores, 0, row, dot);
+        }
+
+        F32Scalar sink, maximum;
+        load_scalar(sink, sinks, 0, head);
+        pto::TMAX(maximum, sink, sink);
+        for (uint32_t row = 0; row < kv_rows.rows;
+             row += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, kv_rows.rows - row);
+            F32Row score_values(count), scratch(count);
+            F32Scalar local_maximum;
+            load(score_values, scores, 0, row);
+            pto::TROWMAX(local_maximum, score_values, scratch);
+            pto::TMAX(maximum, maximum, local_maximum);
+        }
+
+        F32Scalar sink_delta, denominator;
+        pto::TSUB(sink_delta, sink, maximum);
+        pto::TEXP(denominator, sink_delta);
+        for (uint32_t row = 0; row < kv_rows.rows;
+             row += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, kv_rows.rows - row);
+            F32Row score_values(count), expanded(count), weights(count),
+                scratch(count);
+            F32Scalar weight_sum;
+            load(score_values, scores, 0, row);
+            pto::TROWEXPAND(expanded, maximum);
+            pto::TSUB(score_values, score_values, expanded);
+            pto::TEXP(weights, score_values);
+            pto::TROWSUM(weight_sum, weights, scratch);
+            pto::TADD(denominator, denominator, weight_sum);
+            store(scores, 0, weights, row);
+        }
+
+        for (uint32_t column = 0; column < q.columns;
+             column += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, q.columns - column);
+            F32Row accumulated(count), expanded(count), normalized(count);
+            pto::TEXPANDS(accumulated, 0.0f);
+            for (uint32_t row = 0; row < kv_rows.rows; ++row) {
+                F32Scalar weight;
+                F32Row values(count), weighted(count);
+                load_scalar(weight, scores, 0, row);
+                load(values, kv_rows, row, column);
+                pto::TROWEXPAND(expanded, weight);
+                pto::TMUL(weighted, values, expanded);
+                pto::TADD(accumulated, accumulated, weighted);
+            }
+            pto::TROWEXPAND(expanded, denominator);
+            pto::TDIV(normalized, accumulated, expanded);
+            store(output, head, normalized, column);
+        }
+    }
+}
+
+struct CompressorStateView {
+    F32View kv;
+    F32View score;
+    uint32_t head_dim;
+    uint32_t compress_ratio;
+
+    uint32_t width() const {
+        return compress_ratio == 4 ? head_dim * 2 : head_dim;
+    }
+
+    void validate() const {
+        kv.validate();
+        score.validate();
+        const uint32_t lanes = compress_ratio == 4 ? 2 : 1;
+        const uint64_t rows = uint64_t(compress_ratio) * lanes;
+        if (!head_dim || (compress_ratio != 4 && compress_ratio != 128) ||
+            rows > std::numeric_limits<uint32_t>::max() ||
+            kv.rows != rows || score.rows != rows || kv.columns != width() ||
+            score.columns != width()) {
+            throw std::invalid_argument("deepseek_pto_compressor_state_geometry");
+        }
+    }
+};
+
+inline void compressor_pool(const CompressorStateView &state,
+                            const F32View &output) {
+    state.validate();
+    output.validate();
+    if (output.rows != 1 || output.columns != state.head_dim) {
+        throw std::invalid_argument("deepseek_pto_compressor_pool_geometry");
+    }
+    const uint32_t pair_count = state.compress_ratio == 4 ? 8 : 128;
+    for (uint32_t dimension = 0; dimension < state.head_dim; ++dimension) {
+        F32Scalar maximum;
+        pto::TEXPANDS(maximum, -std::numeric_limits<float>::infinity());
+        for (uint32_t pair = 0; pair < pair_count; ++pair) {
+            const bool current_lane = state.compress_ratio == 4 && pair >= 4;
+            const uint32_t row = pair;
+            const uint32_t column =
+                dimension + (current_lane ? state.head_dim : 0);
+            F32Scalar score;
+            load_scalar(score, state.score, row, column);
+            pto::TMAX(maximum, maximum, score);
+        }
+
+        F32Scalar denominator, weighted_sum;
+        pto::TEXPANDS(denominator, 0.0f);
+        pto::TEXPANDS(weighted_sum, 0.0f);
+        for (uint32_t pair = 0; pair < pair_count; ++pair) {
+            const bool current_lane = state.compress_ratio == 4 && pair >= 4;
+            const uint32_t row = pair;
+            const uint32_t column =
+                dimension + (current_lane ? state.head_dim : 0);
+            F32Scalar value, score, delta, weight, weighted;
+            load_scalar(value, state.kv, row, column);
+            load_scalar(score, state.score, row, column);
+            pto::TSUB(delta, score, maximum);
+            pto::TEXP(weight, delta);
+            pto::TADD(denominator, denominator, weight);
+            pto::TMUL(weighted, value, weight);
+            pto::TADD(weighted_sum, weighted_sum, weighted);
+        }
+        F32Scalar pooled;
+        pto::TDIV(pooled, weighted_sum, denominator);
+        store_scalar(output, 0, dimension, pooled);
+    }
+}
+
+inline bool compressor_update_pre_scored(uint32_t position,
+                                         const F32View &projected_kv,
+                                         const F32View &projected_score,
+                                         const CompressorStateView &state,
+                                         const F32View &pooled_output) {
+    ++operator_counts.compressor_update;
+    state.validate();
+    projected_kv.validate();
+    projected_score.validate();
+    pooled_output.validate();
+    if (projected_kv.rows != 1 || projected_score.rows != 1 ||
+        projected_kv.columns != state.width() ||
+        projected_score.columns != state.width() ||
+        pooled_output.rows != 1 ||
+        pooled_output.columns != state.head_dim) {
+        throw std::invalid_argument("deepseek_pto_compressor_update_geometry");
+    }
+    const uint32_t position_mod = position % state.compress_ratio;
+    const uint32_t row = state.compress_ratio == 4
+                             ? state.compress_ratio + position_mod
+                             : position_mod;
+    const F32View kv_destination {state.kv.at(row), 1, state.width(),
+                                  state.kv.row_stride,
+                                  state.kv.column_stride};
+    const F32View score_destination {state.score.at(row), 1, state.width(),
+                                     state.score.row_stride,
+                                     state.score.column_stride};
+    copy(projected_kv, kv_destination);
+    copy(projected_score, score_destination);
+    if ((uint64_t(position) + 1) % state.compress_ratio != 0) return false;
+
+    compressor_pool(state, pooled_output);
+    if (state.compress_ratio == 4) {
+        for (uint32_t row_index = 0; row_index < 4; ++row_index) {
+            const F32View current_kv {state.kv.at(4 + row_index), 1,
+                                      state.width(), state.kv.row_stride,
+                                      state.kv.column_stride};
+            const F32View previous_kv {state.kv.at(row_index), 1,
+                                       state.width(), state.kv.row_stride,
+                                       state.kv.column_stride};
+            const F32View current_score {
+                state.score.at(4 + row_index), 1, state.width(),
+                state.score.row_stride, state.score.column_stride};
+            const F32View previous_score {
+                state.score.at(row_index), 1, state.width(),
+                state.score.row_stride, state.score.column_stride};
+            copy(current_kv, previous_kv);
+            copy(current_score, previous_score);
+        }
+        for (uint32_t row_index = 0; row_index < 4; ++row_index) {
+            const F32View previous_kv {state.kv.at(row_index), 1,
+                                       state.width(), state.kv.row_stride,
+                                       state.kv.column_stride};
+            const F32View current_kv {state.kv.at(4 + row_index), 1,
+                                      state.width(), state.kv.row_stride,
+                                      state.kv.column_stride};
+            const F32View previous_score {
+                state.score.at(row_index), 1, state.width(),
+                state.score.row_stride, state.score.column_stride};
+            const F32View current_score {
+                state.score.at(4 + row_index), 1, state.width(),
+                state.score.row_stride, state.score.column_stride};
+            copy(previous_kv, current_kv);
+            copy(previous_score, current_score);
+        }
+    }
+    return true;
+}
+
+inline void indexer_qat(const F32View &values) {
+    ++operator_counts.indexer_qat;
+    values.validate();
+    if (values.columns != 128) {
+        throw std::invalid_argument("deepseek_pto_indexer_qat_geometry");
+    }
+    for (uint32_t head = 0; head < values.rows; ++head) {
+        for (uint32_t stride = 1; stride < values.columns; stride *= 2) {
+            for (uint32_t base = 0; base < values.columns;
+                 base += 2 * stride) {
+                for (uint32_t index = 0; index < stride; ++index) {
+                    F32Scalar a, b, sum, difference;
+                    load_scalar(a, values, head, base + index);
+                    load_scalar(b, values, head, base + stride + index);
+                    pto::TADD(sum, a, b);
+                    pto::TSUB(difference, a, b);
+                    store_scalar(values, head, base + index, sum);
+                    store_scalar(values, head, base + stride + index,
+                                 difference);
+                }
+            }
+        }
+        F32Row normalized(values.columns);
+        load(normalized, values, head);
+        pto::TMULS(normalized, normalized, 0.08838834764831845f);
+        store(values, head, normalized);
+
+        for (uint32_t column = 0; column < values.columns; column += 32) {
+            F32Row block(32), absolute(32), scratch_tile(32);
+            F32Scalar maximum;
+            load(block, values, head, column);
+            pto::TABS(absolute, block);
+            pto::TROWMAX(maximum, absolute, scratch_tile);
+            float absolute_maximum = 0.0f;
+            const F32View maximum_view {
+                reinterpret_cast<uintptr_t>(&absolute_maximum), 1, 1, 1, 1};
+            store_scalar(maximum_view, 0, 0, maximum);
+            const float bounded_maximum =
+                std::max(absolute_maximum, 7.052966104933725e-38f);
+            const float scale =
+                std::exp2(std::ceil(std::log2(bounded_maximum / 6.0f)));
+            std::array<float, 32> private_values {};
+            const F32View private_view {
+                reinterpret_cast<uintptr_t>(private_values.data()), 1, 32, 32,
+                1};
+            store(private_view, 0, block);
+            constexpr std::array<float, 8> fp4_values {
+                0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+            for (float &value : private_values) {
+                const float sign = value < 0.0f ? -1.0f : 1.0f;
+                const float magnitude =
+                    std::min(std::abs(value / scale), 6.0f);
+                uint32_t best = 0;
+                for (uint32_t candidate = 1; candidate < fp4_values.size();
+                     ++candidate) {
+                    const float difference =
+                        std::abs(magnitude - fp4_values[candidate]);
+                    const float best_difference =
+                        std::abs(magnitude - fp4_values[best]);
+                    if (difference < best_difference ||
+                        (difference == best_difference && candidate % 2 == 0 &&
+                         best % 2 != 0)) {
+                        best = candidate;
+                    }
+                }
+                value = sign * fp4_values[best] * scale;
+            }
+            load(block, private_view, 0);
+            store(values, head, block, column);
+        }
+    }
+}
+
+inline std::vector<uint32_t>
+sparse_indexer(const F32View &q, const F32View &compressed_kv,
+               const F32View &projected_head_weights, uint32_t top_k) {
+    ++operator_counts.sparse_indexer;
+    q.validate();
+    compressed_kv.validate();
+    projected_head_weights.validate();
+    if (!top_k || compressed_kv.columns != q.columns ||
+        projected_head_weights.rows != 1 ||
+        projected_head_weights.columns != q.rows) {
+        throw std::invalid_argument("deepseek_pto_sparse_indexer_geometry");
+    }
+    const uint32_t selection_count = std::min(top_k, compressed_kv.rows);
+    if (selection_count == compressed_kv.rows) {
+        std::vector<uint32_t> all(compressed_kv.rows);
+        for (uint32_t row = 0; row < compressed_kv.rows; ++row) all[row] = row;
+        return all;
+    }
+
+    std::vector<float> score_storage(compressed_kv.rows);
+    const F32View scores {reinterpret_cast<uintptr_t>(score_storage.data()), 1,
+                          compressed_kv.rows, compressed_kv.rows, 1};
+    const float scale =
+        1.0f / std::sqrt(float(uint64_t(q.rows) * q.columns));
+    F32Scalar zero;
+    pto::TEXPANDS(zero, 0.0f);
+    for (uint32_t row = 0; row < compressed_kv.rows; ++row) {
+        F32Scalar score;
+        pto::TEXPANDS(score, 0.0f);
+        for (uint32_t head = 0; head < q.rows; ++head) {
+            F32Scalar dot;
+            pto::TEXPANDS(dot, 0.0f);
+            for (uint32_t column = 0; column < q.columns;
+                 column += kVectorCapacity) {
+                const uint32_t count =
+                    std::min(kVectorCapacity, q.columns - column);
+                F32Row query(count), key(count), product(count), scratch(count);
+                F32Scalar partial;
+                load(query, q, head, column);
+                load(key, compressed_kv, row, column);
+                pto::TMUL(product, query, key);
+                pto::TROWSUM(partial, product, scratch);
+                pto::TADD(dot, dot, partial);
+            }
+            pto::TMAX(dot, dot, zero);
+            F32Scalar head_weight, weighted;
+            load_scalar(head_weight, projected_head_weights, 0, head);
+            pto::TMUL(weighted, dot, head_weight);
+            pto::TADD(score, score, weighted);
+        }
+        pto::TMULS(score, score, scale);
+        store_scalar(scores, 0, row, score);
+    }
+
+    std::vector<uint32_t> selected;
+    selected.reserve(selection_count);
+    std::vector<bool> used(compressed_kv.rows, false);
+    for (uint32_t selection = 0; selection < selection_count; ++selection) {
+        uint32_t best_row = compressed_kv.rows;
+        float best_score = -std::numeric_limits<float>::infinity();
+        for (uint32_t row = 0; row < compressed_kv.rows; ++row) {
+            if (!used[row] && score_storage[row] > best_score) {
+                best_row = row;
+                best_score = score_storage[row];
+            }
+        }
+        if (best_row == compressed_kv.rows) {
+            throw std::runtime_error("deepseek_pto_sparse_indexer_selection");
+        }
+        used[best_row] = true;
+        selected.push_back(best_row);
+    }
+    return selected;
 }
 
 inline void sigmoid_affine(const F32View &mix, const F32View &base,
@@ -378,6 +917,38 @@ inline void residual(const F32View &left, const F32View &right,
     }
 }
 
+inline void fill(const F32View &output, float value) {
+    output.validate();
+    for (uint32_t row = 0; row < output.rows; ++row) {
+        for (uint32_t column = 0; column < output.columns;
+             column += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, output.columns - column);
+            F32Row values(count);
+            pto::TEXPANDS(values, value);
+            store(output, row, values, column);
+        }
+    }
+}
+
+inline void scale_in_place(const F32View &values, float scale) {
+    values.validate();
+    if (!std::isfinite(scale)) {
+        throw std::invalid_argument("deepseek_pto_scale_non_finite");
+    }
+    for (uint32_t row = 0; row < values.rows; ++row) {
+        for (uint32_t column = 0; column < values.columns;
+             column += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, values.columns - column);
+            F32Row tile(count);
+            load(tile, values, row, column);
+            pto::TMULS(tile, tile, scale);
+            store(values, row, tile, column);
+        }
+    }
+}
+
 inline void swiglu(const F32View &gate, const F32View &up,
                    const F32View &output, float clamp) {
     ++operator_counts.swiglu;
@@ -411,6 +982,119 @@ inline void swiglu(const F32View &gate, const F32View &up,
             store(output, row, result, column);
         }
     }
+}
+
+struct RouterSelection {
+    std::vector<uint32_t> expert_indices;
+    std::vector<float> expert_weights;
+};
+
+inline RouterSelection router(const F32View &logits,
+                              const F32View *selection_bias,
+                              std::span<const uint32_t> selected_experts,
+                              uint32_t top_k, float weight_scale,
+                              const F32View &probabilities) {
+    ++operator_counts.router;
+    logits.validate();
+    probabilities.validate();
+    if (logits.rows != 1 || probabilities.rows != 1 ||
+        probabilities.columns != logits.columns || !top_k ||
+        top_k > logits.columns || !std::isfinite(weight_scale) ||
+        weight_scale <= 0.0f ||
+        (selection_bias &&
+         (selection_bias->rows != 1 ||
+          selection_bias->columns != logits.columns)) ||
+        (!selected_experts.empty() && selected_experts.size() != top_k)) {
+        throw std::invalid_argument("deepseek_pto_router_geometry");
+    }
+
+    for (uint32_t column = 0; column < logits.columns;
+         column += kVectorCapacity) {
+        const uint32_t count =
+            std::min(kVectorCapacity, logits.columns - column);
+        F32Row values(count), result(count);
+        load(values, logits, 0, column);
+        std::vector<float> private_values(count);
+        const F32View private_view {
+            reinterpret_cast<uintptr_t>(private_values.data()), 1, count,
+            count, 1};
+        store(private_view, 0, values);
+        for (float &value : private_values) {
+            const float softplus = std::max(value, 0.0f) +
+                                   std::log1p(std::exp(-std::abs(value)));
+            value = std::sqrt(softplus);
+        }
+        load(result, private_view, 0);
+        store(probabilities, 0, result, column);
+    }
+
+    RouterSelection selection;
+    selection.expert_indices.reserve(top_k);
+    if (!selected_experts.empty()) {
+        for (uint32_t expert : selected_experts) {
+            if (expert >= logits.columns) {
+                throw std::invalid_argument("deepseek_pto_hash_router_expert");
+            }
+            selection.expert_indices.push_back(expert);
+        }
+    } else {
+        std::vector<float> scores(logits.columns);
+        const F32View score_view {reinterpret_cast<uintptr_t>(scores.data()), 1,
+                                  logits.columns, logits.columns, 1};
+        for (uint32_t column = 0; column < logits.columns;
+             column += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, logits.columns - column);
+            F32Row values(count);
+            load(values, probabilities, 0, column);
+            if (selection_bias) {
+                F32Row bias(count);
+                load(bias, *selection_bias, 0, column);
+                pto::TADD(values, values, bias);
+            }
+            store(score_view, 0, values, column);
+        }
+        std::vector<bool> used(logits.columns, false);
+        for (uint32_t slot = 0; slot < top_k; ++slot) {
+            uint32_t best_expert = logits.columns;
+            float best_score = -std::numeric_limits<float>::infinity();
+            for (uint32_t expert = 0; expert < logits.columns; ++expert) {
+                if (!used[expert] && scores[expert] > best_score) {
+                    best_expert = expert;
+                    best_score = scores[expert];
+                }
+            }
+            if (best_expert == logits.columns) {
+                throw std::runtime_error("deepseek_pto_router_selection");
+            }
+            used[best_expert] = true;
+            selection.expert_indices.push_back(best_expert);
+        }
+    }
+
+    F32Scalar probability_sum;
+    pto::TEXPANDS(probability_sum, 0.0f);
+    for (uint32_t expert : selection.expert_indices) {
+        F32Scalar probability;
+        load_scalar(probability, probabilities, 0, expert);
+        pto::TADD(probability_sum, probability_sum, probability);
+    }
+    F32Scalar floor;
+    pto::TEXPANDS(floor, 6.1035156e-5f);
+    pto::TMAX(probability_sum, probability_sum, floor);
+    selection.expert_weights.resize(top_k);
+    const F32View weight_view {
+        reinterpret_cast<uintptr_t>(selection.expert_weights.data()), 1, top_k,
+        top_k, 1};
+    for (uint32_t slot = 0; slot < top_k; ++slot) {
+        F32Scalar probability, normalized;
+        load_scalar(probability, probabilities, 0,
+                    selection.expert_indices[slot]);
+        pto::TDIV(normalized, probability, probability_sum);
+        pto::TMULS(normalized, normalized, weight_scale);
+        store_scalar(weight_view, 0, slot, normalized);
+    }
+    return selection;
 }
 
 inline float load_f16_scalar(const uint8_t *source) {
@@ -482,6 +1166,161 @@ inline void f16_linear(const F32View &input, const WeightTensor &weight,
                 global_row<float>(output.at(input_row, output_row), 1);
             pto::TSTORE(destination, accumulator);
             ++operator_counts.tstore;
+        }
+    }
+}
+
+inline void decode_f16_vector(const WeightTensor &weight,
+                              const F32View &output) {
+    output.validate();
+    if (weight.tensor_type != kGgufTypeF16 || weight.rank != 1 ||
+        output.rows != 1 || weight.dimensions[0] != output.columns ||
+        weight.bytes != uint64_t(output.columns) * 2) {
+        throw std::invalid_argument("deepseek_pto_f16_vector_geometry");
+    }
+    for (uint32_t column = 0; column < output.columns;
+         column += kVectorCapacity) {
+        const uint32_t count =
+            std::min(kVectorCapacity, output.columns - column);
+        F16Row encoded(count);
+        F32Row decoded(count);
+        auto source = global_row<half>(
+            reinterpret_cast<uintptr_t>(weight.payload + uint64_t(column) * 2),
+            count);
+        pto::TLOAD(encoded, source);
+        ++operator_counts.tload;
+        pto::TCVT(decoded, encoded, pto::RoundMode::CAST_NONE);
+        store(output, 0, decoded, column);
+    }
+}
+
+inline void q8_0_linear(const F32View &input, const WeightTensor &weight,
+                        const F32View &output);
+
+inline void grouped_q8_0_linear(const F32View &input,
+                                const WeightTensor &weight, uint32_t groups,
+                                const F32View &output) {
+    ++operator_counts.grouped_q8_linear;
+    input.validate();
+    output.validate();
+    if (!groups || input.rows != output.rows || weight.rank != 2 ||
+        weight.tensor_type != kGgufTypeQ8_0 ||
+        weight.dimensions[0] * groups != input.columns ||
+        weight.dimensions[1] != output.columns ||
+        output.columns % groups) {
+        throw std::invalid_argument("deepseek_pto_grouped_q8_geometry");
+    }
+    const uint32_t group_input = static_cast<uint32_t>(weight.dimensions[0]);
+    const uint32_t group_output = output.columns / groups;
+    const uint64_t row_bytes =
+        uint64_t(group_input / kQ8BlockElements) * kQ8BlockBytes;
+    const uint64_t group_bytes = uint64_t(group_output) * row_bytes;
+    if (!group_input || group_input % kQ8BlockElements ||
+        weight.bytes != uint64_t(groups) * group_bytes) {
+        throw std::invalid_argument("deepseek_pto_grouped_q8_payload");
+    }
+    for (uint32_t row = 0; row < input.rows; ++row) {
+        for (uint32_t group = 0; group < groups; ++group) {
+            const F32View group_input_view {
+                input.at(row, group * group_input), 1, group_input,
+                input.row_stride, input.column_stride};
+            const F32View group_output_view {
+                output.at(row, group * group_output), 1, group_output,
+                output.row_stride, output.column_stride};
+            WeightTensor group_weight = weight;
+            group_weight.payload += uint64_t(group) * group_bytes;
+            group_weight.bytes = group_bytes;
+            group_weight.elements = uint64_t(group_input) * group_output;
+            group_weight.dimensions[0] = group_input;
+            group_weight.dimensions[1] = group_output;
+            q8_0_linear(group_input_view, group_weight, group_output_view);
+        }
+    }
+}
+
+inline float e4m3fn_roundtrip(float value) {
+    const auto positive_value = [](uint32_t index) {
+        constexpr std::array<float, 16> exponent_scale {
+            0.0f, 0.015625f, 0.03125f, 0.0625f, 0.125f, 0.25f, 0.5f,
+            1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f, 128.0f,
+            256.0f};
+        const uint32_t exponent = (index >> 3) & 0x0f;
+        const uint32_t mantissa = index & 0x07;
+        return exponent == 0
+                   ? float(mantissa) * 0.001953125f
+                   : (1.0f + float(mantissa) * 0.125f) *
+                         exponent_scale[exponent];
+    };
+    const float sign = value < 0.0f ? -1.0f : 1.0f;
+    const float magnitude = std::min(std::abs(value), 448.0f);
+    uint32_t low = 0;
+    uint32_t high = 126;
+    while (low < high) {
+        const uint32_t middle = (low + high + 1) >> 1;
+        if (positive_value(middle) <= magnitude) low = middle;
+        else high = middle - 1;
+    }
+    uint32_t best = low;
+    if (best < 126) {
+        const float difference = std::abs(magnitude - positive_value(best));
+        const float next_difference =
+            std::abs(magnitude - positive_value(best + 1));
+        if (next_difference < difference ||
+            (next_difference == difference && (best + 1) % 2 == 0 &&
+             best % 2 != 0)) {
+            ++best;
+        }
+    }
+    return sign * positive_value(best);
+}
+
+inline void fp8_kv_roundtrip(const F32View &values, uint32_t rope_dim) {
+    ++operator_counts.fp8_kv_roundtrip;
+    values.validate();
+    if (rope_dim > values.columns || (values.columns - rope_dim) % 64) {
+        throw std::invalid_argument("deepseek_pto_fp8_kv_geometry");
+    }
+    const uint32_t nope_dim = values.columns - rope_dim;
+    for (uint32_t row = 0; row < values.rows; ++row) {
+        for (uint32_t column = 0; column < nope_dim; column += 64) {
+            F32Row block(64);
+            load(block, values, row, column);
+            std::array<float, 64> private_values {};
+            const F32View private_view {
+                reinterpret_cast<uintptr_t>(private_values.data()), 1, 64, 64,
+                1};
+            store(private_view, 0, block);
+            float maximum = 1.0e-4f;
+            for (float value : private_values) {
+                maximum = std::max(maximum, std::abs(value));
+            }
+            const float scale =
+                std::exp2(std::ceil(std::log2(maximum / 448.0f)));
+            for (float &value : private_values) {
+                value = e4m3fn_roundtrip(
+                            std::clamp(value / scale, -448.0f, 448.0f)) *
+                        scale;
+            }
+            load(block, private_view, 0);
+            store(values, row, block, column);
+        }
+    }
+}
+
+inline void f16_roundtrip(const F32View &values) {
+    ++operator_counts.f16_roundtrip;
+    values.validate();
+    for (uint32_t row = 0; row < values.rows; ++row) {
+        for (uint32_t column = 0; column < values.columns;
+             column += kVectorCapacity) {
+            const uint32_t count =
+                std::min(kVectorCapacity, values.columns - column);
+            F32Row input(count), output(count);
+            F16Row encoded(count);
+            load(input, values, row, column);
+            pto::TCVT(encoded, input, pto::RoundMode::CAST_RINT);
+            pto::TCVT(output, encoded, pto::RoundMode::CAST_NONE);
+            store(values, row, output, column);
         }
     }
 }
@@ -586,6 +1425,357 @@ inline void q8_0_linear(const F32View &input, const WeightTensor &weight,
             ++operator_counts.tstore;
         }
     }
+}
+
+struct QuantizedQ8KBlock {
+    std::array<int8_t, kQ8KBlockElements> values {};
+    std::array<int16_t, 16> sums {};
+    float scale = 0.0f;
+};
+
+inline QuantizedQ8KBlock quantize_q8_k(const F32View &input, uint32_t row,
+                                       uint32_t column) {
+    if (column > input.columns ||
+        kQ8KBlockElements > input.columns - column) {
+        throw std::invalid_argument("deepseek_pto_q8_k_geometry");
+    }
+    F32Row values(kQ8KBlockElements);
+    load(values, input, row, column);
+    std::array<float, kQ8KBlockElements> private_values {};
+    const F32View private_view {
+        reinterpret_cast<uintptr_t>(private_values.data()), 1,
+        kQ8KBlockElements, kQ8KBlockElements, 1};
+    store(private_view, 0, values);
+
+    float signed_maximum = 0.0f;
+    float absolute_maximum = 0.0f;
+    for (float value : private_values) {
+        if (!std::isfinite(value)) {
+            throw std::invalid_argument("deepseek_pto_q8_k_non_finite");
+        }
+        if (std::abs(value) > absolute_maximum) {
+            absolute_maximum = std::abs(value);
+            signed_maximum = value;
+        }
+    }
+
+    QuantizedQ8KBlock output;
+    if (absolute_maximum != 0.0f) {
+        const float inverse_scale = -127.0f / signed_maximum;
+        output.scale = 1.0f / inverse_scale;
+        pto::TMULS(values, values, inverse_scale);
+        I8SuperBlock quantized(kQ8KBlockElements);
+        pto::TCVT(quantized, values, pto::RoundMode::CAST_RINT);
+        auto destination = global_row<int8_t>(
+            reinterpret_cast<uintptr_t>(output.values.data()),
+            kQ8KBlockElements);
+        pto::TSTORE(destination, quantized);
+        ++operator_counts.tstore;
+    }
+    for (uint32_t group = 0; group < 16; ++group) {
+        int32_t sum = 0;
+        for (uint32_t lane = 0; lane < 16; ++lane) {
+            sum += output.values[group * 16 + lane];
+        }
+        output.sums[group] = static_cast<int16_t>(sum);
+    }
+    return output;
+}
+
+inline void validate_expert_matrix(const WeightTensor &weight,
+                                   uint32_t expected_type,
+                                   uint32_t block_bytes,
+                                   uint32_t input_columns,
+                                   uint32_t output_columns,
+                                   uint32_t expert) {
+    if (weight.tensor_type != expected_type || weight.rank != 3 ||
+        weight.dimensions[0] != input_columns ||
+        weight.dimensions[1] != output_columns || !input_columns ||
+        input_columns % kQ8KBlockElements || !output_columns ||
+        !weight.dimensions[2] || expert >= weight.dimensions[2]) {
+        throw std::invalid_argument("deepseek_pto_expert_matrix_geometry");
+    }
+    const uint64_t expected =
+        uint64_t(weight.dimensions[2]) * output_columns *
+        (input_columns / kQ8KBlockElements) * block_bytes;
+    if (weight.bytes != expected) {
+        throw std::invalid_argument("deepseek_pto_expert_matrix_payload");
+    }
+}
+
+inline bool same_weight_shape(const WeightTensor &left,
+                              const WeightTensor &right) {
+    if (left.rank != right.rank) return false;
+    for (uint32_t dimension = 0; dimension < left.rank; ++dimension) {
+        if (left.dimensions[dimension] != right.dimensions[dimension]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline F32Scalar i8_dot(const int8_t *left, const int8_t *right,
+                        uint32_t count) {
+    if (!left || !right || !count || count > kQ8BlockElements) {
+        throw std::invalid_argument("deepseek_pto_i8_dot_geometry");
+    }
+    I8Block left_i8(count), right_i8(count);
+    auto left_source =
+        global_row<int8_t>(reinterpret_cast<uintptr_t>(left), count);
+    auto right_source =
+        global_row<int8_t>(reinterpret_cast<uintptr_t>(right), count);
+    pto::TLOAD(left_i8, left_source);
+    pto::TLOAD(right_i8, right_source);
+    operator_counts.tload += 2;
+    F32Row left_f32(count), right_f32(count), product(count), scratch(count);
+    F32Scalar dot;
+    pto::TCVT(left_f32, left_i8, pto::RoundMode::CAST_NONE);
+    pto::TCVT(right_f32, right_i8, pto::RoundMode::CAST_NONE);
+    pto::TMUL(product, left_f32, right_f32);
+    pto::TROWSUM(dot, product, scratch);
+    return dot;
+}
+
+inline void q2_k_expert_linear(const F32View &input,
+                               const WeightTensor &weight, uint32_t expert,
+                               const F32View &output) {
+    ++operator_counts.q2_k_linear;
+    input.validate();
+    output.validate();
+    if (input.rows != output.rows) {
+        throw std::invalid_argument("deepseek_pto_q2_k_rows");
+    }
+    validate_expert_matrix(weight, kGgufTypeQ2_K, kQ2KBlockBytes,
+                           input.columns, output.columns, expert);
+    const uint32_t blocks = input.columns / kQ8KBlockElements;
+    const uint64_t row_bytes = uint64_t(blocks) * kQ2KBlockBytes;
+    const uint64_t expert_bytes = uint64_t(output.columns) * row_bytes;
+    const uint8_t *expert_payload = weight.payload + expert * expert_bytes;
+    std::array<int8_t, kQ8BlockElements> decoded_weight {};
+    for (uint32_t input_row = 0; input_row < input.rows; ++input_row) {
+        std::vector<QuantizedQ8KBlock> activation;
+        activation.reserve(blocks);
+        for (uint32_t block = 0; block < blocks; ++block) {
+            activation.push_back(quantize_q8_k(
+                input, input_row, block * kQ8KBlockElements));
+        }
+        for (uint32_t output_row = 0; output_row < output.columns;
+             ++output_row) {
+            F32Scalar accumulator;
+            pto::TEXPANDS(accumulator, 0.0f);
+            for (uint32_t block_index = 0; block_index < blocks;
+                 ++block_index) {
+                const uint8_t *block =
+                    expert_payload + uint64_t(output_row) * row_bytes +
+                    uint64_t(block_index) * kQ2KBlockBytes;
+                const uint8_t *scales = block;
+                const uint8_t *quants = block + 16;
+                const float weight_scale = load_f16_scalar(block + 80);
+                const float weight_minimum = load_f16_scalar(block + 82);
+                int32_t minimum_sum = 0;
+                for (uint32_t group = 0; group < 16; ++group) {
+                    minimum_sum +=
+                        int32_t(activation[block_index].sums[group]) *
+                        int32_t(scales[group] >> 4);
+                }
+                for (uint32_t group = 0; group < 8; ++group) {
+                    const uint32_t quant_base = (group / 4) * 32;
+                    const uint32_t shift = (group % 4) * 2;
+                    for (uint32_t lane = 0; lane < kQ8BlockElements;
+                         ++lane) {
+                        const uint8_t local_scale =
+                            scales[group * 2 + lane / 16] & 0x0f;
+                        const uint8_t quant =
+                            (quants[quant_base + lane] >> shift) & 0x03;
+                        decoded_weight[lane] =
+                            static_cast<int8_t>(quant * local_scale);
+                    }
+                    F32Scalar dot = i8_dot(
+                        activation[block_index].values.data() +
+                            group * kQ8BlockElements,
+                        decoded_weight.data(), kQ8BlockElements);
+                    F32Scalar scaled;
+                    pto::TMULS(scaled, dot,
+                               activation[block_index].scale * weight_scale);
+                    pto::TADD(accumulator, accumulator, scaled);
+                }
+                pto::TADDS(
+                    accumulator, accumulator,
+                    -activation[block_index].scale * weight_minimum *
+                        float(minimum_sum));
+            }
+            store_scalar(output, input_row, output_row, accumulator);
+        }
+    }
+}
+
+struct Iq2Codebook {
+    std::span<const uint64_t> grid;
+    std::span<const uint8_t> signs;
+
+    void validate() const {
+        if (grid.size() != 256 || signs.size() != 128) {
+            throw std::invalid_argument("deepseek_pto_iq2_codebook");
+        }
+    }
+};
+
+inline void iq2_xxs_expert_linear(const F32View &input,
+                                   const WeightTensor &weight,
+                                   uint32_t expert,
+                                   const Iq2Codebook &codebook,
+                                   const F32View &output) {
+    ++operator_counts.iq2_xxs_linear;
+    input.validate();
+    output.validate();
+    codebook.validate();
+    if (input.rows != output.rows) {
+        throw std::invalid_argument("deepseek_pto_iq2_xxs_rows");
+    }
+    validate_expert_matrix(weight, kGgufTypeIq2Xxs, kIq2XxsBlockBytes,
+                           input.columns, output.columns, expert);
+    const uint32_t blocks = input.columns / kQ8KBlockElements;
+    const uint64_t row_bytes = uint64_t(blocks) * kIq2XxsBlockBytes;
+    const uint64_t expert_bytes = uint64_t(output.columns) * row_bytes;
+    const uint8_t *expert_payload = weight.payload + expert * expert_bytes;
+    std::array<int8_t, kQ8BlockElements> decoded_weight {};
+    for (uint32_t input_row = 0; input_row < input.rows; ++input_row) {
+        std::vector<QuantizedQ8KBlock> activation;
+        activation.reserve(blocks);
+        for (uint32_t block = 0; block < blocks; ++block) {
+            activation.push_back(quantize_q8_k(
+                input, input_row, block * kQ8KBlockElements));
+        }
+        for (uint32_t output_row = 0; output_row < output.columns;
+             ++output_row) {
+            F32Scalar accumulator;
+            pto::TEXPANDS(accumulator, 0.0f);
+            for (uint32_t block_index = 0; block_index < blocks;
+                 ++block_index) {
+                const uint8_t *block =
+                    expert_payload + uint64_t(output_row) * row_bytes +
+                    uint64_t(block_index) * kIq2XxsBlockBytes;
+                const float block_scale = load_f16_scalar(block);
+                for (uint32_t group = 0; group < 8; ++group) {
+                    const uint8_t *encoded = block + 2 + group * 8;
+                    const uint32_t sign_and_scale =
+                        uint32_t(encoded[4]) | (uint32_t(encoded[5]) << 8) |
+                        (uint32_t(encoded[6]) << 16) |
+                        (uint32_t(encoded[7]) << 24);
+                    for (uint32_t pair = 0; pair < 4; ++pair) {
+                        const uint64_t grid = codebook.grid[encoded[pair]];
+                        const uint8_t signs = codebook.signs[
+                            (sign_and_scale >> (7 * pair)) & 127];
+                        for (uint32_t lane = 0; lane < 8; ++lane) {
+                            const int8_t magnitude = static_cast<int8_t>(
+                                (grid >> (8 * lane)) & 0xff);
+                            decoded_weight[pair * 8 + lane] =
+                                signs & (1u << lane) ? -magnitude : magnitude;
+                        }
+                    }
+                    F32Scalar dot = i8_dot(
+                        activation[block_index].values.data() +
+                            group * kQ8BlockElements,
+                        decoded_weight.data(), kQ8BlockElements);
+                    const uint32_t local_scale =
+                        2 * (sign_and_scale >> 28) + 1;
+                    F32Scalar scaled;
+                    pto::TMULS(
+                        scaled, dot,
+                        0.125f * activation[block_index].scale * block_scale *
+                            float(local_scale));
+                    pto::TADD(accumulator, accumulator, scaled);
+                }
+            }
+            store_scalar(output, input_row, output_row, accumulator);
+        }
+    }
+}
+
+inline void routed_experts(const F32View &input,
+                           const WeightTensor &gate_weight,
+                           const WeightTensor &up_weight,
+                           const WeightTensor &down_weight,
+                           const Iq2Codebook &codebook,
+                           std::span<const uint32_t> selected_experts,
+                           std::span<const float> expert_weights, float clamp,
+                           const F32View &output) {
+    ++operator_counts.routed_experts;
+    input.validate();
+    output.validate();
+    if (input.rows != output.rows || input.columns != output.columns ||
+        selected_experts.empty() ||
+        selected_experts.size() != expert_weights.size() ||
+        !same_weight_shape(gate_weight, up_weight) ||
+        gate_weight.rank != 3 || down_weight.rank != 3 ||
+        gate_weight.dimensions[0] != input.columns ||
+        down_weight.dimensions[0] != gate_weight.dimensions[1] ||
+        down_weight.dimensions[1] != input.columns ||
+        down_weight.dimensions[2] != gate_weight.dimensions[2]) {
+        throw std::invalid_argument("deepseek_pto_routed_experts_geometry");
+    }
+    const uint32_t intermediate =
+        static_cast<uint32_t>(gate_weight.dimensions[1]);
+    fill(output, 0.0f);
+    std::vector<float> gate_storage(uint64_t(input.rows) * intermediate);
+    std::vector<float> up_storage(uint64_t(input.rows) * intermediate);
+    std::vector<float> activated_storage(uint64_t(input.rows) * intermediate);
+    std::vector<float> down_storage(uint64_t(input.rows) * input.columns);
+    const F32View gate {reinterpret_cast<uintptr_t>(gate_storage.data()),
+                        input.rows, intermediate, intermediate, 1};
+    const F32View up {reinterpret_cast<uintptr_t>(up_storage.data()),
+                      input.rows, intermediate, intermediate, 1};
+    const F32View activated {
+        reinterpret_cast<uintptr_t>(activated_storage.data()), input.rows,
+        intermediate, intermediate, 1};
+    const F32View down {reinterpret_cast<uintptr_t>(down_storage.data()),
+                        input.rows, input.columns, input.columns, 1};
+    for (uint32_t slot = 0; slot < selected_experts.size(); ++slot) {
+        if (!std::isfinite(expert_weights[slot])) {
+            throw std::invalid_argument("deepseek_pto_expert_weight");
+        }
+        const uint32_t expert = selected_experts[slot];
+        iq2_xxs_expert_linear(input, gate_weight, expert, codebook, gate);
+        iq2_xxs_expert_linear(input, up_weight, expert, codebook, up);
+        swiglu(gate, up, activated, clamp);
+        scale_in_place(activated, expert_weights[slot]);
+        q2_k_expert_linear(activated, down_weight, expert, down);
+        residual(output, down, output);
+    }
+}
+
+inline void shared_expert(const F32View &input,
+                          const WeightTensor &gate_weight,
+                          const WeightTensor &up_weight,
+                          const WeightTensor &down_weight, float clamp,
+                          const F32View &output) {
+    ++operator_counts.shared_expert;
+    input.validate();
+    output.validate();
+    if (input.rows != output.rows || input.columns != output.columns ||
+        !same_weight_shape(gate_weight, up_weight) ||
+        gate_weight.rank != 2 || down_weight.rank != 2 ||
+        gate_weight.dimensions[0] != input.columns ||
+        down_weight.dimensions[0] != gate_weight.dimensions[1] ||
+        down_weight.dimensions[1] != input.columns) {
+        throw std::invalid_argument("deepseek_pto_shared_expert_geometry");
+    }
+    const uint32_t intermediate =
+        static_cast<uint32_t>(gate_weight.dimensions[1]);
+    std::vector<float> gate_storage(uint64_t(input.rows) * intermediate);
+    std::vector<float> up_storage(uint64_t(input.rows) * intermediate);
+    std::vector<float> activated_storage(uint64_t(input.rows) * intermediate);
+    const F32View gate {reinterpret_cast<uintptr_t>(gate_storage.data()),
+                        input.rows, intermediate, intermediate, 1};
+    const F32View up {reinterpret_cast<uintptr_t>(up_storage.data()),
+                      input.rows, intermediate, intermediate, 1};
+    const F32View activated {
+        reinterpret_cast<uintptr_t>(activated_storage.data()), input.rows,
+        intermediate, intermediate, 1};
+    q8_0_linear(input, gate_weight, gate);
+    q8_0_linear(input, up_weight, up);
+    swiglu(gate, up, activated, clamp);
+    q8_0_linear(activated, down_weight, output);
 }
 
 } // namespace lingqu::deepseek_v4_flash_pto

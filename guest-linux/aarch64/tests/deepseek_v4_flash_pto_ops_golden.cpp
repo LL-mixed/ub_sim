@@ -63,6 +63,98 @@ int main() {
     CHECK(std::abs(f16_output[0] - 30.0f) < 1.0e-5f);
     CHECK(std::abs(f16_output[1] - 32.0f) < 1.0e-5f);
 
+    const auto q2_block = [](const std::array<uint8_t, 16> &scales,
+                             uint8_t quant, uint16_t scale,
+                             uint16_t minimum) {
+        std::vector<uint8_t> block(ds::kQ2KBlockBytes, quant);
+        std::copy(scales.begin(), scales.end(), block.begin());
+        block[80] = static_cast<uint8_t>(scale & 0xff);
+        block[81] = static_cast<uint8_t>(scale >> 8);
+        block[82] = static_cast<uint8_t>(minimum & 0xff);
+        block[83] = static_cast<uint8_t>(minimum >> 8);
+        return block;
+    };
+    const std::vector<uint8_t> q2_zero = q2_block({}, 0, 0x3c00, 0);
+    std::array<uint8_t, 16> q2_quant_scales {};
+    q2_quant_scales.fill(2);
+    const std::vector<uint8_t> q2_quant =
+        q2_block(q2_quant_scales, 0xff, 0x3c00, 0);
+    std::array<uint8_t, 16> q2_min_scales {};
+    q2_min_scales.fill(0x10);
+    const std::vector<uint8_t> q2_minimum =
+        q2_block(q2_min_scales, 0, 0, 0x3c00);
+    std::vector<uint8_t> q2_payload;
+    q2_payload.reserve(4 * ds::kQ2KBlockBytes);
+    q2_payload.insert(q2_payload.end(), q2_zero.begin(), q2_zero.end());
+    q2_payload.insert(q2_payload.end(), q2_zero.begin(), q2_zero.end());
+    q2_payload.insert(q2_payload.end(), q2_quant.begin(), q2_quant.end());
+    q2_payload.insert(q2_payload.end(), q2_minimum.begin(), q2_minimum.end());
+    std::array<float, 256> expert_input {};
+    expert_input.fill(1.0f);
+    std::array<float, 2> q2_output {};
+    const ds::F32View expert_input_view {
+        reinterpret_cast<uintptr_t>(expert_input.data()), 1, 256, 256, 1};
+    const ds::F32View q2_output_view {
+        reinterpret_cast<uintptr_t>(q2_output.data()), 1, 2, 2, 1};
+    const ds::WeightTensor q2_weight {
+        .payload = q2_payload.data(),
+        .bytes = q2_payload.size(),
+        .elements = 1024,
+        .dimensions = {256, 2, 2},
+        .tensor_type = ds::kGgufTypeQ2_K,
+        .rank = 3,
+    };
+    ds::q2_k_expert_linear(expert_input_view, q2_weight, 0,
+                           q2_output_view);
+    CHECK(std::abs(q2_output[0]) < 1.0e-6f);
+    CHECK(std::abs(q2_output[1]) < 1.0e-6f);
+    ds::q2_k_expert_linear(expert_input_view, q2_weight, 1,
+                           q2_output_view);
+    CHECK(std::abs(q2_output[0] - 1536.0f) < 1.0e-4f);
+    CHECK(std::abs(q2_output[1] + 256.0f) < 1.0e-4f);
+
+    std::vector<uint8_t> iq2_payload(2 * ds::kIq2XxsBlockBytes, 0);
+    iq2_payload[0] = 0x00;
+    iq2_payload[1] = 0x3c;
+    iq2_payload[ds::kIq2XxsBlockBytes] = 0x00;
+    iq2_payload[ds::kIq2XxsBlockBytes + 1] = 0x3c;
+    for (uint32_t group = 0; group < 8; ++group) {
+        const uint32_t sign_and_scale = 127u | (15u << 28);
+        const size_t offset = ds::kIq2XxsBlockBytes + 2 + group * 8 + 4;
+        iq2_payload[offset] = static_cast<uint8_t>(sign_and_scale & 0xff);
+        iq2_payload[offset + 1] =
+            static_cast<uint8_t>((sign_and_scale >> 8) & 0xff);
+        iq2_payload[offset + 2] =
+            static_cast<uint8_t>((sign_and_scale >> 16) & 0xff);
+        iq2_payload[offset + 3] =
+            static_cast<uint8_t>((sign_and_scale >> 24) & 0xff);
+    }
+    std::array<uint64_t, 256> iq2_grid {};
+    std::array<uint8_t, 128> iq2_signs {};
+    iq2_grid[0] = 0x0808080808080808ULL;
+    iq2_signs[127] = 0xff;
+    const ds::Iq2Codebook iq2_codebook {
+        std::span<const uint64_t>(iq2_grid),
+        std::span<const uint8_t>(iq2_signs)};
+    std::array<float, 1> iq2_output {};
+    const ds::F32View iq2_output_view {
+        reinterpret_cast<uintptr_t>(iq2_output.data()), 1, 1, 1, 1};
+    const ds::WeightTensor iq2_weight {
+        .payload = iq2_payload.data(),
+        .bytes = iq2_payload.size(),
+        .elements = 512,
+        .dimensions = {256, 1, 2},
+        .tensor_type = ds::kGgufTypeIq2Xxs,
+        .rank = 3,
+    };
+    ds::iq2_xxs_expert_linear(expert_input_view, iq2_weight, 0,
+                              iq2_codebook, iq2_output_view);
+    CHECK(std::abs(iq2_output[0] - 256.0f) < 1.0e-4f);
+    ds::iq2_xxs_expert_linear(expert_input_view, iq2_weight, 1,
+                              iq2_codebook, iq2_output_view);
+    CHECK(std::isfinite(iq2_output[0]));
+    CHECK(std::abs(iq2_output[0] - 256.0f) > 1.0e-4f);
+
     std::array<float, 4> norm_input {3.0f, 4.0f, 0.0f, 0.0f};
     std::array<float, 4> norm_output {};
     const ds::F32View norm_input_view {
@@ -73,6 +165,247 @@ int main() {
     const float inv_rms = 1.0f / std::sqrt(6.25f + 1.0e-6f);
     CHECK(std::abs(norm_output[0] - 3.0f * inv_rms) < 1.0e-6f);
     CHECK(std::abs(norm_output[1] - 4.0f * inv_rms) < 1.0e-6f);
+
+    std::array<float, 4> head_norm_input {3.0f, 4.0f, 0.0f, 5.0f};
+    std::array<float, 4> head_norm_output {};
+    const ds::F32View head_norm_input_view {
+        reinterpret_cast<uintptr_t>(head_norm_input.data()), 2, 2, 2, 1};
+    const ds::F32View head_norm_output_view {
+        reinterpret_cast<uintptr_t>(head_norm_output.data()), 2, 2, 2, 1};
+    ds::head_rms_norm(head_norm_input_view, nullptr, head_norm_output_view,
+                      1.0e-6f);
+    const float head_inv_rms = 1.0f / std::sqrt(12.5f + 1.0e-6f);
+    CHECK(std::abs(head_norm_output[0] - 3.0f * head_inv_rms) < 1.0e-6f);
+    CHECK(std::abs(head_norm_output[1] - 4.0f * head_inv_rms) < 1.0e-6f);
+    CHECK(std::abs(head_norm_output[2]) < 1.0e-6f);
+    CHECK(std::abs(head_norm_output[3] - 5.0f * head_inv_rms) < 1.0e-6f);
+
+    const std::array<float, 6> rope_original {10.0f, 20.0f, 1.0f,
+                                               2.0f, 3.0f, 4.0f};
+    std::array<float, 6> rope_values = rope_original;
+    const float angle0 = 0.25f;
+    const float angle1 = -0.5f;
+    std::array<float, 2> rope_cos {std::cos(angle0), std::cos(angle1)};
+    std::array<float, 2> rope_sin {std::sin(angle0), std::sin(angle1)};
+    const ds::F32View rope_view {
+        reinterpret_cast<uintptr_t>(rope_values.data()), 1, 6, 6, 1};
+    const ds::F32View rope_cos_view {
+        reinterpret_cast<uintptr_t>(rope_cos.data()), 1, 2, 2, 1};
+    const ds::F32View rope_sin_view {
+        reinterpret_cast<uintptr_t>(rope_sin.data()), 1, 2, 2, 1};
+    ds::rope_tail(rope_view, 4, rope_cos_view, rope_sin_view, false,
+                  rope_view);
+    CHECK(rope_values[0] == rope_original[0]);
+    CHECK(rope_values[1] == rope_original[1]);
+    ds::rope_tail(rope_view, 4, rope_cos_view, rope_sin_view, true,
+                  rope_view);
+    for (size_t index = 0; index < rope_values.size(); ++index) {
+        CHECK(std::abs(rope_values[index] - rope_original[index]) < 1.0e-5f);
+    }
+
+    std::array<float, 8> kv_cache {};
+    std::array<float, 2> kv_first {5.0f, 6.0f};
+    std::array<float, 2> kv_second {1.0f, 2.0f};
+    std::array<float, 4> kv_gathered {};
+    const ds::F32View kv_cache_view {
+        reinterpret_cast<uintptr_t>(kv_cache.data()), 4, 2, 2, 1};
+    const ds::F32View kv_first_view {
+        reinterpret_cast<uintptr_t>(kv_first.data()), 1, 2, 2, 1};
+    const ds::F32View kv_second_view {
+        reinterpret_cast<uintptr_t>(kv_second.data()), 1, 2, 2, 1};
+    const ds::F32View kv_gathered_view {
+        reinterpret_cast<uintptr_t>(kv_gathered.data()), 2, 2, 2, 1};
+    ds::write_kv_row(kv_cache_view, 2, kv_first_view);
+    ds::write_kv_row(kv_cache_view, 0, kv_second_view);
+    const std::array<uint32_t, 2> kv_rows {2, 0};
+    ds::gather_kv_rows(kv_cache_view, std::span<const uint32_t>(kv_rows),
+                       kv_gathered_view);
+    CHECK((kv_gathered == std::array<float, 4> {5.0f, 6.0f, 1.0f, 2.0f}));
+    bool kv_rejected = false;
+    try {
+        ds::write_kv_row(kv_cache_view, 4, kv_first_view);
+    } catch (const std::invalid_argument &) {
+        kv_rejected = true;
+    }
+    CHECK(kv_rejected);
+
+    std::array<float, 4> attention_q {1.0f, 0.0f, 0.0f, 1.0f};
+    std::array<float, 4> attention_kv {1.0f, 0.0f, 0.0f, 1.0f};
+    std::array<float, 2> attention_sinks {};
+    std::array<float, 4> attention_output {};
+    const ds::F32View attention_q_view {
+        reinterpret_cast<uintptr_t>(attention_q.data()), 2, 2, 2, 1};
+    const ds::F32View attention_kv_view {
+        reinterpret_cast<uintptr_t>(attention_kv.data()), 2, 2, 2, 1};
+    const ds::F32View attention_sinks_view {
+        reinterpret_cast<uintptr_t>(attention_sinks.data()), 1, 2, 2, 1};
+    const ds::F32View attention_output_view {
+        reinterpret_cast<uintptr_t>(attention_output.data()), 2, 2, 2, 1};
+    ds::sink_attention(attention_q_view, attention_kv_view,
+                       attention_sinks_view, attention_output_view);
+    const float attention_high = std::exp(1.0f / std::sqrt(2.0f));
+    const float attention_denominator = attention_high + 2.0f;
+    const std::array<float, 4> attention_expected {
+        attention_high / attention_denominator,
+        1.0f / attention_denominator,
+        1.0f / attention_denominator,
+        attention_high / attention_denominator};
+    for (size_t index = 0; index < attention_output.size(); ++index) {
+        CHECK(std::abs(attention_output[index] - attention_expected[index]) <
+              1.0e-6f);
+    }
+
+    std::array<float, 2> large_q {10000.0f, 10000.0f};
+    std::array<float, 2> large_kv {10000.0f, 10000.0f};
+    std::array<float, 1> large_sink {100000000.0f};
+    std::array<float, 2> large_output {};
+    const ds::F32View large_q_view {
+        reinterpret_cast<uintptr_t>(large_q.data()), 1, 2, 2, 1};
+    const ds::F32View large_kv_view {
+        reinterpret_cast<uintptr_t>(large_kv.data()), 1, 2, 2, 1};
+    const ds::F32View large_sink_view {
+        reinterpret_cast<uintptr_t>(large_sink.data()), 1, 1, 1, 1};
+    const ds::F32View large_output_view {
+        reinterpret_cast<uintptr_t>(large_output.data()), 1, 2, 2, 1};
+    ds::sink_attention(large_q_view, large_kv_view, large_sink_view,
+                       large_output_view);
+    CHECK(std::isfinite(large_output[0]));
+    CHECK(std::isfinite(large_output[1]));
+
+    std::array<float, 32> compressor_kv {};
+    std::array<float, 32> compressor_score {};
+    compressor_score.fill(-std::numeric_limits<float>::infinity());
+    std::array<float, 2> compressor_output {};
+    const ds::F32View compressor_kv_state_view {
+        reinterpret_cast<uintptr_t>(compressor_kv.data()), 8, 4, 4, 1};
+    const ds::F32View compressor_score_state_view {
+        reinterpret_cast<uintptr_t>(compressor_score.data()), 8, 4, 4, 1};
+    const ds::F32View compressor_output_view {
+        reinterpret_cast<uintptr_t>(compressor_output.data()), 1, 2, 2, 1};
+    const ds::CompressorStateView compressor_state {
+        compressor_kv_state_view, compressor_score_state_view, 2, 4};
+    const std::array<std::array<float, 4>, 4> compressor_projected {{
+        {10.0f, 20.0f, 1.0f, 2.0f},
+        {30.0f, 40.0f, 3.0f, 4.0f},
+        {50.0f, 60.0f, 5.0f, 6.0f},
+        {70.0f, 80.0f, 7.0f, 8.0f},
+    }};
+    std::array<float, 4> compressor_zero_score {};
+    const ds::F32View compressor_zero_score_view {
+        reinterpret_cast<uintptr_t>(compressor_zero_score.data()), 1, 4, 4,
+        1};
+    for (uint32_t position = 0; position < 4; ++position) {
+        const ds::F32View projected_view {
+            reinterpret_cast<uintptr_t>(compressor_projected[position].data()),
+            1, 4, 4, 1};
+        const bool emitted = ds::compressor_update_pre_scored(
+            position, projected_view, compressor_zero_score_view,
+            compressor_state, compressor_output_view);
+        CHECK(emitted == (position == 3));
+    }
+    CHECK(std::abs(compressor_output[0] - 4.0f) < 1.0e-6f);
+    CHECK(std::abs(compressor_output[1] - 5.0f) < 1.0e-6f);
+    for (uint32_t row = 0; row < 4; ++row) {
+        for (uint32_t column = 0; column < 4; ++column) {
+            CHECK(compressor_kv[row * 4 + column] ==
+                  compressor_kv[(row + 4) * 4 + column]);
+            CHECK(compressor_score[row * 4 + column] ==
+                  compressor_score[(row + 4) * 4 + column]);
+        }
+    }
+
+    std::array<float, 128> qat_values {};
+    qat_values[0] = 1.0f;
+    const ds::F32View qat_view {
+        reinterpret_cast<uintptr_t>(qat_values.data()), 1, 128, 128, 1};
+    ds::indexer_qat(qat_view);
+    for (float value : qat_values) {
+        CHECK(std::isfinite(value));
+        CHECK(value != 0.0f);
+    }
+
+    std::array<float, 4> indexer_q {1.0f, 0.0f, 0.0f, 2.0f};
+    std::array<float, 6> indexer_kv {1.0f, 0.0f, 0.0f,
+                                      1.0f, -1.0f, -1.0f};
+    std::array<float, 2> indexer_weights {1.0f, 2.0f};
+    const ds::F32View indexer_q_view {
+        reinterpret_cast<uintptr_t>(indexer_q.data()), 2, 2, 2, 1};
+    const ds::F32View indexer_kv_view {
+        reinterpret_cast<uintptr_t>(indexer_kv.data()), 3, 2, 2, 1};
+    const ds::F32View indexer_weights_view {
+        reinterpret_cast<uintptr_t>(indexer_weights.data()), 1, 2, 2, 1};
+    const std::vector<uint32_t> selected = ds::sparse_indexer(
+        indexer_q_view, indexer_kv_view, indexer_weights_view, 2);
+    CHECK((selected == std::vector<uint32_t> {1, 0}));
+
+    std::array<float, 4> router_logits {0.0f, 1.0f, -1.0f, 2.0f};
+    std::array<float, 4> router_probabilities {};
+    const ds::F32View router_logits_view {
+        reinterpret_cast<uintptr_t>(router_logits.data()), 1, 4, 4, 1};
+    const ds::F32View router_probabilities_view {
+        reinterpret_cast<uintptr_t>(router_probabilities.data()), 1, 4, 4,
+        1};
+    const ds::RouterSelection router_selection = ds::router(
+        router_logits_view, nullptr, std::span<const uint32_t>(), 2, 2.0f,
+        router_probabilities_view);
+    CHECK((router_selection.expert_indices ==
+           std::vector<uint32_t> {3, 1}));
+    for (size_t index = 0; index < router_logits.size(); ++index) {
+        const float expected =
+            std::sqrt(std::max(router_logits[index], 0.0f) +
+                      std::log1p(std::exp(-std::abs(router_logits[index]))));
+        CHECK(std::abs(router_probabilities[index] - expected) < 1.0e-6f);
+    }
+    CHECK(std::abs(router_selection.expert_weights[0] +
+                       router_selection.expert_weights[1] -
+                   2.0f) < 1.0e-6f);
+
+    std::vector<uint8_t> zero_iq2(256 * ds::kIq2XxsBlockBytes, 0);
+    std::vector<uint8_t> zero_q2(256 * ds::kQ2KBlockBytes, 0);
+    std::vector<uint8_t> zero_q8(256 * 8 * ds::kQ8BlockBytes, 0);
+    const ds::WeightTensor zero_iq2_weight {
+        .payload = zero_iq2.data(),
+        .bytes = zero_iq2.size(),
+        .elements = 65536,
+        .dimensions = {256, 256, 1},
+        .tensor_type = ds::kGgufTypeIq2Xxs,
+        .rank = 3,
+    };
+    const ds::WeightTensor zero_q2_weight {
+        .payload = zero_q2.data(),
+        .bytes = zero_q2.size(),
+        .elements = 65536,
+        .dimensions = {256, 256, 1},
+        .tensor_type = ds::kGgufTypeQ2_K,
+        .rank = 3,
+    };
+    const ds::WeightTensor zero_q8_weight {
+        .payload = zero_q8.data(),
+        .bytes = zero_q8.size(),
+        .elements = 65536,
+        .dimensions = {256, 256},
+        .tensor_type = ds::kGgufTypeQ8_0,
+        .rank = 2,
+    };
+    std::array<float, 256> routed_output {};
+    std::array<float, 256> shared_output {};
+    const ds::F32View routed_output_view {
+        reinterpret_cast<uintptr_t>(routed_output.data()), 1, 256, 256, 1};
+    const ds::F32View shared_output_view {
+        reinterpret_cast<uintptr_t>(shared_output.data()), 1, 256, 256, 1};
+    const std::array<uint32_t, 1> one_expert {0};
+    const std::array<float, 1> one_weight {1.0f};
+    ds::routed_experts(expert_input_view, zero_iq2_weight, zero_iq2_weight,
+                       zero_q2_weight, iq2_codebook,
+                       std::span<const uint32_t>(one_expert),
+                       std::span<const float>(one_weight), 10.0f,
+                       routed_output_view);
+    ds::shared_expert(expert_input_view, zero_q8_weight, zero_q8_weight,
+                      zero_q8_weight, 10.0f, shared_output_view);
+    for (uint32_t index = 0; index < 256; ++index) {
+        CHECK(routed_output[index] == 0.0f);
+        CHECK(shared_output[index] == 0.0f);
+    }
 
     std::array<float, 8> hc_mix {0.2f, -0.4f, 0.3f, 0.7f,
                                  0.1f, -0.2f, 0.4f, -0.3f};
@@ -182,7 +515,11 @@ int main() {
     }
     CHECK(rejected);
     std::printf(
-        "deepseek_v4_flash_pto_ops=pass q8_linear=1 f16_linear=1 rms_norm=1 "
+        "deepseek_v4_flash_pto_ops=pass q8_linear=1 f16_linear=1 "
+        "q2_k_linear=1 iq2_xxs_linear=1 rms_norm=1 "
+        "head_rms_norm=1 rope_tail=1 kv_write=1 kv_gather=1 "
+        "sink_attention=1 compressor_update=1 indexer_qat=1 "
+        "sparse_indexer=1 router=1 routed_experts=1 shared_expert=1 "
         "hc_split=1 hc_weighted_sum=1 hc_post=1 swiglu=1 "
         "tload=%llu tstore=%llu\n",
         static_cast<unsigned long long>(ds::operator_counts.tload),

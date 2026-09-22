@@ -121,6 +121,15 @@ public:
         throw std::invalid_argument("deepseek_pto_weight_tensor_missing");
     }
 
+    bool contains(std::string_view name) const {
+        try {
+            (void)find_record(name);
+            return true;
+        } catch (const std::invalid_argument &) {
+            return false;
+        }
+    }
+
 private:
     static uint64_t checked_add(uint64_t left, uint64_t right) {
         if (right > std::numeric_limits<uint64_t>::max() - left) {
@@ -232,6 +241,8 @@ public:
         }
         return result;
     }
+
+    bool contains(std::string_view name) const { return index_.contains(name); }
 
 private:
     void close_file() {
