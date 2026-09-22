@@ -239,6 +239,11 @@ impl GgufCatalog {
     }
 
     pub fn tokenizer_token_text(&self, token: usize) -> Result<String, String> {
+        String::from_utf8(self.tokenizer_token_bytes(token)?)
+            .map_err(|err| format!("deepseek_gguf_token_text_not_utf8:{err}"))
+    }
+
+    pub fn tokenizer_token_bytes(&self, token: usize) -> Result<Vec<u8>, String> {
         let tokens = self.metadata_strings("tokenizer.ggml.tokens")?;
         let encoded = tokens.get(token).ok_or_else(|| {
             format!(
@@ -246,7 +251,7 @@ impl GgufCatalog {
                 tokens.len()
             )
         })?;
-        decode_gpt2_token_text(encoded)
+        decode_gpt2_token_bytes(encoded)
     }
 
     pub fn pto_token_table(&self) -> Result<Vec<u8>, String> {
@@ -277,7 +282,7 @@ impl GgufCatalog {
         output.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
         output.extend_from_slice(&ENTRY_BYTES.to_le_bytes());
         for (token, encoded) in tokens.iter().enumerate() {
-            let piece = decode_gpt2_token_text(encoded)?.into_bytes();
+            let piece = decode_gpt2_token_bytes(encoded)?;
             let mut checksum = FNV_OFFSET ^ token as u64;
             for byte in &piece {
                 checksum = (checksum ^ u64::from(*byte)).wrapping_mul(FNV_PRIME);
@@ -794,9 +799,9 @@ fn gpt2_byte_to_codepoint(byte: u8) -> u32 {
     byte
 }
 
-fn decode_gpt2_token_text(encoded: &str) -> Result<String, String> {
+fn decode_gpt2_token_bytes(encoded: &str) -> Result<Vec<u8>, String> {
     if encoded.contains('\u{ff5c}') {
-        return Ok(encoded.to_string());
+        return Ok(encoded.as_bytes().to_vec());
     }
     let mut bytes = Vec::with_capacity(encoded.len());
     for codepoint in encoded.chars().map(u32::from) {
@@ -804,7 +809,7 @@ fn decode_gpt2_token_text(encoded: &str) -> Result<String, String> {
             .ok_or_else(|| format!("deepseek_gguf_token_codepoint_invalid:{codepoint:#x}"))?;
         bytes.push(byte);
     }
-    String::from_utf8(bytes).map_err(|err| format!("deepseek_gguf_token_text_not_utf8:{err}"))
+    Ok(bytes)
 }
 
 fn gpt2_codepoint_to_byte(codepoint: u32) -> Option<u8> {
@@ -1974,6 +1979,34 @@ mod tests {
             assert_eq!(u64::from_le_bytes(table[72..80].try_into().unwrap()), 2);
             assert_eq!(&table[80..82], b" B");
         });
+    }
+
+    #[test]
+    fn pto_token_table_preserves_non_utf8_gpt2_bytes() {
+        let catalog = GgufCatalog {
+            path: PathBuf::from("non-utf8-token.gguf"),
+            version: GGUF_VERSION,
+            file_bytes: 0,
+            alignment: 32,
+            tensor_data_offset: 0,
+            metadata_count: 1,
+            metadata: BTreeMap::from([(
+                "tokenizer.ggml.tokens".to_string(),
+                GgufScalarValue::Strings(vec![
+                    "\u{00ff}".to_string(),
+                    "A".to_string(),
+                    "B".to_string(),
+                    "C".to_string(),
+                ]),
+            )]),
+            tensors: BTreeMap::new(),
+        };
+
+        let table = catalog.pto_token_table().expect("build token table");
+        assert_eq!(u64::from_le_bytes(table[40..48].try_into().unwrap()), 1);
+        assert_eq!(table[48], 0xff);
+        assert_eq!(catalog.tokenizer_token_bytes(0).unwrap(), vec![0xff]);
+        assert!(catalog.tokenizer_token_text(0).is_err());
     }
 
     #[test]

@@ -3,22 +3,15 @@
 
 extern "C" __attribute__((visibility("default"))) PTO2OrchestrationConfig
 aicpu_orchestration_config(const ChipTaskArgs &) {
-    return PTO2OrchestrationConfig {.expected_arg_count = 30};
+    return PTO2OrchestrationConfig {.expected_arg_count = 8};
 }
 
 extern "C" __attribute__((visibility("default"))) void
 build_deepseek_v4_flash_pto_range_graph(const ChipTaskArgs &args) {
-    if (args.tensor_count() != 7 || args.scalar_count() != 23) {
+    if (args.tensor_count() != 8 || args.scalar_count() != 0) {
         rt_report_fatal(PTO2_ERROR_INVALID_ARGS,
-                        "DeepSeek range expects seven tensors and 23 scalars");
+                        "DeepSeek range expects eight tensors");
         return;
-    }
-    for (size_t index = 0; index < 23; ++index) {
-        if (args.scalar(index) > UINT32_MAX) {
-            rt_report_fatal(PTO2_ERROR_INVALID_ARGS,
-                            "DeepSeek range scalar overflow");
-            return;
-        }
     }
     CoreTaskArgs task;
     task.add_input(args.tensor(0).ref(), args.tensor(1).ref(),
@@ -30,8 +23,6 @@ build_deepseek_v4_flash_pto_range_graph(const ChipTaskArgs &args) {
         task.add_input(args.tensor(5).ref());
     }
     task.add_input(args.tensor(6).ref());
-    for (size_t index = 0; index < 23; ++index) {
-        task.add_scalar(args.scalar(index));
-    }
+    task.add_input(args.tensor(7).ref());
     rt_submit_aiv_task(0, task);
 }

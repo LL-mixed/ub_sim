@@ -16,6 +16,7 @@ pub(crate) const IQ2_GRID_ENTRIES: usize = 256;
 pub(crate) const IQ2_SIGN_ENTRIES: usize = 128;
 pub(crate) const IQ2_CODEBOOK_BYTES: usize =
     IQ2_GRID_ENTRIES * std::mem::size_of::<u64>() + IQ2_SIGN_ENTRIES;
+const SIMPLER_TENSOR_ALIGNMENT: usize = std::mem::size_of::<f32>();
 const MAX_TENSORS: usize = 1_000_000;
 const MAX_DESCRIPTOR_BYTES: usize = 64 * 1024 * 1024;
 
@@ -75,11 +76,20 @@ pub(crate) fn encode(catalog: &GgufCatalog) -> Result<Vec<u8>, String> {
         .len()
         .checked_mul(RECORD_BYTES)
         .ok_or("deepseek_pto_weight_index_size")?;
-    let strings_bytes = catalog.tensors.values().try_fold(0usize, |total, tensor| {
+    let string_payload_bytes = catalog.tensors.values().try_fold(0usize, |total, tensor| {
         total
             .checked_add(tensor.name.len())
             .ok_or("deepseek_pto_weight_index_size")
     })?;
+    let unaligned_tail_bytes = string_payload_bytes
+        .checked_add(path.len())
+        .ok_or("deepseek_pto_weight_index_size")?;
+    let string_padding = (SIMPLER_TENSOR_ALIGNMENT
+        - unaligned_tail_bytes % SIMPLER_TENSOR_ALIGNMENT)
+        % SIMPLER_TENSOR_ALIGNMENT;
+    let strings_bytes = string_payload_bytes
+        .checked_add(string_padding)
+        .ok_or("deepseek_pto_weight_index_size")?;
     let records_offset = HEADER_BYTES;
     let strings_offset = records_offset
         .checked_add(records_bytes)
@@ -147,6 +157,7 @@ pub(crate) fn encode(catalog: &GgufCatalog) -> Result<Vec<u8>, String> {
     for tensor in catalog.tensors.values() {
         bytes.extend_from_slice(tensor.name.as_bytes());
     }
+    bytes.resize(strings_offset + strings_bytes, 0);
     bytes.extend_from_slice(path);
     let (iq2_grid, iq2_signs) = iq2_xxs_codebook();
     for value in iq2_grid {
@@ -236,6 +247,7 @@ mod tests {
     fn encodes_bounded_mmap_catalog_with_exact_names() {
         let catalog = catalog();
         let bytes = encode(&catalog).unwrap();
+        assert_eq!(bytes.len() % SIMPLER_TENSOR_ALIGNMENT, 0);
         assert_eq!(u64_at(&bytes, 0), MAGIC);
         assert_eq!(u32_at(&bytes, 8), VERSION);
         assert_eq!(u32_at(&bytes, 12), HEADER_BYTES as u32);

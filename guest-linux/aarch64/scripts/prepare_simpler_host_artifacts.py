@@ -204,34 +204,7 @@ PROFILE_SPECS = {
             {"kind": "output", "name": "next_state"},
             {"kind": "output", "name": "logits"},
             {"kind": "input", "name": "private_weight_index"},
-        )
-        + tuple(
-            {"kind": "scalar_u64", "name": name}
-            for name in (
-                "first",
-                "end",
-                "layers",
-                "past",
-                "tokens",
-                "hidden",
-                "hc_mult",
-                "vocab",
-                "attention_heads",
-                "kv_heads",
-                "head_dim",
-                "rope_head_dim",
-                "q_lora_rank",
-                "o_lora_rank",
-                "output_groups",
-                "experts",
-                "experts_used",
-                "shared_experts",
-                "moe_intermediate",
-                "sliding_window",
-                "indexer_heads",
-                "indexer_head_dim",
-                "indexer_top_k",
-            )
+            {"kind": "input", "name": "private_geometry"},
         ),
     ),
     "host_qwen3_range": ProfileSpec(

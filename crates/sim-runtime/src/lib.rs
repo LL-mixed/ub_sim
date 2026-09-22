@@ -832,7 +832,8 @@ fn prepare_simpler_capi_args(
                     payload.resize(end, 0);
                 }
             }
-            SimplerRuntimeArg::InputSegment { endpoint, bytes } => {
+            SimplerRuntimeArg::InputSegment { endpoint, bytes }
+            | SimplerRuntimeArg::InputBytesSegment { endpoint, bytes } => {
                 let key = (endpoint.node, endpoint.segment);
                 let payload = host_payloads
                     .segments
@@ -871,6 +872,23 @@ fn prepare_simpler_capi_args(
                         payload[start..end].as_ptr() as u64,
                         *bytes,
                         simpler_tensor_dtype(profile, tensor_index),
+                    )
+                    .map_err(|err| format!("simpler_capi_tensor_arg_failed:{err}"))?,
+                );
+                signature.push(simpler_capi::ArgDirection::In);
+            }
+            SimplerRuntimeArg::InputBytesSegment { endpoint, bytes } => {
+                let payload = host_payloads
+                    .segments
+                    .get(&(endpoint.node, endpoint.segment))
+                    .ok_or_else(|| "simpler_capi_missing_input_payload".to_string())?;
+                let start = endpoint.offset as usize;
+                let end = start.saturating_add(*bytes as usize);
+                tensors.push(
+                    simpler_capi::Tensor::new(
+                        payload[start..end].as_ptr() as u64,
+                        *bytes,
+                        simpler_capi::DataType::Uint8,
                     )
                     .map_err(|err| format!("simpler_capi_tensor_arg_failed:{err}"))?,
                 );
@@ -1079,6 +1097,7 @@ fn validate_simpler_capi_dispatch_spec(
                 matches!(
                     arg,
                     SimplerRuntimeArg::InputSegment { .. }
+                        | SimplerRuntimeArg::InputBytesSegment { .. }
                         | SimplerRuntimeArg::OutputSegment { .. }
                         | SimplerRuntimeArg::InoutSegment { .. }
                 )
@@ -1096,6 +1115,7 @@ fn validate_simpler_capi_dispatch_spec(
                 matches!(
                     arg,
                     SimplerRuntimeArg::InputSegment { .. }
+                        | SimplerRuntimeArg::InputBytesSegment { .. }
                         | SimplerRuntimeArg::OutputSegment { .. }
                         | SimplerRuntimeArg::InoutSegment { .. }
                 )
@@ -1103,6 +1123,11 @@ fn validate_simpler_capi_dispatch_spec(
         {
             let (endpoint, bytes, usage_ok) = match arg {
                 SimplerRuntimeArg::InputSegment { endpoint, bytes } => (
+                    endpoint,
+                    *bytes,
+                    matches!(binding.usage, sim_core::BufferUsage::Input),
+                ),
+                SimplerRuntimeArg::InputBytesSegment { endpoint, bytes } => (
                     endpoint,
                     *bytes,
                     matches!(binding.usage, sim_core::BufferUsage::Input),
@@ -3407,6 +3432,29 @@ outputs:
         assert_eq!(tensor.address_space(), AddressSpace::UbGm);
         assert_eq!(tensor.buffer_addr(), 0x7000_0000_0000);
         assert_eq!(tensor.buffer_size(), 16_384);
+    }
+
+    #[test]
+    fn simpler_byte_segment_accepts_unaligned_opaque_payload() {
+        let endpoint = MemoryEndpoint {
+            node: 0,
+            segment: SegmentHandle(77),
+            offset: 0,
+        };
+        let mut host_payloads = HostPayloadRegistry::default();
+        host_payloads
+            .segments
+            .insert((endpoint.node, endpoint.segment), vec![1, 2, 3]);
+
+        let prepared = prepare_simpler_capi_args(
+            sim_core::DispatchBackendProfile::HostVector,
+            &[SimplerRuntimeArg::InputBytesSegment { endpoint, bytes: 3 }],
+            &mut host_payloads,
+        )
+        .expect("opaque byte tensor");
+
+        assert_eq!(prepared.signature, vec![ArgDirection::In]);
+        assert_eq!(prepared.task_args.tensor(0).unwrap().buffer_size(), 3);
     }
 
     #[test]

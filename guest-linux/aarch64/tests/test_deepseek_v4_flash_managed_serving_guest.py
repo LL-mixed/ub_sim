@@ -62,12 +62,19 @@ class DeepseekV4FlashManagedServingGuestTest(unittest.TestCase):
         initramfs = (
             ROOT / "guest-linux/aarch64/scripts/build_initramfs.sh"
         ).read_text()
-        for source in (
-            "deepseek_v4_flash_managed_direct_guest.c",
-            "deepseek_v4_flash_managed_serving_guest.c",
+        for source, variable in (
+            (
+                "deepseek_v4_flash_managed_direct_guest.c",
+                "DEEPSEEK_V4_FLASH_MANAGED_DIRECT_GUEST_SRC",
+            ),
+            (
+                "deepseek_v4_flash_managed_serving_guest.c",
+                "DEEPSEEK_V4_FLASH_MANAGED_SERVING_GUEST_SRC",
+            ),
         ):
             self.assertIn(source, makefile)
             self.assertIn(source, initramfs)
+            self.assertGreaterEqual(initramfs.count(f'"${variable}"'), 3)
 
 
 if __name__ == "__main__":

@@ -68,12 +68,17 @@ kernel_entry(int64_t *args) {
     const auto &logits = *reinterpret_cast<const ChipTensor *>(args[5]);
     const auto &weight_descriptor =
         *reinterpret_cast<const ChipTensor *>(args[6]);
+    const auto &geometry_descriptor =
+        *reinterpret_cast<const ChipTensor *>(args[7]);
+    const ds::ByteView geometry_bytes = byte_view(geometry_descriptor);
+    if (geometry_bytes.bytes != 23 * sizeof(uint32_t)) {
+        throw std::invalid_argument("deepseek_pto_kernel_geometry");
+    }
+    const auto *geometry_payload =
+        reinterpret_cast<const uint8_t *>(geometry_bytes.address);
     uint32_t scalars[23];
     for (size_t index = 0; index < 23; ++index) {
-        if (uint64_t(args[7 + index]) > UINT32_MAX) {
-            throw std::invalid_argument("deepseek_pto_kernel_scalar");
-        }
-        scalars[index] = static_cast<uint32_t>(args[7 + index]);
+        scalars[index] = ds::read_u32(geometry_payload + index * sizeof(uint32_t));
     }
     const ds::RangeGeometry geometry {
         scalars[0],  scalars[1],  scalars[2],  scalars[3],

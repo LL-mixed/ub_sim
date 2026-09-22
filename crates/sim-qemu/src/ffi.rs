@@ -11,8 +11,8 @@ use sim_services::shmem::DEFAULT_MAX_SEGMENT_BYTES;
 use sim_topology::SimTopology;
 use sim_uapi::{
     pto_ub_gm_registered_callable_fingerprint, PtoUbGmDispatchV2Req,
-    PTO_UB_GM_HOST_VECTOR_CALLABLE_ID, PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID,
-    PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID,
+    PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID, PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+    PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID, PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID,
 };
 
 use crate::ub_gm_abi::{
@@ -206,13 +206,7 @@ impl LinquUbBridge {
     }
 
     fn query_ub_gm_callable_v1(&self, callable_id: u64) -> Result<u64, LingquPtoUbGmError> {
-        if !matches!(
-            callable_id,
-            PTO_UB_GM_HOST_VECTOR_CALLABLE_ID
-                | PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID
-                | PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID
-                | sim_uapi::managed_model_dispatch::CALLABLE_ID
-        ) {
+        if !ub_gm_callable_is_registered(callable_id) {
             return Err(LingquPtoUbGmError::UnsupportedCallable);
         }
         pto_ub_gm_registered_callable_fingerprint(callable_id).map_err(|error| {
@@ -359,6 +353,17 @@ impl LinquUbBridge {
             Ok(false)
         }
     }
+}
+
+fn ub_gm_callable_is_registered(callable_id: u64) -> bool {
+    matches!(
+        callable_id,
+        PTO_UB_GM_HOST_VECTOR_CALLABLE_ID
+            | PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID
+            | PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID
+            | PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID
+            | sim_uapi::managed_model_dispatch::CALLABLE_ID
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -657,7 +662,17 @@ pub extern "C" fn linqu_ub_bridge_poll_completion(
 
 #[cfg(test)]
 mod tests {
-    use super::{linqu_ub_bridge_enqueue_managed_model_range_v2, LinquUbBridge};
+    use super::{
+        linqu_ub_bridge_enqueue_managed_model_range_v2, ub_gm_callable_is_registered, LinquUbBridge,
+    };
+
+    #[test]
+    fn ub_gm_registry_accepts_deepseek_range_callable() {
+        assert!(ub_gm_callable_is_registered(
+            sim_uapi::PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID
+        ));
+        assert!(!ub_gm_callable_is_registered(u64::MAX));
+    }
 
     #[test]
     fn managed_enqueue_rejects_invalid_abi_and_preserves_completion_identity() {

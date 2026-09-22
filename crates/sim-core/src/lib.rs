@@ -419,6 +419,10 @@ pub enum SimplerRuntimeArg {
         endpoint: MemoryEndpoint,
         bytes: u64,
     },
+    InputBytesSegment {
+        endpoint: MemoryEndpoint,
+        bytes: u64,
+    },
     OutputSegment {
         endpoint: MemoryEndpoint,
         bytes: u64,

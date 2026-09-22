@@ -122,6 +122,18 @@ class W5ClusterTopologyTest(unittest.TestCase):
             result.stdout,
         )
 
+    def test_direct_callable_manifests_reach_qemu_processes(self):
+        runner = self.guest_runner.read_text(encoding="utf-8")
+        launcher = self.launcher.read_text(encoding="utf-8")
+
+        for variable in (
+            "SIMPLER_QWEN3_PTO_RANGE_MANIFEST",
+            "SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST",
+        ):
+            self.assertIn(f'{variable}="${variable}"', runner)
+            self.assertIn(f'{variable}="${{{variable}:-}}"', launcher)
+            self.assertIn(f'{variable}="${variable}"', launcher)
+
     def test_cli_legacy_serving_requires_explicit_option(self):
         result = self.run_config("--print-env", "--legacy-serving")
 

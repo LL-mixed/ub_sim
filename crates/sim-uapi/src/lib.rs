@@ -16088,17 +16088,24 @@ fn run_pto_ub_gm_chipbackend(
     if req.callable_id == managed_model_dispatch::CALLABLE_ID {
         return managed_model_dispatch::run(topology, req, access);
     }
-    match req.callable_id {
-        PTO_UB_GM_HOST_VECTOR_CALLABLE_ID => validate_host_vector_ub_gm_args(req)?,
-        PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID => validate_qwen3_operator_ub_gm_args(req)?,
+    let deepseek_geometry = match req.callable_id {
+        PTO_UB_GM_HOST_VECTOR_CALLABLE_ID => {
+            validate_host_vector_ub_gm_args(req)?;
+            None
+        }
+        PTO_UB_GM_QWEN3_OPERATOR_CALLABLE_ID => {
+            validate_qwen3_operator_ub_gm_args(req)?;
+            None
+        }
         PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID => {
             qwen3_pto_range::validate(req)?;
+            None
         }
         PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID => {
-            deepseek_v4_flash_pto_range::validate(req)?;
+            Some(deepseek_v4_flash_pto_range::validate(req)?)
         }
         _ => return Err("pto_ub_gm_unsupported_callable".to_string()),
-    }
+    };
     let manifest_path = pto_ub_gm_manifest_path(req.callable_id)?;
     let manifest = load_simpler_runtime_manifest(&manifest_path)?;
     let expected_fingerprint = pto_ub_gm_callable_fingerprint(&manifest)?;
@@ -16133,17 +16140,55 @@ fn run_pto_ub_gm_chipbackend(
     let private_payload_bytes = private_payload
         .as_ref()
         .map_or(0, |bytes| bytes.len() as u64);
+    let private_geometry_payload = deepseek_geometry.as_ref().map(|geometry| {
+        geometry
+            .scalars()
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>()
+    });
+    let private_geometry_bytes = private_geometry_payload
+        .as_ref()
+        .map_or(0, |bytes| bytes.len() as u64);
     let private_segment = SegmentHandle(0x5157_5054_4f00_0001);
+    let private_geometry_segment = SegmentHandle(0x5157_5054_4f00_0002);
     if private_payload.is_some() {
+        if req.callable_id == PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID {
+            runtime_args.truncate(deepseek_v4_flash_pto_range::TENSOR_COUNT);
+        }
         runtime_args.insert(
             6,
-            SimplerRuntimeArg::InputSegment {
+            if req.callable_id == PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID {
+                SimplerRuntimeArg::InputBytesSegment {
+                    endpoint: MemoryEndpoint {
+                        node: ubpu_node,
+                        segment: private_segment,
+                        offset: 0,
+                    },
+                    bytes: private_payload_bytes,
+                }
+            } else {
+                SimplerRuntimeArg::InputSegment {
+                    endpoint: MemoryEndpoint {
+                        node: ubpu_node,
+                        segment: private_segment,
+                        offset: 0,
+                    },
+                    bytes: private_payload_bytes,
+                }
+            },
+        );
+    }
+    if private_geometry_payload.is_some() {
+        runtime_args.insert(
+            7,
+            SimplerRuntimeArg::InputBytesSegment {
                 endpoint: MemoryEndpoint {
                     node: ubpu_node,
-                    segment: private_segment,
+                    segment: private_geometry_segment,
                     offset: 0,
                 },
-                bytes: private_payload_bytes,
+                bytes: private_geometry_bytes,
             },
         );
     }
@@ -16153,6 +16198,9 @@ fn run_pto_ub_gm_chipbackend(
     let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
     if let Some(payload) = private_payload {
         runtime.seed_host_segment(ubpu_node, private_segment, payload);
+    }
+    if let Some(payload) = private_geometry_payload {
+        runtime.seed_host_segment(ubpu_node, private_geometry_segment, payload);
     }
     runtime
         .register_pto_ub_gm_access(access)
@@ -16196,7 +16244,7 @@ fn run_pto_ub_gm_chipbackend(
         }
     })();
     runtime.clear_pto_ub_gm_access();
-    if runtime.host_payload_bytes() != private_payload_bytes {
+    if runtime.host_payload_bytes() != private_payload_bytes + private_geometry_bytes {
         return Err("pto_ub_gm_payload_staging_detected".to_string());
     }
     if req.callable_id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID {
