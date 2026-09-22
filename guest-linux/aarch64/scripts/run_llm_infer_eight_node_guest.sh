@@ -134,6 +134,7 @@ SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST="${SIMPLER_HOST_ENGRAM_CONTEXT_MANIFEST:-/t
 SIM_W5_PTO_UB_GM_PROBE="${SIM_W5_PTO_UB_GM_PROBE:-0}"
 SIM_W5_QWEN3_PTO="${SIM_W5_QWEN3_PTO:-0}"
 SIM_W5_MANAGED_SERVING="${SIM_W5_MANAGED_SERVING:-0}"
+SIM_W5_MODEL_IO="${SIM_W5_MODEL_IO:-bulk}"
 SIM_W5_MANAGED_CONNECT="${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
 SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
 SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES="${SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES:-33554432}"
@@ -577,9 +578,26 @@ validate_w5_managed_serving() {
         "$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT" != "0" ||
         "$SIM_QWEN3_GUEST_ENGRAM" != "0" ||
         "$SIM_QWEN3_SAMPLER_TOP_K" != "1" ]]; then
-    trace "FAIL: managed serving requires a W5 profile, managed UB_GM I/O, top_k=1, and disables callable-1/callable-3/engram"
+    trace "FAIL: managed serving requires a W5 profile, managed UB_GM I/O, top_k=1, and disables probe/legacy callable-3/engram"
     return 1
   fi
+  case "$SIM_W5_MODEL_IO" in
+    bulk)
+      ;;
+    direct)
+      if ! is_qwen3_dense_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" ||
+         [[ -z "$SIMPLER_QWEN3_PTO_RANGE_MANIFEST" ||
+            ! -f "$SIMPLER_QWEN3_PTO_RANGE_MANIFEST" ||
+            -z "$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT" ]]; then
+        trace "FAIL: direct managed model I/O requires Qwen callable-3 artifacts"
+        return 1
+      fi
+      ;;
+    *)
+      trace "FAIL: SIM_W5_MODEL_IO must be bulk or direct"
+      return 1
+      ;;
+  esac
   if [[ -z "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" ||
         "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" == "0" ||
         "$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT" == "0x0" ]]; then
@@ -1022,6 +1040,7 @@ export SIM_W5_RUN_ID="$RUN_ID_BASE"
 export SIM_W5_PTO_UB_GM_PROBE="$SIM_W5_PTO_UB_GM_PROBE"
 export SIM_W5_QWEN3_PTO="$SIM_W5_QWEN3_PTO"
 export SIM_W5_MANAGED_SERVING="$SIM_W5_MANAGED_SERVING"
+export SIM_W5_MODEL_IO="$SIM_W5_MODEL_IO"
 export SIM_W5_MANAGED_CONNECT="$SIM_W5_MANAGED_CONNECT"
 export SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT"
 export SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES="$SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES"
@@ -1558,7 +1577,7 @@ EOF
 }
 
 stage_qwen3_pto_token_table() {
-  if [[ "$SIM_W5_QWEN3_PTO" != "1" ]]; then
+  if [[ "$SIM_W5_QWEN3_PTO" != "1" && "$SIM_W5_MODEL_IO" != "direct" ]]; then
     return 0
   fi
   mkdir -p "$RUN_INITRAMFS_DIR/tmp"
@@ -2045,11 +2064,22 @@ validate_node_log() {
     local expected_managed_steps="${SIM_W5_SERVING_DECODE_STEPS_TOTAL:-$SIM_QWEN3_GUEST_DECODE_STEPS}"
 
     assert_log_has "$log_file" "\\[w4guest8:initramfs\\] managed_service ready node=$((idx - 1)) .*allocation_policy=node-partitioned-kernel-probed" "$node_id managed service readiness" || return 1
-    assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=4 control=mem_service data=obmm model_io_mode=bulk_provider_callbacks model_tensor_address_space=HOST pto_instruction_io=0 status=ok" "$node_id managed runtime" || return 1
-    assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=4 .*status=ok" "$expected_managed_steps" "$node_id managed model ranges" || return 1
-    assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable4" "$expected_managed_steps" "$node_id managed completion gate" || return 1
+    if [[ "$SIM_W5_MODEL_IO" == "direct" ]]; then
+      assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=3 control=mem_service data=obmm model_io_mode=direct model_tensor_address_space=UB_GM pto_instruction_io=1 status=ok" "$node_id direct managed runtime" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=3 model_io=direct .*status=ok" "$expected_managed_steps" "$node_id direct managed model ranges" || return 1
+      assert_log_count "$log_file" "model-direct: .*callable=3 tensors=6 model_tensor_address_space=UB_GM pto_instruction_io=1 shared_payload_staging_bytes=0 completion_status=1" "$expected_managed_steps" "$node_id direct tensor provenance" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable3_direct" "$expected_managed_steps" "$node_id direct managed completion gate" || return 1
+      assert_log_count "$qemu_log" "QWEN3_PTO_OPERATOR_COUNTS .*kernel_complete=1" "$expected_managed_steps" "$node_id direct PTO range completions" || return 1
+      assert_log_has "$qemu_log" "QEMU_UB_GM_LOAD request=" "$node_id direct PTO TLOAD" || return 1
+      assert_log_has "$qemu_log" "QEMU_UB_GM_STORE request=" "$node_id direct PTO TSTORE" || return 1
+      assert_log_absent "$qemu_log" "managed-model-provider: .*completion=success" "$node_id callable-4 provider exclusion" || return 1
+    else
+      assert_log_has "$log_file" "\\[w4_guest\\] stage w5_managed_serving_runtime_open .*callable=4 control=mem_service data=obmm model_io_mode=bulk_provider_callbacks model_tensor_address_space=HOST pto_instruction_io=0 status=ok" "$node_id managed runtime" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*callable=4 model_io=bulk .*status=ok" "$expected_managed_steps" "$node_id managed model ranges" || return 1
+      assert_log_count "$log_file" "\\[w4_guest\\] assessment managed_model_complete=true legacy_range_publish=not_run service_probe=not_run dispatch_path=mem_service_managed_callable4" "$expected_managed_steps" "$node_id managed completion gate" || return 1
+      assert_log_count "$qemu_log" "managed-model-provider: .*completion=success" "$expected_managed_steps" "$node_id callable-4 provider completions" || return 1
+    fi
     assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_request_cleanup node=${idx} steps=${expected_managed_steps} allocations=$((SIM_W5_CLUSTER_NODE_COUNT * expected_managed_steps)) .*live_objects=0 backing_bytes=0 address_bytes=0 export_mappings=0 import_mappings=0 live_refs=0 in_flight=0 quarantined_objects=0 quarantined_bytes=0 status=ok" 1 "$node_id managed request cleanup" || return 1
-    assert_log_count "$qemu_log" "managed-model-provider: .*completion=success" "$expected_managed_steps" "$node_id callable-4 provider completions" || return 1
     if (( idx == SIM_W5_CLUSTER_NODE_COUNT )); then
       assert_log_count "$log_file" "\\[w4_guest\\] stage w5_managed_model_range_complete node=${idx} .*terminal=1 status=ok" "$expected_managed_steps" "$node_id managed terminal ranges" || return 1
       if is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE"; then

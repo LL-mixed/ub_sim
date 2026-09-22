@@ -92,12 +92,22 @@ class W5ClusterTopologyTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("SIM_W5_MANAGED_SERVING=1\n", result.stdout)
+        self.assertIn("SIM_W5_MODEL_IO=bulk\n", result.stdout)
         self.assertIn("SIM_LINGQU_SHMEM_PTO_ENABLE=1\n", result.stdout)
         self.assertIn(
             "SIM_UAPI_W4_CHIPBACKEND_PROFILE=deepseek-v4-flash-simpler\n",
             result.stdout,
         )
         self.assertIn("SIM_W5_TEST_MEMORY_GSVA_KV=0\n", result.stdout)
+
+    def test_cli_rejects_direct_model_io_for_deepseek_until_implemented(self):
+        result = self.run_config("--print-env", "--model-io", "direct")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "direct model I/O currently supports Qwen decode profiles",
+            result.stderr,
+        )
 
     def test_cli_legacy_serving_requires_explicit_option(self):
         result = self.run_config("--print-env", "--legacy-serving")
@@ -317,20 +327,21 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn('"SIM_W5_MANAGED_TIMEOUT_MS", 300000ULL', infer)
         self.assertIn(".timeout_ms = w5_managed_timeout_ms", infer)
 
-    def test_w5_managed_logs_report_bulk_host_model_io(self):
+    def test_w5_managed_logs_report_selected_model_io(self):
         runner = self.guest_runner.read_text(encoding="utf-8")
         infer = self.infer_source.read_text(encoding="utf-8")
 
-        self.assertGreaterEqual(
-            infer.count("model_io_mode=bulk_provider_callbacks"), 2
-        )
-        self.assertGreaterEqual(
-            infer.count("model_tensor_address_space=HOST"), 2
-        )
-        self.assertGreaterEqual(infer.count("pto_instruction_io=0"), 2)
+        self.assertIn('const char *model_io = getenv("SIM_W5_MODEL_IO")', infer)
+        self.assertIn('w6_model_direct ? "direct" : "bulk_provider_callbacks"', infer)
+        self.assertIn('w6_model_direct ? "UB_GM" : "HOST"', infer)
+        self.assertIn('w6_model_direct ? 1U : 0U', infer)
         self.assertIn("model_io_mode=bulk_provider_callbacks", runner)
         self.assertIn("model_tensor_address_space=HOST", runner)
         self.assertIn("pto_instruction_io=0", runner)
+        self.assertIn("model_io_mode=direct", runner)
+        self.assertIn("model_tensor_address_space=UB_GM", runner)
+        self.assertIn("pto_instruction_io=1", runner)
+        self.assertIn("shared_payload_staging_bytes=0", runner)
         self.assertIn("target=managed_model_provider", infer)
         self.assertIn("provider_address_space=UB_GM", infer)
 

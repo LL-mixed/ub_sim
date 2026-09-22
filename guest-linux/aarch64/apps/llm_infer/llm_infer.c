@@ -33,6 +33,7 @@
 #include "lingqu_shmem_sim.h"
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
+#include "qwen3_managed_serving_guest.h"
 #include "qwen3_pto_guest.h"
 #include "w5_managed_request_guest.h"
 #include "w5_managed_runtime_guest.h"
@@ -284,6 +285,9 @@ struct w5_managed_round_state {
     struct w5_managed_object_guest *kv;
     struct w5_managed_serving_operation *operation;
     struct w5_managed_serving_result result;
+    struct qwen3_managed_serving_operation *direct_operation;
+    struct qwen3_managed_serving_output direct_output;
+    struct qwen3_managed_serving_result direct_result;
     void *metadata;
 };
 
@@ -2504,6 +2508,10 @@ static int w5_managed_round_close(struct w5_managed_round_state *state)
         rc = w5_managed_serving_release(&state->operation);
         if (rc) return rc;
     }
+    if (state->direct_operation) {
+        rc = qwen3_managed_serving_release(&state->direct_operation);
+        if (rc) return rc;
+    }
     if (state->hidden) {
         rc = w5_managed_object_close(&state->hidden, &status);
         if (rc) return rc;
@@ -2528,6 +2536,8 @@ static int w5_managed_round_close(struct w5_managed_round_state *state)
         state->metadata = NULL;
     }
     memset(&state->result, 0, sizeof(state->result));
+    memset(&state->direct_output, 0, sizeof(state->direct_output));
+    memset(&state->direct_result, 0, sizeof(state->direct_result));
     return 0;
 }
 
@@ -2608,6 +2618,136 @@ static int w5_managed_load_previous_token(
     return rc;
 }
 
+static int w6_qwen3_managed_execute(
+    struct w5_managed_runtime_guest *runtime,
+    struct w5_managed_round_state *state,
+    const struct qwen3_pto_guest_geometry *geometry,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t local_node,
+    uint32_t next_node,
+    uint64_t decode_step,
+    uint64_t writer_base_offset,
+    uint64_t op_id,
+    uint64_t request_id,
+    uint64_t artifact_fingerprint,
+    uint32_t requester_cna,
+    uint64_t metadata_iova,
+    uint64_t timeout_ms,
+    struct llm_model_range_runtime_forward *forward_out,
+    struct llm_terminal_token_record *terminal_out,
+    bool *terminal_ready_out)
+{
+    struct qwen3_managed_serving_request request = {0};
+    struct qwen3_pto_guest_output pto_output = {0};
+    struct lingqu_shmem_pto_completion completion;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    uint64_t token_words[8] = {0};
+    uint64_t started_ms;
+    bool terminal;
+    int rc;
+
+    if (!runtime || !state || !geometry || !forward_out || !terminal_out ||
+        !terminal_ready_out || !state->writer || state->direct_operation)
+        return -EINVAL;
+    if (!request_id) request_id = decode_step + 1U;
+    terminal = geometry->end == geometry->layers;
+    request = (struct qwen3_managed_serving_request) {
+        .writer = state->writer,
+        .hidden_input = state->hidden,
+        .previous_kv = state->kv,
+        .geometry = *geometry,
+        .token_ids = token_ids,
+        .token_count = token_count,
+        .writer_base_offset = writer_base_offset,
+        .compute = w5_managed_runtime_compute(runtime),
+        .endpoint = w5_managed_runtime_endpoint(runtime),
+        .op_id = op_id,
+        .request_id = request_id,
+        .artifact_fingerprint = artifact_fingerprint,
+        .requester_cna = requester_cna,
+        .producer_node = local_node,
+        .decode_step = decode_step,
+        .metadata = state->metadata,
+        .metadata_bytes = W5_PTO_UB_GM_METADATA_BYTES,
+        .metadata_iova = metadata_iova,
+    };
+    rc = qwen3_managed_serving_prepare(&request, &state->direct_operation);
+    if (!rc) rc = qwen3_managed_serving_submit(state->direct_operation);
+    if (rc) return rc;
+    started_ms = monotonic_ms();
+    do {
+        rc = qwen3_managed_serving_poll(state->direct_operation, &completion);
+        if (rc != -EAGAIN) break;
+        usleep(10000);
+    } while (monotonic_ms() - started_ms < timeout_ms);
+    if (rc == -EAGAIN) return -ETIMEDOUT;
+    if (rc || !lingqu_shmem_pto_completion_succeeded(&completion))
+        return rc ? rc : -EIO;
+    rc = qwen3_managed_serving_complete(state->direct_operation,
+                                         &state->direct_output);
+    if (rc) return rc;
+
+    pto_output.hidden = (struct lingqu_shmem_mem_service_local_buffer) {
+        .data = state->direct_output.hidden,
+        .len = state->direct_output.layout
+            .views[QWEN3_MANAGED_WRITER_HIDDEN_OUTPUT].bytes,
+        .backing_offset = state->direct_output.layout
+            .views[QWEN3_MANAGED_WRITER_HIDDEN_OUTPUT].offset,
+        .owner_node = local_node,
+    };
+    pto_output.kv = (struct lingqu_shmem_mem_service_local_buffer) {
+        .data = state->direct_output.kv,
+        .len = state->direct_output.layout
+            .views[QWEN3_MANAGED_WRITER_NEXT_KV].bytes,
+        .backing_offset = state->direct_output.layout
+            .views[QWEN3_MANAGED_WRITER_NEXT_KV].offset,
+        .owner_node = local_node,
+    };
+    pto_output.logits = (struct lingqu_shmem_mem_service_local_buffer) {
+        .data = state->direct_output.logits,
+        .len = state->direct_output.layout
+            .views[QWEN3_MANAGED_WRITER_LOGITS].bytes,
+        .backing_offset = state->direct_output.layout
+            .views[QWEN3_MANAGED_WRITER_LOGITS].offset,
+        .owner_node = local_node,
+    };
+    if (terminal) {
+        rc = model_pto_terminal_record(&pto_output, decode_step, terminal_out);
+        if (rc) return rc;
+        token_words[0] = decode_step;
+        token_words[1] = terminal_out->sampled_token;
+        token_words[2] = terminal_out->runner_up_token;
+        token_words[3] = terminal_out->margin_milli;
+        token_words[4] = terminal_out->logits_checksum;
+        token_words[5] = terminal_out->text_checksum;
+        token_words[6] = terminal_out->piece_word0;
+        token_words[7] = terminal_out->piece_word1;
+    }
+    memset(forward_out, 0, sizeof(*forward_out));
+    forward_out->node = local_node;
+    forward_out->layer_start = geometry->first;
+    forward_out->layer_end = geometry->end;
+    forward_out->layer_count = geometry->end - geometry->first;
+    forward_out->real_layers = forward_out->layer_count;
+    forward_out->next_node = next_node;
+    forward_out->input_checksum = state->direct_output.input_checksum;
+    forward_out->output_checksum = state->direct_output.hidden_checksum;
+    forward_out->payload_offset = pto_output.hidden.backing_offset;
+    forward_out->payload_bytes = pto_output.hidden.len;
+    forward_out->payload_checksum = state->direct_output.hidden_checksum;
+    forward_out->kv_payload_offset = pto_output.kv.backing_offset;
+    forward_out->kv_payload_bytes = pto_output.kv.len;
+    forward_out->kv_payload_checksum = state->direct_output.kv_checksum;
+    forward_out->range_checksum =
+        forward_out->payload_checksum ^ forward_out->kv_payload_checksum;
+    rc = qwen3_managed_serving_publish(state->direct_operation,
+        terminal ? token_words : NULL, &state->direct_result, &status);
+    if (rc) return rc;
+    *terminal_ready_out = terminal;
+    return 0;
+}
+
 static int w5_managed_run_model_range(
     struct w5_managed_runtime_guest *runtime,
     struct w5_managed_round_state *state,
@@ -2627,6 +2767,9 @@ static int w5_managed_run_model_range(
     uint32_t requester_cna,
     uint64_t timeout_ms,
     uint64_t output_capacity,
+    const struct qwen3_pto_guest_geometry *direct_geometry,
+    const uint32_t *direct_token_ids,
+    uint32_t direct_token_count,
     struct llm_model_range_runtime_forward *forward_out,
     struct llm_terminal_token_record *terminal_out,
     bool *terminal_ready_out)
@@ -2661,7 +2804,7 @@ static int w5_managed_run_model_range(
         !artifact_fingerprint || !requester_cna || !timeout_ms ||
         !output_capacity || !forward_out || !terminal_out ||
         !terminal_ready_out || state->writer || state->hidden || state->kv ||
-        state->operation || state->metadata)
+        state->operation || state->direct_operation || state->metadata)
         return -EINVAL;
     if (decode_step > 0 && local_node == 0U && !state->token)
         return -EINVAL;
@@ -2741,6 +2884,16 @@ static int w5_managed_run_model_range(
     rc = lingqu_shmem_sim_phys_for_virt(state->metadata, &metadata_iova);
     if (rc)
         return rc;
+    if (direct_geometry)
+        return w6_qwen3_managed_execute(runtime, state, direct_geometry,
+            direct_token_ids, direct_token_count, local_node, next_node,
+            decode_step, output_offset,
+            UINT64_C(0x6d00000000000000) |
+                ((uint64_t)local_node << 48) | (decode_step + 1U),
+            run ^ ((serving_request << 17) | (serving_request >> 47)) ^
+                ((uint64_t)local_node << 32) ^ (decode_step + 1U),
+            artifact_fingerprint, requester_cna, metadata_iova, timeout_ms,
+            forward_out, terminal_out, terminal_ready_out);
     read_segment_bytes(ep_mmio, 0, prompt_prefix, sizeof(prompt_prefix));
     memset(&operation_request, 0, sizeof(operation_request));
     operation_request.writer = state->writer;
@@ -10758,6 +10911,7 @@ int main(int argc, char **argv)
     bool w5_pto_ub_gm_probe_enabled = false;
     bool w5_qwen3_pto = false;
     bool w5_managed_serving = false;
+    bool w6_model_direct = false;
     struct w5_managed_runtime_guest *w5_managed_runtime = NULL;
     struct w5_managed_request_cleanup *w5_managed_cleanup = NULL;
     struct w5_managed_round_state w5_managed_round;
@@ -10814,9 +10968,29 @@ int main(int argc, char **argv)
         env_bool_is_one("SIM_W5_PTO_UB_GM_PROBE");
     w5_qwen3_pto = env_bool_is_one("SIM_W5_QWEN3_PTO");
     w5_managed_serving = env_bool_is_one("SIM_W5_MANAGED_SERVING");
+    {
+        const char *model_io = getenv("SIM_W5_MODEL_IO");
+        if (!model_io || !model_io[0] || !strcmp(model_io, "bulk")) {
+            w6_model_direct = false;
+        } else if (!strcmp(model_io, "direct")) {
+            w6_model_direct = true;
+        } else {
+            fprintf(stderr,
+                    "[w4_guest] fail SIM_W5_MODEL_IO must be bulk or direct"
+                    " value=%s\n",
+                    model_io);
+            return 1;
+        }
+    }
     if (w5_managed_serving && w5_qwen3_pto) {
         fprintf(stderr,
                 "[w4_guest] fail managed callable 4 conflicts with callable 3\n");
+        return 1;
+    }
+    if (w6_model_direct && (!w5_managed_serving || !is_qwen3_profile())) {
+        fprintf(stderr,
+                "[w4_guest] fail direct model I/O requires managed Qwen"
+                " serving\n");
         return 1;
     }
     if (w5_qwen3_pto && (w5_pto_ub_gm_probe_enabled || !is_qwen3_profile())) {
@@ -10869,9 +11043,11 @@ int main(int argc, char **argv)
         memset(direct_enabled_text, 0, sizeof(direct_enabled_text));
         if (!enable_db_cluster || !env_nonempty("SIM_UAPI_W5_PROFILE") ||
             (w5_pto_ub_gm_publish_output && !is_qwen3_profile()) ||
-            (w5_managed_serving ? w5_managed_artifact_fingerprint :
+            (w6_model_direct ? w5_pto_ub_gm_artifact_fingerprint :
+             w5_managed_serving ? w5_managed_artifact_fingerprint :
                                   w5_pto_ub_gm_artifact_fingerprint) == 0 ||
-            (w5_managed_serving ? w5_managed_timeout_ms :
+            (w6_model_direct ? w5_pto_ub_gm_timeout_ms :
+             w5_managed_serving ? w5_managed_timeout_ms :
                                   w5_pto_ub_gm_timeout_ms) == 0 ||
             !cmdline_get_value("linqu_shmem_pto_direct",
                                direct_enabled_text,
@@ -10887,8 +11063,10 @@ int main(int argc, char **argv)
                     " publish_output=%u direct=%s requester_cna=%s\n",
                     enable_db_cluster ? 1U : 0U,
                     env_nonempty("SIM_UAPI_W5_PROFILE") ? 1U : 0U,
+                    w6_model_direct ? w5_pto_ub_gm_artifact_fingerprint :
                     w5_managed_serving ? w5_managed_artifact_fingerprint :
                                          w5_pto_ub_gm_artifact_fingerprint,
+                    w6_model_direct ? w5_pto_ub_gm_timeout_ms :
                     w5_managed_serving ? w5_managed_timeout_ms :
                                          w5_pto_ub_gm_timeout_ms,
                     w5_pto_ub_gm_publish_output ? 1U : 0U,
@@ -10917,12 +11095,17 @@ int main(int argc, char **argv)
                    " source=lingqu_memory_service"
                    " target=managed_model_provider"
                    " provider_address_space=UB_GM"
-                   " model_io_mode=bulk_provider_callbacks"
-                   " model_tensor_address_space=HOST"
-                   " pto_instruction_io=0 status=ok\n",
-                   w5_managed_artifact_fingerprint,
+                   " model_io_mode=%s"
+                   " model_tensor_address_space=%s"
+                   " pto_instruction_io=%u status=ok\n",
+                   w6_model_direct ? w5_pto_ub_gm_artifact_fingerprint :
+                                     w5_managed_artifact_fingerprint,
                    w5_pto_ub_gm_requester_cna,
-                   w5_managed_timeout_ms);
+                   w6_model_direct ? w5_pto_ub_gm_timeout_ms :
+                                     w5_managed_timeout_ms,
+                   w6_model_direct ? "direct" : "bulk_provider_callbacks",
+                   w6_model_direct ? "UB_GM" : "HOST",
+                   w6_model_direct ? 1U : 0U);
         } else {
             printf("[w4_guest] stage w5_pto_ub_gm_probe_config"
                    " fingerprint=0x%016" PRIx64
@@ -11287,15 +11470,19 @@ int main(int argc, char **argv)
                " allocation_granularity=%" PRIu64
                " provider_bootstrap_generation=%" PRIu64
                " holder_node=%s holder_incarnation=%" PRIu64
-               " callable=4 control=mem_service data=obmm"
-               " model_io_mode=bulk_provider_callbacks"
-               " model_tensor_address_space=HOST"
-               " pto_instruction_io=0 status=ok\n",
+               " callable=%u control=mem_service data=obmm"
+               " model_io_mode=%s"
+               " model_tensor_address_space=%s"
+               " pto_instruction_io=%u status=ok\n",
                w5_managed_run, w5_managed_request, cluster_node_count,
                w5_managed_output_capacity, w5_managed_import_region_bytes,
                w5_managed_allocation_granularity_bytes,
                provider_bootstrap_generation,
-               managed_client_node, client_provider_incarnation);
+               managed_client_node, client_provider_incarnation,
+               w6_model_direct ? 3U : 4U,
+               w6_model_direct ? "direct" : "bulk_provider_callbacks",
+               w6_model_direct ? "UB_GM" : "HOST",
+               w6_model_direct ? 1U : 0U);
     }
     init_supernode_clock(&supernode_clock);
     {
@@ -13096,9 +13283,10 @@ decode_round_start:
                " node=%u step=%" PRIu64 " producer=node%u"
                " previous_step=%" PRIu64 " token=%" PRIu64
                " source=mem_service_v2 target=prompt_history"
-               " callable=4 status=ok\n",
+               " callable=%u status=ok\n",
                local_node + 1U, guest_decode_step, cluster_node_count,
-               guest_decode_step - 1U, previous_token);
+               guest_decode_step - 1U, previous_token,
+               w6_model_direct ? 3U : 4U);
     }
     if (!w5_managed_serving && enable_db_cluster && guest_decode_step > 0 &&
         qwen3_terminal_token_count < guest_decode_step &&
@@ -14039,11 +14227,64 @@ decode_round_start:
     compute_start_ms = monotonic_ms();
     compute_window_ms = compute_start_ms;
     if (w5_managed_serving) {
+        struct qwen3_pto_guest_geometry direct_geometry = {0};
+        const struct qwen3_pto_guest_geometry *direct_geometry_ptr = NULL;
+        uint32_t direct_tokens[1024] = {0};
+        uint32_t direct_token_count = 0;
         uint64_t raw_sampled_token = 0;
         bool terminal_owner =
             round_dispatch_node + 1U == cluster_node_count;
         int managed_rc;
 
+        if (w6_model_direct) {
+            float scale;
+
+            direct_geometry = (struct qwen3_pto_guest_geometry) {
+                .first = round_layer_start,
+                .end = round_layer_end,
+                .layers = llm_infer_qwen3_total_layers(),
+                .past = guest_decode_step ?
+                    qwen3_round_decode_position - 1U : 0,
+                .tokens = guest_decode_step ?
+                    1U : (uint32_t)qwen3_round_input_token_count,
+                .hidden = env_u64_or_default(
+                    "SIM_QWEN3_DENSE_HIDDEN_SIZE", 0),
+                .intermediate = env_u64_or_default(
+                    "SIM_QWEN3_DENSE_INTERMEDIATE_SIZE", 0),
+                .query_heads = env_u64_or_default(
+                    "SIM_QWEN3_DENSE_NUM_ATTENTION_HEADS", 0),
+                .kv_heads = llm_infer_qwen3_kv_heads(),
+                .head_dim = llm_infer_qwen3_head_dim(),
+                .vocab = llm_infer_qwen3_vocab_size(),
+            };
+            if (!qwen3_round_input_token_count ||
+                direct_geometry.tokens > 1024U ||
+                qwen3_engram_config.enabled ||
+                qwen3_memory_decision_config.shortpath_execute) {
+                fprintf(stderr,
+                        "[w4_guest] fail W6 Qwen direct input configuration\n");
+                goto out;
+            }
+            scale = 1.0f / sqrtf((float)direct_geometry.head_dim);
+            memcpy(&direct_geometry.scale_bits, &scale, sizeof(scale));
+            if (!direct_geometry.first) {
+                direct_token_count = direct_geometry.tokens;
+                for (uint32_t i = 0; i < direct_token_count; ++i) {
+                    uint64_t token = qwen3_round_input_tokens[
+                        guest_decode_step ?
+                            qwen3_round_input_token_count - 1U : i];
+                    if (token >= direct_geometry.vocab) {
+                        fprintf(stderr,
+                                "[w4_guest] fail W6 Qwen direct token"
+                                " out of range token=%" PRIu64 "\n",
+                                token);
+                        goto out;
+                    }
+                    direct_tokens[i] = (uint32_t)token;
+                }
+            }
+            direct_geometry_ptr = &direct_geometry;
+        }
         managed_rc = w5_managed_run_model_range(w5_managed_runtime,
             &w5_managed_round, ep_mmio, w5_managed_run,
             w5_managed_request, round_dispatch_node, round_layer_start,
@@ -14051,8 +14292,15 @@ decode_round_start:
             w4_runtime_total_layers(),
             w4_runtime_handoff_hidden_bytes(guest_decode_step),
             guest_decode_step, w4_runtime_vocab_size(),
-            w5_managed_artifact_fingerprint, w5_pto_ub_gm_requester_cna,
-            w5_managed_timeout_ms, w5_managed_output_capacity,
+            w6_model_direct ? w5_pto_ub_gm_artifact_fingerprint :
+                              w5_managed_artifact_fingerprint,
+            w5_pto_ub_gm_requester_cna,
+            w6_model_direct ? w5_pto_ub_gm_timeout_ms :
+                              w5_managed_timeout_ms,
+            w5_managed_output_capacity, direct_geometry_ptr,
+            direct_geometry_ptr && !direct_geometry.first ?
+                direct_tokens : NULL,
+            direct_token_count,
             &runtime_forward, &w5_managed_terminal_token,
             &w5_managed_terminal_ready);
         if (managed_rc != 0 ||
@@ -14092,19 +14340,24 @@ decode_round_start:
                     guest_decode_step, qwen3_round_decode_position,
                     &raw_sampled_token) != 0 ||
                 raw_sampled_token !=
-                    w5_managed_round.result.decoded.terminal.sampled_token) {
+                    (w6_model_direct ?
+                        w5_managed_terminal_token.sampled_token :
+                        w5_managed_round.result.decoded.terminal.sampled_token)) {
                 fprintf(stderr,
                         "[w4_guest] fail managed terminal selection mismatch"
                         " node=%u step=%" PRIu64
                         " raw=%" PRIu64 " published=%" PRIu64 "\n",
                         round_dispatch_node + 1U, guest_decode_step,
                         raw_sampled_token,
-                        w5_managed_round.result.decoded.terminal.sampled_token);
+                        w6_model_direct ?
+                            w5_managed_terminal_token.sampled_token :
+                            w5_managed_round.result.decoded.terminal.sampled_token);
                 goto out;
             }
             model_log_terminal_logits_observation(round_dispatch_node,
                 guest_decode_step, &w5_managed_terminal_token,
-                "managed_callable4_logits");
+                w6_model_direct ? "managed_callable3_logits" :
+                                  "managed_callable4_logits");
             qwen3_step_terminal_observed = true;
             if (guest_decode_step <
                 sizeof(qwen3_terminal_tokens) /
@@ -14141,15 +14394,18 @@ decode_round_start:
         }
         printf("[w4_guest] stage w5_managed_model_range_complete"
                " node=%u step=%" PRIu64 " layers=[%u,%u) next=%u"
-               " callable=4 inputs=%u outputs=%u"
+               " callable=%u model_io=%s inputs=%u outputs=%u"
                " hidden_bytes=%" PRIu64 " kv_bytes=%" PRIu64
                " allocation_home=guest-node-%u"
                " terminal=%u status=ok\n",
                round_dispatch_node + 1U, guest_decode_step,
                round_layer_start, round_layer_end, round_next_node + 1U,
+               w6_model_direct ? 3U : 4U,
+               w6_model_direct ? "direct" : "bulk",
                (round_layer_start > 0U || guest_decode_step > 0U) +
                    (guest_decode_step > 0U),
-               w5_managed_round.result.reference_count,
+               w6_model_direct ? w5_managed_round.direct_result.reference_count :
+                                 w5_managed_round.result.reference_count,
                runtime_forward.payload_bytes,
                runtime_forward.kv_payload_bytes, round_dispatch_node,
                w5_managed_terminal_ready ? 1U : 0U);
@@ -15053,7 +15309,8 @@ qwen3_no_work_item_service_coverage:
             counts.success != 1 || counts.fatal ||
             w5_managed_round.writer || w5_managed_round.token ||
             w5_managed_round.hidden || w5_managed_round.kv ||
-            w5_managed_round.operation || w5_managed_round.metadata) {
+            w5_managed_round.operation || w5_managed_round.direct_operation ||
+            w5_managed_round.metadata) {
             fprintf(stderr,
                     "[w4_guest] fail managed serving round incomplete"
                     " node=%u step=%" PRIu64 "\n",
@@ -15062,7 +15319,9 @@ qwen3_no_work_item_service_coverage:
         }
         printf("[w4_guest] assessment managed_model_complete=true"
                " legacy_range_publish=not_run service_probe=not_run"
-               " dispatch_path=mem_service_managed_callable4\n");
+               " dispatch_path=%s\n",
+               w6_model_direct ? "mem_service_managed_callable3_direct" :
+                                 "mem_service_managed_callable4");
         goto qwen3_after_service_coverage;
     }
     if (w5_qwen3_pto) {

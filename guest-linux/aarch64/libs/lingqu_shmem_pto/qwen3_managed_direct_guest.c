@@ -68,6 +68,45 @@ static int qwen3_geometry(
     return 0;
 }
 
+int qwen3_managed_direct_describe(
+    const struct qwen3_pto_guest_geometry *geometry,
+    struct qwen3_managed_direct_description *description_out)
+{
+    uint32_t shapes[QWEN3_MANAGED_DIRECT_TENSOR_COUNT][2];
+    uint32_t values[QWEN3_MANAGED_DIRECT_SCALAR_COUNT];
+    int rc;
+
+    if (!description_out) return -EINVAL;
+    memset(description_out, 0, sizeof(*description_out));
+    rc = qwen3_geometry(geometry, shapes, values);
+    if (rc) return rc;
+    memcpy(description_out->scalars, values, sizeof(values));
+    for (uint32_t i = 0; i < QWEN3_MANAGED_DIRECT_TENSOR_COUNT; ++i) {
+        uint16_t dtype =
+            (i == QWEN3_MANAGED_DIRECT_HIDDEN_OUTPUT ||
+             (i == QWEN3_MANAGED_DIRECT_HIDDEN_INPUT && geometry->first)) ?
+                1 : 0;
+        uint64_t width = dtype ? 2 : 4;
+        uint64_t elements = (uint64_t)shapes[i][0] * shapes[i][1];
+
+        if (elements > UINT64_MAX / width) return -EOVERFLOW;
+        description_out->tensors[i] = (struct lingqu_shmem_memref_spec) {
+            .byte_length = elements * width,
+            .rank = 2,
+            .dtype = dtype,
+            .access = i == QWEN3_MANAGED_DIRECT_NEXT_KV ?
+                LINGQU_SHMEM_ACCESS_READ_WRITE :
+                (i == QWEN3_MANAGED_DIRECT_HIDDEN_OUTPUT ||
+                 (i == QWEN3_MANAGED_DIRECT_LOGITS &&
+                  geometry->end == geometry->layers) ?
+                    LINGQU_SHMEM_ACCESS_WRITE : LINGQU_SHMEM_ACCESS_READ),
+            .shape = {shapes[i][0], shapes[i][1]},
+            .strides = {shapes[i][1], 1},
+        };
+    }
+    return 0;
+}
+
 int qwen3_managed_direct_prepare(
     const struct qwen3_managed_direct_request *request,
     struct qwen3_managed_direct_operation **operation_out)
@@ -75,10 +114,10 @@ int qwen3_managed_direct_prepare(
     struct qwen3_managed_direct_operation *operation;
     struct lingqu_model_direct_memref
         memrefs[QWEN3_MANAGED_DIRECT_TENSOR_COUNT];
-    struct lingqu_shmem_pto_scalar_desc scalars[12];
+    struct lingqu_shmem_pto_scalar_desc
+        scalars[QWEN3_MANAGED_DIRECT_SCALAR_COUNT];
     struct lingqu_model_direct_request direct;
-    uint32_t shapes[QWEN3_MANAGED_DIRECT_TENSOR_COUNT][2];
-    uint32_t values[12];
+    struct qwen3_managed_direct_description description;
     int rc;
 
     if (!operation_out) return -EINVAL;
@@ -89,39 +128,22 @@ int qwen3_managed_direct_prepare(
         !request->metadata || !request->metadata_bytes ||
         !request->metadata_iova)
         return -EINVAL;
-    rc = qwen3_geometry(&request->geometry, shapes, values);
+    rc = qwen3_managed_direct_describe(&request->geometry, &description);
     if (rc) return rc;
     for (uint32_t i = 0; i < QWEN3_MANAGED_DIRECT_TENSOR_COUNT; ++i) {
-        uint16_t dtype = (i == 3 || (i == 0 && request->geometry.first)) ?
-            1 : 0;
-        uint64_t width = dtype ? 2 : 4;
-        if (!request->owners[i] ||
-            (uint64_t)shapes[i][0] > UINT64_MAX / shapes[i][1] ||
-            (uint64_t)shapes[i][0] * shapes[i][1] > UINT64_MAX / width)
-            return -EINVAL;
+        if (!request->owners[i]) return -EINVAL;
         memrefs[i] = (struct lingqu_model_direct_memref) {
             .owner = request->owners[i],
-            .spec = {
-                .byte_offset = request->offsets[i],
-                .byte_length =
-                    (uint64_t)shapes[i][0] * shapes[i][1] * width,
-                .rank = 2,
-                .dtype = dtype,
-                .access = i == 4 ? LINGQU_SHMEM_ACCESS_READ_WRITE :
-                    (i == 3 || (i == 5 &&
-                     request->geometry.end == request->geometry.layers) ?
-                     LINGQU_SHMEM_ACCESS_WRITE : LINGQU_SHMEM_ACCESS_READ),
-                .shape = {shapes[i][0], shapes[i][1]},
-                .strides = {shapes[i][1], 1},
-            },
+            .spec = description.tensors[i],
             .arg_index = i,
         };
+        memrefs[i].spec.byte_offset = request->offsets[i];
     }
-    for (uint32_t i = 0; i < 12; ++i) {
+    for (uint32_t i = 0; i < QWEN3_MANAGED_DIRECT_SCALAR_COUNT; ++i) {
         scalars[i] = (struct lingqu_shmem_pto_scalar_desc) {
             .arg_index = QWEN3_MANAGED_DIRECT_TENSOR_COUNT + i,
             .dtype = 8,
-            .value = values[i],
+            .value = description.scalars[i],
         };
     }
     operation = calloc(1, sizeof(*operation));
@@ -138,7 +160,7 @@ int qwen3_managed_direct_prepare(
         .memrefs = memrefs,
         .memref_count = QWEN3_MANAGED_DIRECT_TENSOR_COUNT,
         .scalars = scalars,
-        .scalar_count = 12,
+        .scalar_count = QWEN3_MANAGED_DIRECT_SCALAR_COUNT,
         .metadata = request->metadata,
         .metadata_bytes = request->metadata_bytes,
         .metadata_iova = request->metadata_iova,

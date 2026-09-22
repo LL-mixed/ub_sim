@@ -7,6 +7,21 @@
 
 #define QWEN3_MANAGED_DIRECT_CALLABLE_ID UINT64_C(3)
 #define QWEN3_MANAGED_DIRECT_TENSOR_COUNT 6u
+#define QWEN3_MANAGED_DIRECT_SCALAR_COUNT 12u
+
+enum qwen3_managed_direct_tensor {
+    QWEN3_MANAGED_DIRECT_HIDDEN_INPUT = 0,
+    QWEN3_MANAGED_DIRECT_PREVIOUS_KV = 1,
+    QWEN3_MANAGED_DIRECT_TOKEN_IDS = 2,
+    QWEN3_MANAGED_DIRECT_HIDDEN_OUTPUT = 3,
+    QWEN3_MANAGED_DIRECT_NEXT_KV = 4,
+    QWEN3_MANAGED_DIRECT_LOGITS = 5,
+};
+
+struct qwen3_managed_direct_description {
+    struct lingqu_shmem_memref_spec tensors[QWEN3_MANAGED_DIRECT_TENSOR_COUNT];
+    uint32_t scalars[QWEN3_MANAGED_DIRECT_SCALAR_COUNT];
+};
 
 struct qwen3_managed_direct_request {
     struct qwen3_pto_guest_geometry geometry;
@@ -25,6 +40,13 @@ struct qwen3_managed_direct_request {
 };
 
 struct qwen3_managed_direct_operation;
+
+/* Returns the exact callable-3 tensor and scalar ABI for one model range.
+ * Serving integration uses the same description to size managed views before
+ * allocation, so dispatch cannot silently disagree with the published views. */
+int qwen3_managed_direct_describe(
+    const struct qwen3_pto_guest_geometry *geometry,
+    struct qwen3_managed_direct_description *description_out);
 
 /* Tensor order is hidden input, previous KV, token IDs, hidden output,
  * next KV and logits. All six views refer to caller-owned Memory Service

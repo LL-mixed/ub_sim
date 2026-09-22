@@ -45,6 +45,7 @@ LINGQU_SHMEM_PTO_DIR := $(ROOT)/libs/lingqu_shmem_pto
 LINGQU_SHMEM_PTO_SRCS := \
 	$(LINGQU_SHMEM_PTO_DIR)/lingqu_model_direct_guest.c \
 	$(LINGQU_SHMEM_PTO_DIR)/qwen3_managed_direct_guest.c \
+	$(LINGQU_SHMEM_PTO_DIR)/qwen3_managed_serving_guest.c \
 	$(LINGQU_SHMEM_PTO_DIR)/qwen3_pto_guest.c \
 	$(LINGQU_SHMEM_PTO_DIR)/w5_managed_model_guest.c \
 	$(LINGQU_SHMEM_PTO_DIR)/w5_managed_object_guest.c \

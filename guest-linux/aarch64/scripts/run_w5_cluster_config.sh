@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_model_timeout_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--managed-serving|--legacy-serving] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--managed-serving|--legacy-serving] [--model-io bulk|direct] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -35,6 +35,7 @@ VALIDATE_ONLY=0
 SERVE_QUEUE=0
 MANAGED_SERVING_OVERRIDE=0
 LEGACY_SERVING_OVERRIDE=0
+MODEL_IO_OVERRIDE=""
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
 NODES_OVERRIDE=""
@@ -74,6 +75,19 @@ while (( $# > 0 )); do
       ;;
     --legacy-serving)
       LEGACY_SERVING_OVERRIDE=1
+      shift
+      ;;
+    --model-io)
+      if (( $# < 2 )); then
+        echo "--model-io requires bulk or direct" >&2
+        usage
+        exit 2
+      fi
+      MODEL_IO_OVERRIDE="$2"
+      shift 2
+      ;;
+    --model-io=*)
+      MODEL_IO_OVERRIDE="${1#--model-io=}"
       shift
       ;;
     --serve-requests)
@@ -379,6 +393,33 @@ elif (( MANAGED_SERVING_OVERRIDE )); then
 else
   export SIM_W5_MANAGED_SERVING="${SIM_W5_MANAGED_SERVING:-1}"
 fi
+if [[ -n "$MODEL_IO_OVERRIDE" ]]; then
+  export SIM_W5_MODEL_IO="$MODEL_IO_OVERRIDE"
+else
+  export SIM_W5_MODEL_IO="${SIM_W5_MODEL_IO:-bulk}"
+fi
+case "$SIM_W5_MODEL_IO" in
+  bulk)
+    ;;
+  direct)
+    if ! bool_enabled "$SIM_W5_MANAGED_SERVING"; then
+      echo "direct model I/O requires managed serving" >&2
+      exit 2
+    fi
+    case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
+      qwen3_0_6b_decode|qwen3_14b_decode)
+        ;;
+      *)
+        echo "direct model I/O currently supports Qwen decode profiles" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  *)
+    echo "SIM_W5_MODEL_IO must be bulk or direct: $SIM_W5_MODEL_IO" >&2
+    exit 2
+    ;;
+esac
 
 if bool_enabled "$SIM_W5_MANAGED_SERVING"; then
   case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
@@ -500,6 +541,37 @@ resolve_w5_managed_fingerprint() {
   export SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="$fingerprint"
 }
 
+prepare_w6_qwen_direct_artifacts() {
+  local output_dir manifest fingerprint_json fingerprint sim_cli
+
+  if [[ "${SIM_W5_MODEL_IO:-bulk}" != "direct" ]]; then
+    return 0
+  fi
+  output_dir="$ROOT_DIR/out/w6-qwen-direct-artifacts"
+  manifest="$(python3 "$SCRIPT_DIR/prepare_simpler_host_artifacts.py" \
+    --profile host_qwen3_range \
+    --output-dir "$output_dir")" || return 2
+  if [[ ! -f "$manifest" ]]; then
+    echo "Qwen direct artifact preparation did not produce a manifest: $manifest" >&2
+    return 2
+  fi
+  sim_cli="${SIM_CLI_BIN:-$ROOT_DIR/../../target/release/sim-cli}"
+  if [[ ! -x "$sim_cli" ]]; then
+    echo "Qwen direct artifact inspection requires sim-cli: $sim_cli" >&2
+    return 2
+  fi
+  fingerprint_json="$("$sim_cli" lingqu-shmem-pto-e2e \
+    --fingerprint-manifest "$manifest")" || return 2
+  fingerprint="$(printf '%s\n' "$fingerprint_json" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["artifact_fingerprint_hex"])')" || return 2
+  if [[ ! "$fingerprint" =~ '^0x[0-9a-fA-F]+$' || "$fingerprint" == "0x0" ]]; then
+    echo "Qwen direct manifest returned an invalid fingerprint: $fingerprint" >&2
+    return 2
+  fi
+  export SIMPLER_QWEN3_PTO_RANGE_MANIFEST="$manifest"
+  export SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="$fingerprint"
+}
+
 context_guard_requires() {
   local required="$1"
   local raw="${SIM_W5_TEST_REQUIRE_CONTEXT:-}"
@@ -577,10 +649,13 @@ print_w5_effective_env() {
   print_env_value SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE "${SIM_W5_MEMORY_BOOTSTRAP_ENV_FILE:-}"
   print_env_value SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED "${SIM_W5_MEMORY_SERVICE_BOOTSTRAPPED:-0}"
   print_env_value SIM_W5_MANAGED_SERVING "${SIM_W5_MANAGED_SERVING:-0}"
+  print_env_value SIM_W5_MODEL_IO "${SIM_W5_MODEL_IO:-bulk}"
   print_env_value SIM_LINGQU_SHMEM_PTO_ENABLE "${SIM_LINGQU_SHMEM_PTO_ENABLE:-0}"
   print_env_value SIM_W5_QWEN3_PTO "${SIM_W5_QWEN3_PTO:-0}"
   print_env_value SIM_W5_PTO_UB_GM_PROBE "${SIM_W5_PTO_UB_GM_PROBE:-0}"
   print_env_value SIM_W5_MANAGED_ARTIFACT_FINGERPRINT "${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
+  print_env_value SIMPLER_QWEN3_PTO_RANGE_MANIFEST "${SIMPLER_QWEN3_PTO_RANGE_MANIFEST:-}"
+  print_env_value SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT "${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
   print_env_value SIM_W5_MANAGED_CONNECT "${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
   print_env_value SIM_W5_MANAGED_TIMEOUT_MS "${SIM_W5_MANAGED_TIMEOUT_MS:-}"
   print_env_value SIM_W5_MANAGED_PROVIDER_LEASE_MS "${SIM_W5_MANAGED_PROVIDER_LEASE_MS:-}"
@@ -1075,6 +1150,11 @@ resolve_w5_managed_fingerprint_status=0
 resolve_w5_managed_fingerprint || resolve_w5_managed_fingerprint_status=$?
 if (( resolve_w5_managed_fingerprint_status != 0 )); then
   exit "$resolve_w5_managed_fingerprint_status"
+fi
+prepare_w6_qwen_direct_artifacts_status=0
+prepare_w6_qwen_direct_artifacts || prepare_w6_qwen_direct_artifacts_status=$?
+if (( prepare_w6_qwen_direct_artifacts_status != 0 )); then
+  exit "$prepare_w6_qwen_direct_artifacts_status"
 fi
 
 resolve_w5_memory_reuse_config_status=0
