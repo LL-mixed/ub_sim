@@ -212,6 +212,29 @@ demos:
       - w5.macos.env
     controls: [stop, node_logs]
 
+  - id: w5-qwen-3
+    title: W5 Qwen PP / 3 Nodes
+    category: W5 Inference
+    summary: Run Qwen streaming decode through a three-stage W5 pipeline.
+    node_count: 3
+    topology: pipeline
+    requires_simpler_toolchain: true
+    model: Qwen3
+    model_source: qwen3-0.6b
+    data_plane: [Memory Service, OBMM, Managed UB_GM I/O, KV Cache]
+    tags: [stream-infer, pipeline-parallel]
+    estimated_duration_secs: 390
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--managed-serving, --nodes, "3", --steps, "{steps}", w5.macos.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: *w5_steps
+    requirements: [QEMU, guest artifacts, Qwen weights referenced by config]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.macos.env
+    controls: [stop, node_logs]
+
   - id: w5-qwen-4
     title: W5 Qwen PP / 4 Nodes
     category: W5 Inference
@@ -274,6 +297,30 @@ demos:
     command:
       program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
       args: [--managed-serving, --nodes, "2", --steps, "{steps}", w5.deepseek-v4-flash-simpler-openeuler.env]
+      environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
+    parameters: *w5_steps
+    requirements: [Linux container, openEuler image, DeepSeek GGUF, Simpler]
+    required_paths:
+      - guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      - w5.deepseek-v4-flash-simpler-openeuler.env
+    controls: [stop, node_logs]
+
+  - id: w5-deepseek-v4-flash-3
+    title: W5 DeepSeek V4 Flash PP / 3 Nodes
+    category: W5 Inference
+    summary: Run DeepSeek V4 Flash through a three-stage W5 pipeline.
+    node_count: 3
+    topology: pipeline
+    requires_simpler_toolchain: true
+    guest_engine: open_euler
+    model: DeepSeek V4 Flash 2-bit GGUF
+    model_source: deepseek-v4-flash-iq2xxs
+    data_plane: [Simpler, Memory Service, OBMM, Managed UB_GM I/O, KV Cache]
+    tags: [stream-infer, pipeline-parallel, moe]
+    estimated_duration_secs: 600
+    command:
+      program: guest-linux/aarch64/scripts/run_w5_cluster_config.sh
+      args: [--managed-serving, --nodes, "3", --steps, "{steps}", w5.deepseek-v4-flash-simpler-openeuler.env]
       environment: { RUN_ID: "{run_id}", SIM_W5_ALLOW_FIXED_RUN_ID: "1" }
     parameters: *w5_steps
     requirements: [Linux container, openEuler image, DeepSeek GGUF, Simpler]

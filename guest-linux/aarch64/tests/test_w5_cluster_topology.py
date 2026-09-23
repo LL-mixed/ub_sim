@@ -268,6 +268,69 @@ class W5ClusterTopologyTest(unittest.TestCase):
         self.assertIn('-x "$HOME/.cargo/bin/cargo"', source)
         self.assertIn('cargo_bin="$HOME/.cargo/bin/cargo"', source)
 
+    def test_managed_fingerprint_rebuilds_an_existing_stale_sim_cli(self):
+        source = self.config_runner.read_text(encoding="utf-8")
+        start = source.index("resolve_w5_managed_fingerprint() {")
+        end = source.index("\nprepare_w6_direct_artifacts() {", start)
+        function = source[start:end]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            script_root = root / "guest-linux" / "aarch64"
+            script_root.mkdir(parents=True)
+            target = root / "target" / "release"
+            target.mkdir(parents=True)
+            old_cli = target / "sim-cli"
+            old_cli.write_text(
+                "#!/bin/sh\necho pto_ub_gm_unsupported_callable >&2\nexit 1\n",
+                encoding="utf-8",
+            )
+            old_cli.chmod(0o755)
+            replacement = root / "new-sim-cli"
+            replacement.write_text("#!/bin/sh\necho 424242\n", encoding="utf-8")
+            replacement.chmod(0o755)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            cargo = bin_dir / "cargo"
+            cargo.write_text(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "  build) cp \"$NEW_SIM_CLI\" \"$CARGO_TARGET_DIR/release/sim-cli\" ;;\n"
+                "  metadata) printf '{\"target_directory\":\"%s\"}\\n' \"$CARGO_TARGET_DIR\" ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            cargo.chmod(0o755)
+            env = os.environ.copy()
+            env.update(
+                PATH=f"{bin_dir}:{env['PATH']}",
+                ROOT_DIR=str(script_root),
+                CARGO_TARGET_DIR=str(root / "target"),
+                NEW_SIM_CLI=str(replacement),
+                SIM_W5_MANAGED_SERVING="1",
+                SIM_UAPI_W4_CHIPBACKEND_PROFILE="deepseek-v4-flash-simpler",
+            )
+            env.pop("SIM_CLI_BIN", None)
+            result = subprocess.run(
+                [
+                    "zsh",
+                    "-c",
+                    "bool_enabled() { [[ \"$1\" == 1 ]]; }\n"
+                    + function
+                    + "\nresolve_w5_managed_fingerprint || exit $?\n"
+                    + "printf '%s\\n' \"$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT\"",
+                ],
+                cwd=root,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "424242", result.stderr)
+            self.assertEqual(old_cli.read_bytes(), replacement.read_bytes())
+
     def test_cli_managed_serving_refreshes_callable_fingerprint(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             sim_cli = Path(temp_dir) / "sim-cli"

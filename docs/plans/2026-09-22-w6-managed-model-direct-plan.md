@@ -1,10 +1,12 @@
 # W6 Managed UB_GM Model-Direct Plan
 
-Date: 2026-09-22
+Date: 2026-09-22. Last verified: 2026-09-23.
 
-Status: in implementation. The generic managed-direct dispatch layer and the
-Qwen3 direct tensor contract are implemented and unit-validated. Neither Qwen
-nor DeepSeek uses W6 as the serving default yet.
+Status: Qwen callable 3 and DeepSeek callable 5 are integrated with managed
+`UB_GM` serving, and the stable W5 config entry selects `direct` by default
+for these two profiles. Functional matrices passed through the cluster runner
+on `n4-910c`. The sim-console two-host matrix and the oracle acceptance gate
+remain open; the configured default is not a claim of full W6 acceptance.
 
 ## 1. Goal
 
@@ -110,67 +112,90 @@ DeepSeek callable ID. The test matrix covers partial acquire, begin retry,
 enqueue retry, poll retry, completion failure, release retry and exact owner
 retention. The Qwen matrix covers first, middle and terminal range geometry.
 
-## 4. Remaining Implementation
+## 4. Current Implementation and Remaining Work
 
 ### 4.1 Qwen managed serving integration
 
-The current W5 managed round allocates one writer and opens managed readers for
-the previous hidden and KV references. W6 must lay out token control, hidden
-output, next KV and logits as disjoint views of that writer, then pass reader
-and writer owners to `qwen3_managed_direct_prepare()`.
+`qwen3_managed_serving_guest.c` passes the existing hidden/KV reader owners
+and writer owner to `qwen3_managed_direct_prepare()`. The writer has disjoint
+token, hidden output, next KV and logits views. Completion waits for the
+original operation, then stages and seals references to those views in place.
+The terminal token record is small control data written into its reserved
+writer view. The published hidden, KV and logits remain in the writer backing.
 
-After CQ completion, the guest will publish the existing views in place. CPU
-code may calculate checksums and sample terminal logits after visibility is
-established. It must not copy a tensor into a second serving allocation.
+Qwen direct passed 2/3/8-node, 4/8-step cluster-runner cases on `n4-910c`.
+The committed default is exercised through sim-console on `n4-910c` by:
 
-This milestone also adds a stable model-direct selection to the existing W5
-cluster entry. Qwen direct starts opt-in and becomes the W6 default after the
-2/3/8-node matrix passes.
+| Nodes | Steps | Run ID | Host access evidence |
+| ---: | ---: | --- | --- |
+| 2 | 1 | `sim-console-1790161824664-0` | 2/2 ranges |
+| 2 | 4 | `sim-console-1790162601003-0` | 8/8 ranges |
+| 3 | 4 | `sim-console-1790162823449-0` | 12/12 ranges |
+| 8 | 8 | `sim-console-1790163015394-0` | 64/64 ranges |
+
+Each counted range used callable 3, had nonzero provider reads and writes,
+reported zero shared payload staging, and completed successfully. The 8-step
+run produced token IDs `[264, 3644, 7653, 304, 279, 2070, 315, 1995]`.
+
+On `n4-910c1`, sim-console 2-node/1-step, 3-node/4-step and 8-node/8-step
+cases passed as `sim-console-1790163569079-0`,
+`sim-console-1790163821727-0` and `sim-console-1790163981682-0`. The last
+case retained 64/64 host access records. The remaining two-host matrix is
+still pending at this update.
 
 ### 4.2 DeepSeek complete direct callable
 
-DeepSeek currently executes complete ranges in the Rust/host runtime. Existing
-Simpler-backed attention, quantized linear, router, routed expert, shared
-expert and output-head implementations remain useful as semantics and oracle
-code. W6 needs a PTO range graph that binds shared inputs and outputs as
-`UB_GM` tensors and composes all 43 layers, including MLA/indexer and MoE.
+DeepSeek has a model-specific tensor/scalar ABI, callable 5 range
+orchestrator and PTO kernels for attention, MLA/indexer, MoE, shared expert,
+KV and output head. Shared hidden/KV/logits use managed `UB_GM` views; weights
+remain private immutable model data. The cluster-runner 2/3/8-node, 4/8-step
+matrix passed on `n4-910c`. A later 2-node/1-step gate logged callable 5
+provider reads/writes of `308693/4446` and `339479/133858`, with a terminal
+token and no reported staging.
 
-Implementation work:
+DeepSeek still needs the sim-console openEuler gate, the second-host matrix,
+and explicit range/logits oracle comparison evidence before full acceptance.
+No callable 4 execution counts as DeepSeek W6 evidence.
 
-- define and freeze the DeepSeek tensor/scalar ABI;
-- assign a callable ID only after that ABI is reviewed;
-- implement the range orchestrator and PTO kernels;
-- load weights as private immutable model data without mixing them with shared
-  request tensors;
-- bind hidden, KV and logits to the model-neutral managed-direct operation;
-- compare range outputs and logits with the existing Rust/DS4-derived oracle;
-- publish hidden, KV and terminal views in place through Memory Service.
+The first sim-console openEuler attempt, `sim-console-1790164420881-0`,
+failed before QEMU launch because its managed checkout reused a stale
+`sim-cli` that did not recognize callable 5. The stable config entry now asks
+Cargo to incrementally verify the default `sim-cli` before fingerprinting.
+An isolated remote reproduction copied that old binary into the validation
+tree and then passed DeepSeek `--print-env` with `SIM_W5_MODEL_IO=direct` and
+a nonzero callable artifact fingerprint.
 
-No callable 4 execution is accepted as DeepSeek W6 evidence.
+The next sim-console attempt, `sim-console-1790165525235-0`, reached both
+openEuler guests. Node A completed callable 5; node B completed host PTO I/O
+(`reads=26`, `writes=132487`, `shared_payload_staging_bytes=0`) but failed
+while preparing the terminal token with `rc=-2` (`ENOENT`). The token table
+was generated in the per-run initramfs and copied into the root overlay at
+`/tmp/deepseek_v4_flash_pto_token_table.bin`. The guest boot log shows that
+openEuler mounted a fresh `/tmp` over that overlay path before `run_app`.
+The terminal token table must be staged in a path that survives this mount;
+the sim-console DeepSeek gate remains failed until that correction is tested.
 
 ### 4.3 Serving selection and observability
 
-The run configuration will expose one model-I/O choice with values `bulk` and
-`direct`. Internal environment propagation stays limited to one functional
-setting. Validation and report-only controls retain the `SIM_W5_TEST_*`
-namespace.
+The stable W5 entry selects `direct` for managed Qwen3-0.6B and DeepSeek V4
+Flash. `--model-io bulk` keeps callable 4 explicitly available for comparison;
+other profiles retain their prior default. The host wraps PTO provider
+callbacks and counts successful reads/writes by request ID. A model range
+fails closed on zero reads, zero writes or staged shared payload.
 
-Every direct range log must contain model, node, step, layer interval,
-callable, tensor count, address space, PTO instruction path, staging bytes and
-completion status. The host log must contain actual `TLOAD/TSTORE` counters for
-the matching request ID.
+Sim-console mirrors short QEMU log tails during a run. At completion it also
+extracts every model-direct host access line from the complete remote QEMU
+logs into per-node summaries and the Process log. This retains all per-request
+counters without repeatedly transferring large QEMU logs.
 
-### 4.4 Validation matrix
+### 4.4 Remaining validation matrix
 
-The required functional matrix is:
-
-| Model | Nodes | Steps | Required comparison |
-| --- | ---: | ---: | --- |
-| Qwen3 | 2, 3, 8 | 4, 8 | callable 3 vs Qwen oracle |
-| DeepSeek V4 Flash | 2, 3, 8 | 4, 8 | direct callable vs current oracle |
-
-Each case runs through sim-console on both `n4-910c` and `n4-910c1` after the
-focused unit and contract suites pass.
+The acceptance matrix remains 2/3/8 nodes times 4/8 steps for each model,
+through sim-console on both `n4-910c` and `n4-910c1`. The cluster-runner
+matrix on one host is useful evidence and does not replace that requirement.
+For every case, compare terminal tokens and logits with the established model
+oracle, match guest request IDs to host access counts, and confirm zero
+publication copy bytes. Record the exact run ID and source revision.
 
 ## 5. Acceptance Criteria
 
@@ -196,8 +221,7 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Wire the Qwen managed round writer/readers into
-`qwen3_managed_direct_prepare()`, publish hidden/KV/logits views in place and
-add a focused 2-node 1-step gate. This proves that current managed request
-lifecycle and the already complete Qwen PTO range operate as one path before
-the DeepSeek callable work starts.
+Move the openEuler direct token table to a guest path that survives boot,
+rerun the DeepSeek sim-console gate, then continue the two-host matrix and
+oracle comparisons. Keep W6 acceptance open until every condition in
+Section 5 has direct evidence.

@@ -508,11 +508,12 @@ resolve_w5_managed_fingerprint() {
   fi
   repo_dir="$ROOT_DIR/../.."
   sim_cli="${SIM_CLI_BIN:-$repo_dir/target/release/sim-cli}"
-  if [[ ! -x "$sim_cli" ]]; then
-    if [[ -n "${SIM_CLI_BIN:-}" ]]; then
+  if [[ -n "${SIM_CLI_BIN:-}" ]]; then
+    if [[ ! -x "$sim_cli" ]]; then
       echo "managed serving SIM_CLI_BIN is not executable: $SIM_CLI_BIN" >&2
       return 2
     fi
+  else
     cargo_bin="$(command -v cargo 2>/dev/null || true)"
     if [[ -z "$cargo_bin" && -x "$HOME/.cargo/bin/cargo" ]]; then
       cargo_bin="$HOME/.cargo/bin/cargo"
@@ -521,7 +522,7 @@ resolve_w5_managed_fingerprint() {
       echo "managed serving requires Cargo to build sim-cli" >&2
       return 2
     fi
-    echo "[w5_cluster_config] building sim-cli for managed serving" >&2
+    echo "[w5_cluster_config] checking sim-cli build for managed serving" >&2
     if ! (cd "$repo_dir" && "$cargo_bin" build --release -p sim-cli); then
       echo "managed serving failed to build sim-cli" >&2
       return 2

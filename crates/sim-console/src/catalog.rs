@@ -288,13 +288,32 @@ mod tests {
             simpler_demos,
             vec![
                 "w5-qwen-2",
+                "w5-qwen-3",
                 "w5-qwen-4",
                 "w5-qwen-8",
                 "w5-deepseek-v4-flash-2",
+                "w5-deepseek-v4-flash-3",
                 "w5-deepseek-v4-flash-4",
                 "w5-deepseek-v4-flash-8",
             ]
         );
+    }
+
+    #[test]
+    fn w6_required_topologies_have_matching_demo_node_counts() {
+        let catalog = DemoCatalog::load_default().unwrap();
+        for model in ["w5-qwen", "w5-deepseek-v4-flash"] {
+            for nodes in [2_u8, 3, 8] {
+                let id = format!("{model}-{nodes}");
+                let demo = catalog.demos.iter().find(|demo| demo.id == id).unwrap();
+                assert_eq!(demo.node_count, nodes);
+                assert!(demo
+                    .command
+                    .args
+                    .windows(2)
+                    .any(|args| args[0] == "--nodes" && args[1] == nodes.to_string()));
+            }
+        }
     }
 
     #[test]

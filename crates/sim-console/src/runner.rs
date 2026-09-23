@@ -970,13 +970,17 @@ impl RunManager {
                 return;
             }
             if remote_log_sync_ready(&self.inner.state_root, &run_id) {
-                let _ = self.sync_remote_logs(&run_id).await;
+                let _ = self.sync_remote_logs(&run_id, false).await;
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
 
-    async fn sync_remote_logs(&self, run_id: &str) -> Result<(), RunManagerError> {
+    async fn sync_remote_logs(
+        &self,
+        run_id: &str,
+        include_model_access: bool,
+    ) -> Result<(), RunManagerError> {
         let _sync_guard = self.inner.remote_log_sync.lock().await;
         let target_id = self
             .inner
@@ -992,7 +996,11 @@ impl RunManager {
         }
 
         let mut command = ssh_command(&target)?;
-        command.arg(remote_log_archive_command(&target, run_id)?);
+        command.arg(remote_log_archive_command(
+            &target,
+            run_id,
+            include_model_access,
+        )?);
         let output = tokio::time::timeout(
             Duration::from_secs(target.connect_timeout_secs.unwrap_or(10) + 10),
             command.output(),
@@ -1053,7 +1061,7 @@ impl RunManager {
                 .and_then(|id| self.inner.targets.find(id))
                 .is_some_and(|target| target.kind == ExecutionTargetKind::Ssh)
         {
-            let _ = self.sync_remote_logs(run_id).await;
+            let _ = self.sync_remote_logs(run_id, true).await;
         }
         let stop_requested = self.inner.stop_requested.write().await.remove(run_id)
             || self
@@ -1091,6 +1099,7 @@ impl RunManager {
         if record.status == RunStatus::Failed {
             let _ = append_host_diagnostics(&self.inner.repo_root, &self.inner.state_root, record);
         }
+        let _ = append_model_access_summary(&self.inner.repo_root, &self.inner.state_root, record);
         if let Err(error) = self.refresh_nodes(record) {
             record.message = Some(format!(
                 "{}; node refresh failed: {error}",
@@ -2344,11 +2353,17 @@ fn remote_prepare_state_dir(
 fn remote_log_archive_command(
     target: &ExecutionTarget,
     run_id: &str,
+    include_model_access: bool,
 ) -> Result<String, RunManagerError> {
     let repo_root = remote_repo_root(target)?;
     let pattern = format!("*{run_id}*");
+    let model_access = if include_model_access {
+        "case \"$base\" in *_qemu.log) awk '/pto-ub-gm-model-access:|qwen3-pto-range:|deepseek-v4-flash-pto-range:/' \"$file\" > \"$tmp/${base%_qemu.log}_qemu_model_access.log\";; esac;"
+    } else {
+        ""
+    };
     Ok(format!(
-        "set -eu; cd {repo}; tmp=$(mktemp -d); cleanup() {{ rm -rf \"$tmp\"; }}; trap cleanup EXIT; find guest-linux/aarch64/logs -type f -path {pattern} \\( -name 'node*_guest.log' -o -name 'node*_qemu.log' \\) -print 2>/dev/null | while IFS= read -r file; do base=$(basename \"$file\"); limit=262144; case \"$base\" in *_qemu.log) limit=8192;; esac; tail -c \"$limit\" \"$file\" > \"$tmp/$base\"; done; tar -C \"$tmp\" -cf - .",
+        "set -eu; cd {repo}; tmp=$(mktemp -d); cleanup() {{ rm -rf \"$tmp\"; }}; trap cleanup EXIT; find guest-linux/aarch64/logs -type f -path {pattern} \\( -name 'node*_guest.log' -o -name 'node*_qemu.log' \\) -print 2>/dev/null | while IFS= read -r file; do base=$(basename \"$file\"); limit=262144; case \"$base\" in *_qemu.log) limit=8192;; esac; tail -c \"$limit\" \"$file\" > \"$tmp/$base\"; {model_access} done; tar -C \"$tmp\" -cf - .",
         repo = shell_quote(repo_root),
         pattern = shell_quote(&pattern),
     ))
@@ -2656,6 +2671,35 @@ fn append_host_diagnostics(
             node.id
         )?;
         output.write_all(&bytes)?;
+    }
+    Ok(())
+}
+
+fn append_model_access_summary(
+    repo_root: &Path,
+    state_root: &Path,
+    record: &RunRecord,
+) -> std::io::Result<()> {
+    let mut output = OpenOptions::new()
+        .append(true)
+        .open(repo_root.join(&record.process_log_path))?;
+    for node in &record.nodes {
+        let path = state_root
+            .join(&record.id)
+            .join("remote-node-logs")
+            .join(format!("{}_qemu_model_access.log", node.id));
+        let Ok(mut file) = File::open(path) else {
+            continue;
+        };
+        if file.metadata()?.len() == 0 {
+            continue;
+        }
+        writeln!(
+            output,
+            "\n[sim-console] {} model-direct host access:",
+            node.id
+        )?;
+        std::io::copy(&mut file, &mut output)?;
     }
     Ok(())
 }
@@ -3294,11 +3338,15 @@ mod tests {
         let stop = remote_stop_command(&target, "sim-console-42").unwrap();
         assert!(stop.contains("kill -TERM -- \"-$pid\""));
         assert!(stop.contains("process-group.pid"));
-        let archive = remote_log_archive_command(&target, "sim-console-42").unwrap();
+        let archive = remote_log_archive_command(&target, "sim-console-42", false).unwrap();
         assert!(archive.contains("*sim-console-42*"));
         assert!(archive.contains("limit=262144"));
         assert!(archive.contains("*_qemu.log) limit=8192;;"));
         assert!(archive.contains("tail -c \"$limit\" \"$file\""));
+        assert!(!archive.contains("qemu_model_access.log"));
+        let final_archive = remote_log_archive_command(&target, "sim-console-42", true).unwrap();
+        assert!(final_archive.contains("qemu_model_access.log"));
+        assert!(final_archive.contains("pto-ub-gm-model-access:"));
         let input = remote_node_input_command(
             &target,
             &NodeInputDefinition {
@@ -3785,5 +3833,107 @@ mod tests {
         assert!(output.contains("nodeA host diagnostics"));
         assert!(output.contains("free(): double free detected"));
         assert!(output.len() < 8400);
+    }
+
+    #[test]
+    fn final_remote_archive_keeps_model_access_outside_the_qemu_tail() {
+        let root = TempDir::new().unwrap();
+        let repo = root.path().join("repo with space");
+        let logs = repo.join("guest-linux/aarch64/logs/sim-console-42_headless8");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(
+            logs.join("nodeA_qemu.log"),
+            format!(
+                "pto-ub-gm-model-access: request=1 reads=3 writes=2\n{}\npto-ub-gm-model-access: request=2 reads=5 writes=4\n",
+                "x".repeat(10000)
+            ),
+        )
+        .unwrap();
+        let target = ExecutionTarget {
+            id: "remote-fixture".to_string(),
+            title: "Remote fixture".to_string(),
+            kind: ExecutionTargetKind::Ssh,
+            description: "Fixture".to_string(),
+            ssh_host: Some("remote-fixture".to_string()),
+            connect_timeout_secs: Some(5),
+            repo_root: Some(repo.to_str().unwrap().to_string()),
+            workspace_source_repo: None,
+            source_repo_url: None,
+            submodule_mirrors: vec![],
+            bootstrap_files: vec![],
+            model_sources: BTreeMap::new(),
+            open_euler_disk_image: None,
+        };
+        let command = remote_log_archive_command(&target, "sim-console-42", true).unwrap();
+        let archive = StdCommand::new("sh")
+            .arg("-c")
+            .arg(command)
+            .output()
+            .unwrap();
+        assert!(
+            archive.status.success(),
+            "{}",
+            String::from_utf8_lossy(&archive.stderr)
+        );
+        let archive_path = root.path().join("logs.tar");
+        fs::write(&archive_path, archive.stdout).unwrap();
+        let extracted = root.path().join("extracted");
+        fs::create_dir_all(&extracted).unwrap();
+        assert!(StdCommand::new("tar")
+            .arg("-xf")
+            .arg(&archive_path)
+            .arg("-C")
+            .arg(&extracted)
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(
+            fs::metadata(extracted.join("nodeA_qemu.log"))
+                .unwrap()
+                .len(),
+            8192
+        );
+        let summary = fs::read_to_string(extracted.join("nodeA_qemu_model_access.log")).unwrap();
+        assert!(summary.contains("request=1 reads=3 writes=2"));
+        assert!(summary.contains("request=2 reads=5 writes=4"));
+    }
+
+    #[test]
+    fn model_access_summary_is_visible_in_the_process_log() {
+        let root = TempDir::new().unwrap();
+        let state = root.path().join("out/runs");
+        let logs = state.join("passed/remote-node-logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(root.path().join("process.log"), "validation passed\n").unwrap();
+        fs::write(
+            logs.join("nodeA_qemu_model_access.log"),
+            "pto-ub-gm-model-access: request=41 reads=3 writes=2 status=pass\n",
+        )
+        .unwrap();
+        let record = RunRecord {
+            id: "passed".to_string(),
+            demo_id: "w5-qwen-2".to_string(),
+            demo_title: "Fixture".to_string(),
+            target_id: "remote-fixture".to_string(),
+            source_revision: None,
+            status: RunStatus::Passed,
+            created_at_ms: 0,
+            started_at_ms: Some(0),
+            finished_at_ms: Some(1),
+            pid: None,
+            exit_code: Some(0),
+            parameters: BTreeMap::new(),
+            nodes: topology_nodes(2),
+            process_log_path: "process.log".to_string(),
+            message: None,
+        };
+
+        append_model_access_summary(root.path(), &state, &record).unwrap();
+
+        let output = fs::read_to_string(root.path().join("process.log")).unwrap();
+        assert!(output.starts_with("validation passed\n"));
+        assert!(output.contains("nodeA model-direct host access:"));
+        assert!(output.contains("request=41 reads=3 writes=2 status=pass"));
+        assert!(!output.contains("nodeB model-direct host access:"));
     }
 }
