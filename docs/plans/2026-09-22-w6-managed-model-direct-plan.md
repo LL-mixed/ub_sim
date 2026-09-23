@@ -181,8 +181,25 @@ Node A logged callable 5 `reads=23/writes=3164`; node B logged callable 5
 `shared_payload_staging_bytes=0 status=pass`. Node B published terminal
 token 65 from `managed_callable5_logits`, and the cluster reported 2/2
 passed nodes and one decoded token. This proves the table-path correction in
-that isolated checkout. The sim-console DeepSeek gate has not yet been
-rerun with the corrected source bundle.
+that isolated checkout.
+
+The committed correction, revision `36f664fd1f7d22e55403348a501ed045319bc393`,
+also passed the DeepSeek sim-console openEuler 2-node/1-step gate on both
+registered targets:
+
+| Target | Sim-console run | Result | Terminal token/logits checksum |
+| --- | --- | --- | --- |
+| `n4-910c` | `sim-console-1790170966071-0` | 2/2 nodes passed | `65` / `0xee06ac1d0ff28301` |
+| `n4-910c1` | `sim-console-1790171546173-0` | 2/2 nodes passed | `65` / `0xee06ac1d0ff28301` |
+
+Both runs logged callable 5 host access on node A (`reads=23`,
+`writes=3164`) and node B (`reads=26`, `writes=132487`) with
+`shared_payload_staging_bytes=0`. Each node A produced hidden/KV checksums
+`0x3b97679d3d3ccf4a`/`0x3a36fce46f940764`; each node B produced
+`0x181e729cfff848cb`/`0x383faf8e18adb5bc`. Node B published the terminal
+result from `managed_callable5_logits`. These runs close the specific
+openEuler token-table gate and show repeatable direct output on two hosts;
+they cover only one step and do not establish numerical oracle parity.
 
 An additional isolated 2-node/1-step comparison used the same GGUF and
 prompt tokens. Direct callable 5 and explicit bulk callable 4 both passed
@@ -196,6 +213,17 @@ were `0x3b97679d3d3ccf4a`/`0x3a36fce46f940764` in direct run
 difference begins by the first range output; token agreement alone does not
 establish numerical parity. A full-tensor comparison against the model oracle
 with an explicit tolerance is still required before acceptance.
+
+A focused layer-0 comparison on `n4-910c` used token 42 at position 0 and
+the same GGUF for direct PTO and bulk execution. The encoded KV segment
+(512 `f32` values beginning at byte 48) matched bitwise, 512/512. The full
+16,384-value hidden output differed: maximum absolute error `0.0040334910`,
+mean absolute error `0.0002459195`, relative L2 error `0.0042583656`, and
+cosine similarity `0.9999909384`. At diagnostic tolerances `atol=1e-4` and
+`rtol=1e-3`, 3,635 values were outside tolerance. These thresholds are not
+model acceptance criteria. The matching KV segment narrows the investigation,
+but the differing hidden output still needs attention/FFN stage isolation and
+comparison with a DS4 oracle.
 
 ### 4.3 Serving selection and observability
 
@@ -245,6 +273,6 @@ W6 model direct is complete only when all conditions hold:
 
 Compare the first DeepSeek range's full hidden/KV tensors against the model
 oracle with an explicit tolerance, then trace any material discrepancy to
-the responsible operator. Rerun the DeepSeek sim-console openEuler gate with
-the corrected source bundle and complete the two-host matrix. Keep W6
-acceptance open until every condition in Section 5 has direct evidence.
+the responsible operator. Complete the 2/3/8-node, 4/8-step sim-console
+matrix on both hosts. Keep W6 acceptance open until every condition in
+Section 5 has direct evidence.

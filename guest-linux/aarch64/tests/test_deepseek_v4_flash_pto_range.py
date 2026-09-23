@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -11,6 +12,32 @@ LIB = ROOT / "guest-linux" / "aarch64" / "libs" / "lingqu_shmem_pto"
 
 
 class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
+    def test_direct_range_probe_compiles_and_sizes_state(self):
+        compiler = os.environ.get("CXX", "c++")
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "deepseek_v4_flash_pto_range_probe"
+            command = [
+                compiler, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-D__CPU_SIM", "-pthread", "-isystem",
+                str(ROOT / "vendor" / "pto-isa" / "include"),
+                "-I", str(LIB),
+                str(ROOT / "guest-linux" / "aarch64" / "tests"
+                    / "deepseek_v4_flash_pto_range_probe.cpp"),
+                "-o", str(binary),
+            ]
+            version = subprocess.run(
+                [compiler, "--version"], check=True, capture_output=True, text=True
+            ).stdout
+            if "clang" in version.lower():
+                command.insert(6, "-Wno-pass-failed")
+            subprocess.run(command, check=True)
+            for end, expected in [(1, 2096), (2, 4160)]:
+                result = subprocess.run(
+                    [str(binary), "--state-bytes", str(end)],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertEqual(int(result.stdout.strip()), expected)
+
     def test_range_header_compiles_with_strict_warnings(self):
         compiler = os.environ.get("CXX", "c++")
         source = '#include "deepseek_v4_flash_pto_range.hpp"\nint main() { return 0; }\n'
