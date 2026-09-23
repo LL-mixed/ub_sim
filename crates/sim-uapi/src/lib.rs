@@ -16079,6 +16079,181 @@ fn run_host_vector_chipbackend(
     Ok(produced)
 }
 
+struct PtoUbGmAccessCounts {
+    access: PtoUbGmAccessRegistration,
+    request_id: u64,
+    reads: std::sync::atomic::AtomicU64,
+    writes: std::sync::atomic::AtomicU64,
+}
+
+impl PtoUbGmAccessCounts {
+    fn registration(&self) -> PtoUbGmAccessRegistration {
+        PtoUbGmAccessRegistration {
+            read: counted_pto_ub_gm_read,
+            write: counted_pto_ub_gm_write,
+            fence: counted_pto_ub_gm_fence,
+            backend_context: self as *const Self as usize,
+            pto_device_cna: self.access.pto_device_cna,
+        }
+    }
+}
+
+unsafe extern "C" fn counted_pto_ub_gm_read(
+    context: *mut std::ffi::c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    dst: *mut std::ffi::c_void,
+    length: u64,
+) -> i32 {
+    let Some(counts) = (context as *const PtoUbGmAccessCounts).as_ref() else {
+        return -1;
+    };
+    if request_id != counts.request_id {
+        return -1;
+    }
+    let rc = (counts.access.read)(
+        counts.access.backend_context as *mut std::ffi::c_void,
+        request_id,
+        binding_id,
+        ub_gm_addr,
+        dst,
+        length,
+    );
+    if rc == 0 {
+        counts
+            .reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    rc
+}
+
+unsafe extern "C" fn counted_pto_ub_gm_write(
+    context: *mut std::ffi::c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    src: *const std::ffi::c_void,
+    length: u64,
+) -> i32 {
+    let Some(counts) = (context as *const PtoUbGmAccessCounts).as_ref() else {
+        return -1;
+    };
+    if request_id != counts.request_id {
+        return -1;
+    }
+    let rc = (counts.access.write)(
+        counts.access.backend_context as *mut std::ffi::c_void,
+        request_id,
+        binding_id,
+        ub_gm_addr,
+        src,
+        length,
+    );
+    if rc == 0 {
+        counts
+            .writes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    rc
+}
+
+unsafe extern "C" fn counted_pto_ub_gm_fence(
+    context: *mut std::ffi::c_void,
+    request_id: u64,
+    binding_id: u64,
+    ub_gm_addr: u64,
+    length: u64,
+    flags: u32,
+) -> i32 {
+    let Some(counts) = (context as *const PtoUbGmAccessCounts).as_ref() else {
+        return -1;
+    };
+    if request_id != counts.request_id {
+        return -1;
+    }
+    (counts.access.fence)(
+        counts.access.backend_context as *mut std::ffi::c_void,
+        request_id,
+        binding_id,
+        ub_gm_addr,
+        length,
+        flags,
+    )
+}
+
+#[cfg(test)]
+mod pto_ub_gm_access_count_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    unsafe extern "C" fn read(
+        context: *mut std::ffi::c_void,
+        _request_id: u64,
+        _binding_id: u64,
+        _ub_gm_addr: u64,
+        _dst: *mut std::ffi::c_void,
+        _length: u64,
+    ) -> i32 {
+        (*(context as *const AtomicU64)).fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    unsafe extern "C" fn write(
+        context: *mut std::ffi::c_void,
+        _request_id: u64,
+        _binding_id: u64,
+        _ub_gm_addr: u64,
+        _src: *const std::ffi::c_void,
+        _length: u64,
+    ) -> i32 {
+        (*(context as *const AtomicU64)).fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    unsafe extern "C" fn fence(
+        context: *mut std::ffi::c_void,
+        _request_id: u64,
+        _binding_id: u64,
+        _ub_gm_addr: u64,
+        _length: u64,
+        _flags: u32,
+    ) -> i32 {
+        (*(context as *const AtomicU64)).fetch_add(1, Ordering::Relaxed);
+        0
+    }
+
+    #[test]
+    fn callbacks_count_successful_accesses_and_reject_wrong_request() {
+        let forwarded = AtomicU64::new(0);
+        let counts = PtoUbGmAccessCounts {
+            access: PtoUbGmAccessRegistration {
+                read,
+                write,
+                fence,
+                backend_context: &forwarded as *const AtomicU64 as usize,
+                pto_device_cna: 7,
+            },
+            request_id: 41,
+            reads: AtomicU64::new(0),
+            writes: AtomicU64::new(0),
+        };
+        let registration = counts.registration();
+        let context = registration.backend_context as *mut std::ffi::c_void;
+        let mut byte = 0_u8;
+        let buffer = &mut byte as *mut u8 as *mut std::ffi::c_void;
+        unsafe {
+            assert_eq!((registration.read)(context, 41, 1, 0x1000, buffer, 1), 0);
+            assert_eq!((registration.write)(context, 41, 1, 0x1000, buffer, 1), 0);
+            assert_eq!((registration.fence)(context, 41, 1, 0x1000, 1, 0), 0);
+            assert_ne!((registration.read)(context, 42, 1, 0x1000, buffer, 1), 0);
+        }
+        assert_eq!(forwarded.load(Ordering::Relaxed), 3);
+        assert_eq!(counts.reads.load(Ordering::Relaxed), 1);
+        assert_eq!(counts.writes.load(Ordering::Relaxed), 1);
+    }
+}
+
 fn run_pto_ub_gm_chipbackend(
     topology: &SimTopology,
     task: &TaskKey,
@@ -16195,6 +16370,12 @@ fn run_pto_ub_gm_chipbackend(
     let backend_spec =
         host_vector_backend_spec_from_manifest_envelope(manifest, platform, runtime_args);
     let _dispatch_lock = host_vector_dispatch_lock_guard()?;
+    let access_counts = PtoUbGmAccessCounts {
+        access,
+        request_id: req.request_id,
+        reads: std::sync::atomic::AtomicU64::new(0),
+        writes: std::sync::atomic::AtomicU64::new(0),
+    };
     let mut runtime = LocalRuntimeEngine::from_config(&scenario_config);
     if let Some(payload) = private_payload {
         runtime.seed_host_segment(ubpu_node, private_segment, payload);
@@ -16203,7 +16384,7 @@ fn run_pto_ub_gm_chipbackend(
         runtime.seed_host_segment(ubpu_node, private_geometry_segment, payload);
     }
     runtime
-        .register_pto_ub_gm_access(access)
+        .register_pto_ub_gm_access(access_counts.registration())
         .map_err(str::to_string)?;
     let mut sink = VecEventSink::default();
     let run_result = (|| {
@@ -16244,16 +16425,45 @@ fn run_pto_ub_gm_chipbackend(
         }
     })();
     runtime.clear_pto_ub_gm_access();
-    if runtime.host_payload_bytes() != private_payload_bytes + private_geometry_bytes {
-        return Err("pto_ub_gm_payload_staging_detected".to_string());
+    let read_count = access_counts
+        .reads
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let write_count = access_counts
+        .writes
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let model_range = matches!(
+        req.callable_id,
+        PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID | PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID
+    );
+    let staged_bytes = runtime
+        .host_payload_bytes()
+        .checked_sub(private_payload_bytes + private_geometry_bytes)
+        .unwrap_or(u64::MAX);
+    let run_result = if run_result.is_ok() && staged_bytes != 0 {
+        Err("pto_ub_gm_payload_staging_detected".to_string())
+    } else if model_range && run_result.is_ok() && (read_count == 0 || write_count == 0) {
+        Err("pto_ub_gm_model_missing_shared_tensor_access".to_string())
+    } else {
+        run_result
+    };
+    if model_range {
+        eprintln!(
+            "pto-ub-gm-model-access: request={} callable={} reads={} writes={} shared_payload_staging_bytes={} status={}",
+            req.request_id,
+            req.callable_id,
+            read_count,
+            write_count,
+            staged_bytes,
+            if run_result.is_ok() { "pass" } else { "fail" }
+        );
     }
     if req.callable_id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID {
-        eprintln!("qwen3-pto-range: request={} private_constants_bytes={} shared_payload_staging_bytes=0 status={}",
-            req.request_id, private_payload_bytes, if run_result.is_ok() { "pass" } else { "fail" });
+        eprintln!("qwen3-pto-range: request={} private_constants_bytes={} shared_payload_staging_bytes={} status={}",
+            req.request_id, private_payload_bytes, staged_bytes, if run_result.is_ok() { "pass" } else { "fail" });
     }
     if req.callable_id == PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID {
-        eprintln!("deepseek-v4-flash-pto-range: request={} private_weight_index_bytes={} shared_payload_staging_bytes=0 status={}",
-            req.request_id, private_payload_bytes, if run_result.is_ok() { "pass" } else { "fail" });
+        eprintln!("deepseek-v4-flash-pto-range: request={} private_weight_index_bytes={} shared_payload_staging_bytes={} status={}",
+            req.request_id, private_payload_bytes, staged_bytes, if run_result.is_ok() { "pass" } else { "fail" });
     }
     run_result
 }

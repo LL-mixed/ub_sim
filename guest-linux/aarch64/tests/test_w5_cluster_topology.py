@@ -96,13 +96,50 @@ class W5ClusterTopologyTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("SIM_W5_MANAGED_SERVING=1\n", result.stdout)
-        self.assertIn("SIM_W5_MODEL_IO=bulk\n", result.stdout)
+        self.assertIn("SIM_W5_MODEL_IO=direct\n", result.stdout)
         self.assertIn("SIM_LINGQU_SHMEM_PTO_ENABLE=1\n", result.stdout)
         self.assertIn(
             "SIM_UAPI_W4_CHIPBACKEND_PROFILE=deepseek-v4-flash-simpler\n",
             result.stdout,
         )
         self.assertIn("SIM_W5_TEST_MEMORY_GSVA_KV=0\n", result.stdout)
+
+    def test_cli_model_io_defaults_only_for_validated_profiles(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "w5.env"
+            for profile, expected in (
+                ("qwen3_0_6b_decode", "direct"),
+                ("qwen3_14b_decode", "bulk"),
+            ):
+                with self.subTest(profile=profile):
+                    config.write_text(
+                        f"SIM_UAPI_W5_PROFILE={profile}\n"
+                        f"SIM_QWEN3_DENSE_WEIGHTS_PATH={self.repo}\n",
+                        encoding="utf-8",
+                    )
+                    result = subprocess.run(
+                        [str(self.config_runner), "--print-env", str(config)],
+                        cwd=self.repo,
+                        check=False,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        env=self.managed_env(),
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(
+                        f"SIM_W5_MODEL_IO={expected}\n", result.stdout
+                    )
+
+    def test_cli_keeps_bulk_available_for_comparison(self):
+        result = self.run_config("--print-env", "--model-io", "bulk")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SIM_W5_MODEL_IO=bulk\n", result.stdout)
+
+        result = self.run_config("--print-env", "--legacy-serving")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SIM_W5_MANAGED_SERVING=0\n", result.stdout)
+        self.assertIn("SIM_W5_MODEL_IO=bulk\n", result.stdout)
 
     def test_cli_accepts_direct_model_io_for_deepseek(self):
         result = self.run_config("--print-env", "--model-io", "direct")
@@ -249,6 +286,8 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     str(self.config_runner),
                     "--print-env",
                     "--managed-serving",
+                    "--model-io",
+                    "bulk",
                     str(self.deepseek_config),
                 ],
                 cwd=self.repo,
@@ -298,6 +337,8 @@ class W5ClusterTopologyTest(unittest.TestCase):
                             str(self.config_runner),
                             "--print-env",
                             "--managed-serving",
+                            "--model-io",
+                            "bulk",
                             "--nodes",
                             str(node_count),
                             str(self.deepseek_config),
@@ -369,6 +410,8 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     str(self.config_runner),
                     "--print-env",
                     "--managed-serving",
+                    "--model-io",
+                    "bulk",
                     str(qwen_config),
                 ],
                 cwd=self.repo,
@@ -390,6 +433,8 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     str(self.config_runner),
                     "--print-env",
                     "--managed-serving",
+                    "--model-io",
+                    "bulk",
                     str(self.deepseek_config),
                 ],
                 cwd=self.repo,
@@ -414,6 +459,8 @@ class W5ClusterTopologyTest(unittest.TestCase):
                             str(self.config_runner),
                             "--print-env",
                             "--managed-serving",
+                            "--model-io",
+                            "bulk",
                             str(self.deepseek_config),
                         ],
                         cwd=self.repo,

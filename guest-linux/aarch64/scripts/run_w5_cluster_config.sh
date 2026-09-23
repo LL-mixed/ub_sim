@@ -17,11 +17,10 @@ not a dynamically-expanded env-prefixed shell command.
 --print-env prints the effective environment grouped by runtime surface,
 serving surface, and test/validation controls.
 
-Managed serving is the default. It executes Qwen and DeepSeek model ranges
-against Memory Service managed OBMM objects through authorized UB_GM provider
-callbacks. The current callable 4 materializes model I/O at its Rust boundary;
-W6 owns direct model-kernel PTO TLOAD/TSTORE. Use --legacy-serving only for an
-explicit legacy regression.
+Managed serving is the default. Qwen3-0.6B and DeepSeek V4 Flash decode use
+W6 direct model-kernel PTO TLOAD/TSTORE by default. --model-io bulk selects the
+W5 callable 4 comparison path. Use --legacy-serving only for an explicit
+legacy regression.
 
 RUN_ID in config files is rejected by default to avoid logappend pollution from
 accidental run reuse. Set SIM_W5_ALLOW_FIXED_RUN_ID=1 only for intentional
@@ -395,8 +394,17 @@ else
 fi
 if [[ -n "$MODEL_IO_OVERRIDE" ]]; then
   export SIM_W5_MODEL_IO="$MODEL_IO_OVERRIDE"
+elif [[ -n "${SIM_W5_MODEL_IO:-}" ]]; then
+  export SIM_W5_MODEL_IO
 else
-  export SIM_W5_MODEL_IO="${SIM_W5_MODEL_IO:-bulk}"
+  export SIM_W5_MODEL_IO=bulk
+  if bool_enabled "$SIM_W5_MANAGED_SERVING"; then
+    case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
+      qwen3_0_6b_decode|deepseek_v4_flash_decode)
+        export SIM_W5_MODEL_IO=direct
+        ;;
+    esac
+  fi
 fi
 case "$SIM_W5_MODEL_IO" in
   bulk)
