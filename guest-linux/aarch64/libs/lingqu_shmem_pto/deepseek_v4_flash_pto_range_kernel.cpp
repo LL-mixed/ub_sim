@@ -1,5 +1,8 @@
 #include "deepseek_v4_flash_pto_range.hpp"
 #include "tensor.h"
+#ifdef __CPU_SIM
+#include <cstdio>
+#endif
 
 namespace ds = lingqu::deepseek_v4_flash_pto;
 
@@ -93,8 +96,15 @@ kernel_entry(int64_t *args) {
         reinterpret_cast<const void *>(descriptor.address), descriptor.bytes);
     const ds::MappedWeights weights(index);
     const ds::Iq2Codebook codebook {index.iq2_grid(), index.iq2_signs()};
-    ds::decoder_range(weights, codebook, geometry, f32_view(hidden_input),
-                      byte_view(previous_state), i32_view(token_input),
-                      f32_view(hidden_output), byte_view(next_state),
-                      f32_view(logits));
+    try {
+        ds::decoder_range(weights, codebook, geometry, f32_view(hidden_input),
+                          byte_view(previous_state), i32_view(token_input),
+                          f32_view(hidden_output), byte_view(next_state),
+                          f32_view(logits));
+    } catch (const std::exception &error) {
+#ifdef __CPU_SIM
+        std::fprintf(stderr, "deepseek_pto_kernel_error=%s\n", error.what());
+#endif
+        throw;
+    }
 }

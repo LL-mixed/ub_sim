@@ -140,6 +140,8 @@
     (W5_PTO_UB_GM_PROBE_BYTES / sizeof(float))
 #define W5_PTO_UB_GM_METADATA_BYTES 4096ULL
 #define W5_PTO_UB_GM_CALLABLE_ID 1ULL
+#define W5_MANAGED_CLEANUP_TIMEOUT_MS 5000ULL
+#define W5_MANAGED_READER_OPEN_ATTEMPTS 3U
 #define QWEN3_MEMORY_BOUNDARY_REGISTRY_MARKER 0x7735627265673030ULL
 #define QWEN3_MEMORY_BOUNDARY_REGISTRY_VERSION 1U
 #define QWEN3_MEMORY_BOUNDARY_REGISTRY_HEADER_BYTES 32ULL
@@ -2574,19 +2576,23 @@ static int w5_managed_round_close(struct w5_managed_round_state *state)
         if (rc) return rc;
     }
     if (state->hidden) {
-        rc = w5_managed_object_close(&state->hidden, &status);
+        rc = w5_managed_object_close_bounded(&state->hidden, &status,
+            W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
         if (rc) return rc;
     }
     if (state->kv) {
-        rc = w5_managed_object_close(&state->kv, &status);
+        rc = w5_managed_object_close_bounded(&state->kv, &status,
+            W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
         if (rc) return rc;
     }
     if (state->token) {
-        rc = w5_managed_object_close(&state->token, &status);
+        rc = w5_managed_object_close_bounded(&state->token, &status,
+            W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
         if (rc) return rc;
     }
     if (state->writer) {
-        rc = w5_managed_object_close(&state->writer, &status);
+        rc = w5_managed_object_close_bounded(&state->writer, &status,
+            W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
         if (rc == -EBUSY)
             rc = w5_managed_writer_abort(&state->writer, &status);
         if (rc) return rc;
@@ -2611,43 +2617,74 @@ static int w5_managed_open_reader(
     uint64_t step,
     char role,
     uint64_t timeout_ms,
-    struct w5_managed_object_guest **object_out)
+    struct w5_managed_object_guest **object_out,
+    enum mem_service_wire_status *status_out)
 {
-    struct w5_managed_reader_config config;
-    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
-    char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
-    char operation[48];
+    uint32_t attempt;
     uint64_t reference_hash;
-    int length;
+    int rc = -EINVAL;
 
-    if (!runtime || !reference_key || !object_out || *object_out)
+    if (!runtime || !reference_key || !object_out || *object_out ||
+        !status_out)
         return -EINVAL;
     reference_hash = w5_managed_identity_hash(reference_key);
-    length = snprintf(session, sizeof(session),
-                      "managed-%08" PRIx32 "-%016" PRIx64
-                      "-%016" PRIx64 "-%c",
-                      local_node, reference_hash, step, role);
-    if (length < 0 || (size_t)length >= sizeof(session))
-        return -ENAMETOOLONG;
-    length = snprintf(operation, sizeof(operation),
-                      "m-%08" PRIx32 "-%016" PRIx64
-                      "-%016" PRIx64 "-%c",
-                      local_node, reference_hash, step, role);
-    if (length < 0 || (size_t)length >= sizeof(operation))
-        return -ENAMETOOLONG;
-    config = (struct w5_managed_reader_config) {
-        .reference_key = reference_key,
-        .holder_node_id = w5_managed_runtime_client_node_id(runtime),
-        .holder_provider_incarnation =
-            w5_managed_runtime_client_provider_incarnation(runtime),
-        .session_id = session,
-        .operation_prefix = operation,
-        .timeout_ms = timeout_ms,
-        .pin_limit = 8,
-    };
-    return w5_managed_reader_open(w5_managed_runtime_client(runtime),
-        w5_managed_runtime_channel(runtime),
-        w5_managed_runtime_domain(runtime), &config, object_out, &status);
+    for (attempt = 0; attempt < W5_MANAGED_READER_OPEN_ATTEMPTS; ++attempt) {
+        struct w5_managed_reader_config config;
+        enum mem_service_wire_status open_status;
+        char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
+        char operation[48];
+        uint32_t cleanup_retries = 0;
+        int cleanup_rc;
+        int length;
+
+        length = snprintf(session, sizeof(session),
+                          "managed-%08" PRIx32 "-%016" PRIx64
+                          "-%016" PRIx64 "-%c-%02" PRIx32,
+                          local_node, reference_hash, step, role, attempt);
+        if (length < 0 || (size_t)length >= sizeof(session))
+            return -ENAMETOOLONG;
+        length = snprintf(operation, sizeof(operation),
+                          "r%08" PRIx32 "-%016" PRIx64
+                          "-%016" PRIx64 "-%c%02" PRIx32,
+                          local_node, reference_hash, step, role, attempt);
+        if (length < 0 || (size_t)length >= sizeof(operation))
+            return -ENAMETOOLONG;
+        config = (struct w5_managed_reader_config) {
+            .reference_key = reference_key,
+            .holder_node_id = w5_managed_runtime_client_node_id(runtime),
+            .holder_provider_incarnation =
+                w5_managed_runtime_client_provider_incarnation(runtime),
+            .session_id = session,
+            .operation_prefix = operation,
+            .timeout_ms = timeout_ms,
+            .pin_limit = 8,
+        };
+        open_status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+        rc = w5_managed_reader_open(w5_managed_runtime_client(runtime),
+            w5_managed_runtime_channel(runtime),
+            w5_managed_runtime_domain(runtime), &config, object_out,
+            &open_status);
+        if (!rc) {
+            *status_out = open_status;
+            return 0;
+        }
+        if (*object_out) {
+            cleanup_rc = w5_managed_object_close_bounded(object_out,
+                status_out, W5_MANAGED_CLEANUP_TIMEOUT_MS, &cleanup_retries);
+            if (cleanup_rc)
+                return cleanup_rc;
+        }
+        *status_out = open_status;
+        if (rc != MEM_SERVICE_MAPPING_CLEANUP_REQUIRED ||
+            attempt + 1U == W5_MANAGED_READER_OPEN_ATTEMPTS)
+            return rc;
+        printf("[w4_guest] stage w5_managed_reader_open_recovered"
+               " role=%c node=%u step=%" PRIu64
+               " attempt=%u cleanup_retries=%u status=retrying\n",
+               role, local_node + 1U, step, attempt + 1U,
+               cleanup_retries);
+    }
+    return rc;
 }
 
 static int w5_managed_load_previous_token(
@@ -2664,20 +2701,56 @@ static int w5_managed_load_previous_token(
 {
     enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
     char reference_key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
+    uint32_t cleanup_retries = 0;
     int rc;
 
     if (!runtime || !state || !pipeline_nodes || step == 0 || !token_out)
         return -EINVAL;
     rc = w5_managed_reference_key(reference_key, sizeof(reference_key), run,
         request, pipeline_nodes - 1U, step - 1U, "token");
-    if (!rc)
-        rc = w5_managed_open_reader(runtime, reference_key, local_node, step,
-                                    't', timeout_ms, &state->token);
+    if (rc)
+        return rc;
+    status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    rc = w5_managed_open_reader(runtime, reference_key, local_node, step,
+        't', timeout_ms, &state->token, &status);
+    if (rc) {
+        fprintf(stderr,
+                "[w4_guest] managed previous token stage=open"
+                " node=%u step=%" PRIu64 " rc=%d status=%s\n",
+                local_node + 1U, step, rc,
+                mem_service_wire_status_name(status));
+        return rc;
+    }
     if (!rc)
         rc = w5_managed_read_token(state->token, step - 1U, vocab_size,
                                    token_out);
-    if (!rc && local_node != 0U)
-        rc = w5_managed_object_close(&state->token, &status);
+    if (rc) {
+        fprintf(stderr,
+                "[w4_guest] managed previous token stage=read"
+                " node=%u step=%" PRIu64 " rc=%d status=%s\n",
+                local_node + 1U, step, rc,
+                mem_service_wire_status_name(status));
+        return rc;
+    }
+    if (local_node != 0U) {
+        rc = w5_managed_object_close_bounded(&state->token, &status,
+            W5_MANAGED_CLEANUP_TIMEOUT_MS, &cleanup_retries);
+        if (rc) {
+            fprintf(stderr,
+                    "[w4_guest] managed previous token stage=close"
+                    " node=%u step=%" PRIu64
+                    " rc=%d status=%s retries=%u\n",
+                    local_node + 1U, step, rc,
+                    mem_service_wire_status_name(status), cleanup_retries);
+            return rc;
+        }
+        if (cleanup_retries) {
+            printf("[w4_guest] stage w5_managed_object_cleanup_recovered"
+                   " object=previous_token node=%u step=%" PRIu64
+                   " retries=%u status=ok\n",
+                   local_node + 1U, step, cleanup_retries);
+        }
+    }
     return rc;
 }
 
@@ -3116,9 +3189,9 @@ static int w5_managed_run_model_range(
         rc = w5_managed_reference_key(reference_key, sizeof(reference_key),
             run, serving_request, local_node - 1U, decode_step, "hidden");
         if (!rc)
-            rc = w5_managed_open_reader(runtime, reference_key, local_node,
-                                        decode_step, 'h', timeout_ms,
-                                        &state->hidden);
+        rc = w5_managed_open_reader(runtime, reference_key, local_node,
+                                    decode_step, 'h', timeout_ms,
+                                    &state->hidden, &status);
         if (rc)
             return rc;
     }
@@ -3128,7 +3201,7 @@ static int w5_managed_run_model_range(
         if (!rc)
             rc = w5_managed_open_reader(runtime, reference_key, local_node,
                                         decode_step, 'k', timeout_ms,
-                                        &state->kv);
+                                        &state->kv, &status);
         if (rc)
             return rc;
     }

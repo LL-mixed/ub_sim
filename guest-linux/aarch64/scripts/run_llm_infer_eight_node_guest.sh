@@ -154,6 +154,10 @@ SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="${SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT:-0}"
 SIM_W5_PTO_UB_GM_PROGRAM="${SIM_W5_PTO_UB_GM_PROGRAM:-quadratic}"
 SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
 SIM_W5_PTO_UB_GM_TIMEOUT_MS="${SIM_W5_PTO_UB_GM_TIMEOUT_MS:-300000}"
+if [[ "$SIM_W5_MODEL_IO" == "direct" ]]; then
+  SIMPLER_SCHEDULER_TIMEOUT_MS="${SIMPLER_SCHEDULER_TIMEOUT_MS:-$SIM_W5_PTO_UB_GM_TIMEOUT_MS}"
+  export SIMPLER_SCHEDULER_TIMEOUT_MS
+fi
 SIM_W5_PTO_UB_GM_ACCESS_BYTES="${SIM_W5_PTO_UB_GM_ACCESS_BYTES:-4096}"
 SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA="${SIM_W5_PTO_UB_GM_DISABLE_EXPERIMENTAL_GSVA:-0}"
 SIM_LINGQU_SHMEM_PTO_ENABLE="${SIM_LINGQU_SHMEM_PTO_ENABLE:-0}"
@@ -603,6 +607,12 @@ validate_w5_managed_serving() {
         trace "FAIL: direct managed model I/O requires a supported model backend"
         return 1
       fi
+      if [[ ! "$SIMPLER_SCHEDULER_TIMEOUT_MS" =~ '^[1-9][0-9]*$' ]] ||
+         (( SIMPLER_SCHEDULER_TIMEOUT_MS > SIM_W5_PTO_UB_GM_TIMEOUT_MS )); then
+        trace "FAIL: direct model I/O requires a positive Simpler scheduler timeout within the PTO deadline"
+        return 1
+      fi
+      trace "prepare: direct model Simpler scheduler timeout ms=$SIMPLER_SCHEDULER_TIMEOUT_MS"
       if [[ -z "$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT" ]]; then
         trace "FAIL: direct managed model I/O requires an artifact fingerprint"
         return 1
@@ -649,7 +659,7 @@ validate_w5_managed_serving() {
           SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES ||
         SIM_W5_MANAGED_MAX_MAPPINGS > 8 ||
         SIM_W5_MANAGED_PROVIDER_LEASE_MS < 100 ||
-        SIM_W5_MANAGED_PROVIDER_LEASE_MS > 600000 )); then
+        SIM_W5_MANAGED_PROVIDER_LEASE_MS > 86400000 )); then
     trace "FAIL: managed serving output/allocator/import/mapping capacity is invalid"
     return 1
   fi

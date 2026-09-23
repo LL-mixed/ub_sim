@@ -615,7 +615,7 @@ inline LocalMatrix attention_layer(const MappedWeights &weights,
     rope_tail(heads.view(), kRopeDim, rope.cos_view(), rope.sin_view(), true,
               heads.view());
 
-    LocalMatrix output_a(1, kOLora);
+    LocalMatrix output_a(1, kOutputGroups * kOLora);
     const F32View flat_heads {heads.view().address, 1,
                               kAttentionHeads * kHeadDim,
                               kAttentionHeads * kHeadDim, 1};

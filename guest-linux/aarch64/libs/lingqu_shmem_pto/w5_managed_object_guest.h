@@ -116,4 +116,13 @@ int w5_managed_object_close(
     struct w5_managed_object_guest **object,
     enum mem_service_wire_status *status_out);
 
+/* Retry only the provider contract's explicit uncertain-cleanup result. The
+ * same object retains cleanup ownership between attempts. retry_count_out is
+ * the number of attempts after the initial close call. */
+int w5_managed_object_close_bounded(
+    struct w5_managed_object_guest **object,
+    enum mem_service_wire_status *status_out,
+    uint64_t timeout_ms,
+    uint32_t *retry_count_out);
+
 #endif

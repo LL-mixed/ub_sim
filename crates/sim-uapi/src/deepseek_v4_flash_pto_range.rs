@@ -236,7 +236,7 @@ impl DeepseekV4FlashPtoRangeGeometry {
             (vec![previous], 5, BufferUsage::Input),
             (vec![self.tokens], 2, BufferUsage::Input),
             (vec![self.tokens, hidden_width], 0, BufferUsage::Output),
-            (vec![next], 5, BufferUsage::Output),
+            (vec![next], 5, BufferUsage::Inout),
             (
                 vec![if self.end == self.layers {
                     self.vocab

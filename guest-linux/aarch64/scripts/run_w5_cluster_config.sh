@@ -676,6 +676,8 @@ print_w5_effective_env() {
   print_env_value SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT "${SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT:-}"
   print_env_value SIM_W5_MANAGED_CONNECT "${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
   print_env_value SIM_W5_MANAGED_TIMEOUT_MS "${SIM_W5_MANAGED_TIMEOUT_MS:-}"
+  print_env_value SIM_W5_PTO_UB_GM_TIMEOUT_MS "${SIM_W5_PTO_UB_GM_TIMEOUT_MS:-}"
+  print_env_value SIMPLER_SCHEDULER_TIMEOUT_MS "${SIMPLER_SCHEDULER_TIMEOUT_MS:-}"
   print_env_value SIM_W5_MANAGED_PROVIDER_LEASE_MS "${SIM_W5_MANAGED_PROVIDER_LEASE_MS:-}"
   print_env_value SIM_W5_MANAGED_APERTURE_SIZE "${SIM_W5_MANAGED_APERTURE_SIZE:-0x200000000}"
   print_env_value SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES "${SIM_W5_MANAGED_ALLOCATION_GRANULARITY_BYTES:-67108864}"
@@ -1156,6 +1158,18 @@ resolve_w5_managed_timeout_status=0
 w5_resolve_managed_timeout_ms || resolve_w5_managed_timeout_status=$?
 if (( resolve_w5_managed_timeout_status != 0 )); then
   exit "$resolve_w5_managed_timeout_status"
+fi
+
+resolve_w5_direct_pto_timeout_status=0
+w5_resolve_direct_pto_timeout_ms || resolve_w5_direct_pto_timeout_status=$?
+if (( resolve_w5_direct_pto_timeout_status != 0 )); then
+  exit "$resolve_w5_direct_pto_timeout_status"
+fi
+
+resolve_w5_direct_scheduler_timeout_status=0
+w5_resolve_direct_scheduler_timeout_ms || resolve_w5_direct_scheduler_timeout_status=$?
+if (( resolve_w5_direct_scheduler_timeout_status != 0 )); then
+  exit "$resolve_w5_direct_scheduler_timeout_status"
 fi
 
 resolve_w5_managed_provider_lease_status=0

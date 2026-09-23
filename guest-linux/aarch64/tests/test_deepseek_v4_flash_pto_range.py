@@ -52,6 +52,9 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
             "decoder_range(",
         ):
             self.assertIn(stage, source)
+        self.assertIn(
+            "LocalMatrix output_a(1, kOutputGroups * kOLora)", source
+        )
         self.assertNotIn("std::memcpy(", source)
 
     def test_artifact_profile_freezes_callable_five_contract(self):
@@ -64,6 +67,7 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
         spec.loader.exec_module(module)
         profile = module.PROFILE_SPECS["host_deepseek_v4_flash_range"]
         self.assertEqual(len(profile.args_template), 8)
+        self.assertEqual(profile.args_template[4]["kind"], "inout")
         self.assertEqual(profile.args_template[-1]["name"], "private_geometry")
         self.assertEqual(
             profile.orch_function,
@@ -83,11 +87,15 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
         self.assertIn("WeightIndex index", kernel)
         self.assertIn("MappedWeights weights", kernel)
         self.assertIn("decoder_range(", kernel)
+        self.assertIn("deepseek_pto_kernel_error=%s", kernel)
         self.assertIn("expected_arg_count = 8", orchestration)
         self.assertIn("args.scalar_count() != 0", orchestration)
         self.assertIn("geometry_descriptor", kernel)
-        self.assertIn("task.add_output(args.tensor(3).ref(), args.tensor(4).ref())",
-                      orchestration)
+        self.assertIn("task.add_output(args.tensor(3).ref())", orchestration)
+        self.assertIn("task.add_inout(args.tensor(4).ref())", orchestration)
+        self.assertIn(
+            "args.tensor(5).ref().nbytes() > sizeof(float)", orchestration
+        )
 
 
 if __name__ == "__main__":

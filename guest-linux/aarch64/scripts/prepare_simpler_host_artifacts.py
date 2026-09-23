@@ -201,7 +201,7 @@ PROFILE_SPECS = {
             {"kind": "input", "name": "previous_state"},
             {"kind": "input", "name": "token_ids"},
             {"kind": "output", "name": "hidden_output"},
-            {"kind": "output", "name": "next_state"},
+            {"kind": "inout", "name": "next_state"},
             {"kind": "output", "name": "logits"},
             {"kind": "input", "name": "private_weight_index"},
             {"kind": "input", "name": "private_geometry"},

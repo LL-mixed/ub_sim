@@ -121,6 +121,70 @@ class W5ClusterTopologyTest(unittest.TestCase):
             "SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT=0x4242\n",
             result.stdout,
         )
+        self.assertIn(
+            "SIM_W5_MANAGED_TIMEOUT_MS=5460000\n",
+            result.stdout,
+        )
+        self.assertIn(
+            "SIM_W5_PTO_UB_GM_TIMEOUT_MS=5460000\n",
+            result.stdout,
+        )
+        self.assertIn(
+            "SIMPLER_SCHEDULER_TIMEOUT_MS=5460000\n",
+            result.stdout,
+        )
+
+    def test_cli_preserves_explicit_direct_pto_timeout(self):
+        env = self.managed_env()
+        env["SIM_W5_PTO_UB_GM_TIMEOUT_MS"] = "7654321"
+        result = subprocess.run(
+            [
+                str(self.config_runner),
+                "--print-env",
+                "--model-io",
+                "direct",
+                str(self.deepseek_config),
+            ],
+            cwd=self.repo,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "SIM_W5_PTO_UB_GM_TIMEOUT_MS=7654321\n",
+            result.stdout,
+        )
+
+    def test_cli_rejects_scheduler_timeout_beyond_direct_pto_deadline(self):
+        env = self.managed_env()
+        env["SIM_W5_PTO_UB_GM_TIMEOUT_MS"] = "1000"
+        env["SIMPLER_SCHEDULER_TIMEOUT_MS"] = "1001"
+        result = subprocess.run(
+            [
+                str(self.config_runner),
+                "--print-env",
+                "--model-io",
+                "direct",
+                str(self.deepseek_config),
+            ],
+            cwd=self.repo,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "SIMPLER_SCHEDULER_TIMEOUT_MS must not exceed"
+            " SIM_W5_PTO_UB_GM_TIMEOUT_MS",
+            result.stderr,
+        )
 
     def test_direct_callable_manifests_reach_qemu_processes(self):
         runner = self.guest_runner.read_text(encoding="utf-8")
@@ -251,7 +315,31 @@ class W5ClusterTopologyTest(unittest.TestCase):
                         result.stdout,
                     )
                     self.assertIn(
-                        "SIM_W5_MANAGED_PROVIDER_LEASE_MS=600000\n",
+                        f"SIM_W5_MANAGED_PROVIDER_LEASE_MS={expected_timeout}\n",
+                        result.stdout,
+                    )
+
+    def test_cli_direct_deepseek_timeout_covers_full_pipeline(self):
+        expected_timeout = 5460000
+        for node_count in (2, 3, 4, 8):
+            with self.subTest(node_count=node_count):
+                result = self.run_config(
+                    "--print-env",
+                    "--managed-serving",
+                    "--model-io",
+                    "direct",
+                    "--nodes",
+                    str(node_count),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for name in (
+                    "SIM_W5_MANAGED_TIMEOUT_MS",
+                    "SIM_W5_PTO_UB_GM_TIMEOUT_MS",
+                    "SIMPLER_SCHEDULER_TIMEOUT_MS",
+                    "SIM_W5_MANAGED_PROVIDER_LEASE_MS",
+                ):
+                    self.assertIn(
+                        f"{name}={expected_timeout}\n",
                         result.stdout,
                     )
 
@@ -317,7 +405,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
                 override.stdout,
             )
 
-            for invalid_lease in ("99", "600001"):
+            for invalid_lease in ("99", "86400001"):
                 with self.subTest(invalid_lease=invalid_lease):
                     invalid_env = base_env.copy()
                     invalid_env["SIM_W5_MANAGED_PROVIDER_LEASE_MS"] = invalid_lease
@@ -337,11 +425,11 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     )
                     self.assertEqual(invalid.returncode, 2)
                     self.assertIn(
-                        "SIM_W5_MANAGED_PROVIDER_LEASE_MS must be 100..600000",
+                        "SIM_W5_MANAGED_PROVIDER_LEASE_MS must be 100..86400000",
                         invalid.stderr,
                     )
 
-    def test_managed_timeout_is_separate_from_pto_timeout(self):
+    def test_direct_pto_timeout_uses_its_distinct_runtime_setting(self):
         runner = self.guest_runner.read_text(encoding="utf-8")
         infer = self.infer_source.read_text(encoding="utf-8")
 
@@ -349,8 +437,20 @@ class W5ClusterTopologyTest(unittest.TestCase):
             'SIM_W5_MANAGED_TIMEOUT_MS="${SIM_W5_MANAGED_TIMEOUT_MS:-300000}"',
             runner,
         )
+        self.assertIn(
+            'SIM_W5_PTO_UB_GM_TIMEOUT_MS="${SIM_W5_PTO_UB_GM_TIMEOUT_MS:-300000}"',
+            runner,
+        )
+        self.assertIn(
+            'SIMPLER_SCHEDULER_TIMEOUT_MS="${SIMPLER_SCHEDULER_TIMEOUT_MS:-$SIM_W5_PTO_UB_GM_TIMEOUT_MS}"',
+            runner,
+        )
         self.assertIn('"SIM_W5_MANAGED_TIMEOUT_MS", 300000ULL', infer)
         self.assertIn(".timeout_ms = w5_managed_timeout_ms", infer)
+        self.assertIn(
+            "w6_model_direct ? w5_pto_ub_gm_timeout_ms :",
+            infer,
+        )
 
     def test_w5_managed_logs_report_selected_model_io(self):
         runner = self.guest_runner.read_text(encoding="utf-8")

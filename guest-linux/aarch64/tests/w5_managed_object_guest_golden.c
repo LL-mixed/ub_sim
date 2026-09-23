@@ -36,6 +36,8 @@ static unsigned closes;
 static unsigned destroys;
 static unsigned retires;
 static unsigned resolve_timeouts_remaining;
+static unsigned close_cleanup_required_remaining;
+static unsigned close_attempts;
 static unsigned char backing[65536];
 static struct lingqu_object_ref_wire_v2 published;
 static int map_result;
@@ -398,6 +400,12 @@ int mem_service_mapping_owner_close(
     enum mem_service_wire_status *status_out)
 {
     if (owner->pins) return -EBUSY;
+    ++close_attempts;
+    if (close_cleanup_required_remaining) {
+        --close_cleanup_required_remaining;
+        *status_out = MEM_SERVICE_WIRE_STATUS_TIMEOUT;
+        return MEM_SERVICE_MAPPING_CLEANUP_REQUIRED;
+    }
     owner->unmapped = 1;
     ++closes;
     ++releases;
@@ -532,7 +540,11 @@ int main(void)
         MEM_SERVICE_CLIENT_MAP_READ, &cpu, &access) == 0);
     assert(access.base == backing + 4096 && access.len == 2048);
     assert(mem_service_mapping_lease_release(cpu) == 0);
-    assert(w5_managed_object_close(&reader, &status) == 0 && !reader);
+    close_cleanup_required_remaining = 1;
+    uint32_t close_retries = 0;
+    assert(w5_managed_object_close_bounded(&reader, &status, 100,
+                                           &close_retries) == 0 && !reader);
+    assert(close_retries == 1);
 
     assert(w5_managed_writer_open(&client, &channel, &domain, &writer_config,
                                   &aborted_writer, &status) == 0);
@@ -543,11 +555,12 @@ int main(void)
     assert(resolves == 3 && acquires == 1 && holder_acquires == 2 &&
            maps == 3 && adopts == 3);
     assert(closes == 3 && destroys == 3 && releases == 3 && retires == 1);
+    assert(close_attempts == 4);
     map_result = -EIO;
     assert(w5_managed_writer_open(&client, &channel, &domain, &writer_config,
                                   &writer, &status) == -EIO);
     puts("w5_managed_object_guest=pass writer_lifecycle=1 "
-         "reader_lifecycle=1 reader_timeout_retry=2 writer_abort=1 "
-         "owner_cleanup=1");
+        "reader_lifecycle=1 reader_timeout_retry=2 writer_abort=1 "
+        "owner_cleanup=1 close_retry=1");
     return 0;
 }

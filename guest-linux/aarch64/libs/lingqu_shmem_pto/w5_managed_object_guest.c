@@ -679,3 +679,33 @@ int w5_managed_object_close(
     *object_ptr = NULL;
     return 0;
 }
+
+int w5_managed_object_close_bounded(
+    struct w5_managed_object_guest **object_ptr,
+    enum mem_service_wire_status *status_out,
+    uint64_t timeout_ms,
+    uint32_t *retry_count_out)
+{
+    uint64_t backoff_ms = W5_MANAGED_POLL_INITIAL_BACKOFF_MS;
+    uint64_t started_ms;
+    uint32_t retries = 0;
+    int rc;
+
+    if (!object_ptr || !*object_ptr || !status_out || !timeout_ms)
+        return -EINVAL;
+    if (retry_count_out)
+        *retry_count_out = 0;
+    started_ms = now_ms();
+    do {
+        rc = w5_managed_object_close(object_ptr, status_out);
+        if (rc != MEM_SERVICE_MAPPING_CLEANUP_REQUIRED)
+            break;
+        if (now_ms() - started_ms >= timeout_ms)
+            break;
+        wait_tick(&backoff_ms);
+        ++retries;
+    } while (now_ms() - started_ms < timeout_ms);
+    if (retry_count_out)
+        *retry_count_out = retries;
+    return rc;
+}

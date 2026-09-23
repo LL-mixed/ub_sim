@@ -274,7 +274,7 @@ int deepseek_v4_flash_managed_direct_describe(
         LINGQU_SHMEM_ACCESS_WRITE, sizeof(float));
     set_1d(&description_out
                ->tensors[DEEPSEEK_V4_FLASH_MANAGED_DIRECT_NEXT_KV],
-        next_bytes, DS4_DTYPE_U8, LINGQU_SHMEM_ACCESS_WRITE, 1);
+        next_bytes, DS4_DTYPE_U8, LINGQU_SHMEM_ACCESS_READ_WRITE, 1);
     set_1d(&description_out
                ->tensors[DEEPSEEK_V4_FLASH_MANAGED_DIRECT_LOGITS],
         geometry->end == geometry->layers ? geometry->vocab : 1,

@@ -16,8 +16,9 @@ build_deepseek_v4_flash_pto_range_graph(const ChipTaskArgs &args) {
     CoreTaskArgs task;
     task.add_input(args.tensor(0).ref(), args.tensor(1).ref(),
                    args.tensor(2).ref());
-    task.add_output(args.tensor(3).ref(), args.tensor(4).ref());
-    if (args.scalar(1) == args.scalar(2)) {
+    task.add_output(args.tensor(3).ref());
+    task.add_inout(args.tensor(4).ref());
+    if (args.tensor(5).ref().nbytes() > sizeof(float)) {
         task.add_output(args.tensor(5).ref());
     } else {
         task.add_input(args.tensor(5).ref());

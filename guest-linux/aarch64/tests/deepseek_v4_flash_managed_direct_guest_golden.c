@@ -129,6 +129,8 @@ static void run_case(uint32_t first, uint32_t end, uint32_t past,
     CHECK(description.tensors[3].byte_length ==
           (uint64_t)tokens * 4 * 4096 * sizeof(float));
     CHECK(description.tensors[4].byte_length == next_bytes);
+    CHECK(description.tensors[4].access ==
+          LINGQU_SHMEM_ACCESS_READ_WRITE);
     CHECK(description.tensors[5].byte_length ==
           (end == 43 ? UINT64_C(129280) * sizeof(float) : sizeof(float)));
     request.compute = (void *)1;

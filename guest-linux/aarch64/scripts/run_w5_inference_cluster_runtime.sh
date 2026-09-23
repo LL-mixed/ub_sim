@@ -160,6 +160,18 @@ if (( w5_resolve_managed_timeout_status != 0 )); then
   exit "$w5_resolve_managed_timeout_status"
 fi
 
+w5_resolve_direct_pto_timeout_status=0
+w5_resolve_direct_pto_timeout_ms || w5_resolve_direct_pto_timeout_status=$?
+if (( w5_resolve_direct_pto_timeout_status != 0 )); then
+  exit "$w5_resolve_direct_pto_timeout_status"
+fi
+
+w5_resolve_direct_scheduler_timeout_status=0
+w5_resolve_direct_scheduler_timeout_ms || w5_resolve_direct_scheduler_timeout_status=$?
+if (( w5_resolve_direct_scheduler_timeout_status != 0 )); then
+  exit "$w5_resolve_direct_scheduler_timeout_status"
+fi
+
 w5_resolve_managed_provider_lease_status=0
 w5_resolve_managed_provider_lease_ms || w5_resolve_managed_provider_lease_status=$?
 if (( w5_resolve_managed_provider_lease_status != 0 )); then
