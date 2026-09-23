@@ -172,8 +172,30 @@ while preparing the terminal token with `rc=-2` (`ENOENT`). The token table
 was generated in the per-run initramfs and copied into the root overlay at
 `/tmp/deepseek_v4_flash_pto_token_table.bin`. The guest boot log shows that
 openEuler mounted a fresh `/tmp` over that overlay path before `run_app`.
-The terminal token table must be staged in a path that survives this mount;
-the sim-console DeepSeek gate remains failed until that correction is tested.
+The guest runner now stages direct token tables under `/opt/ub_sim` for
+openEuler and points `run_app` there; busybox guests keep `/tmp`. An isolated
+validation checkout on `n4-910c` passed the 2-node/1-step direct run
+`2026-09-23_20-32-34_w5_deepseek_v4_flash_decode_13449` with this patch.
+Node A logged callable 5 `reads=23/writes=3164`; node B logged callable 5
+`reads=26/writes=132487`. Both reported
+`shared_payload_staging_bytes=0 status=pass`. Node B published terminal
+token 65 from `managed_callable5_logits`, and the cluster reported 2/2
+passed nodes and one decoded token. This proves the table-path correction in
+that isolated checkout. The sim-console DeepSeek gate has not yet been
+rerun with the corrected source bundle.
+
+An additional isolated 2-node/1-step comparison used the same GGUF and
+prompt tokens. Direct callable 5 and explicit bulk callable 4 both passed
+and selected token 65. Their terminal logits checksums differed:
+`0xee06ac1d0ff28301` for direct and `0xd9ae438eff27b75a` for bulk.
+With range output checksums enabled, node A's `[0,22)` hidden/KV checksums
+were `0x3b97679d3d3ccf4a`/`0x3a36fce46f940764` in direct run
+`2026-09-23_21-09-37_w5_deepseek_v4_flash_decode_29162`, versus
+`0x0c16f40f1b014a08`/`0x89574f23358e08e8` in bulk run
+`2026-09-23_21-17-46_w5_deepseek_v4_flash_decode_13501`. The bytewise
+difference begins by the first range output; token agreement alone does not
+establish numerical parity. A full-tensor comparison against the model oracle
+with an explicit tolerance is still required before acceptance.
 
 ### 4.3 Serving selection and observability
 
@@ -221,7 +243,8 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Move the openEuler direct token table to a guest path that survives boot,
-rerun the DeepSeek sim-console gate, then continue the two-host matrix and
-oracle comparisons. Keep W6 acceptance open until every condition in
-Section 5 has direct evidence.
+Compare the first DeepSeek range's full hidden/KV tensors against the model
+oracle with an explicit tolerance, then trace any material discrepancy to
+the responsible operator. Rerun the DeepSeek sim-console openEuler gate with
+the corrected source bundle and complete the two-host matrix. Keep W6
+acceptance open until every condition in Section 5 has direct evidence.

@@ -47,6 +47,28 @@ class W5GuestEngineOpenEulerTest(unittest.TestCase):
         self.assertIn("ExecStart=/bin/busybox sh /bin/run_app", source)
         self.assertIn("WantedBy=multi-user.target", source)
 
+    def test_open_euler_token_tables_survive_tmp_mount(self):
+        source = GUEST_RUNNER.read_text(encoding="utf-8")
+        self.assertIn('local token_table_dir="/tmp"', source)
+        self.assertIn('token_table_dir="/opt/ub_sim"', source)
+        self.assertIn(
+            'export SIM_W5_DEEPSEEK_V4_FLASH_PTO_TOKEN_TABLE='
+            '"$token_table_dir/deepseek_v4_flash_pto_token_table.bin"',
+            source,
+        )
+        self.assertIn(
+            'export SIM_W5_QWEN3_PTO_TOKEN_TABLE='
+            '"$token_table_dir/qwen3_pto_token_table.bin"',
+            source,
+        )
+        self.assertIn('mkdir -p "$overlay_dir/opt/ub_sim"', source)
+        self.assertIn(
+            'cp -a "$RUN_INITRAMFS_DIR/tmp/$token_table"', source
+        )
+        self.assertIn(
+            '"$overlay_dir/opt/ub_sim/$token_table" || return 1', source
+        )
+
     def test_switch_root_deploys_overlay_resolving_usrmerge(self):
         source = SWITCH_ROOT.read_text(encoding="utf-8")
         self.assertIn("/ub_root_overlay", source)

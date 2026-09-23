@@ -965,6 +965,11 @@ trace_run_artifact_paths() {
 
 write_w4_initramfs_runner() {
   local runner="$RUN_INITRAMFS_DIR/bin/run_app"
+  local token_table_dir="/tmp"
+
+  if [[ "$SIM_W5_GUEST_ENGINE" == "openEuler" ]]; then
+    token_table_dir="/opt/ub_sim"
+  fi
 
   cat > "$runner" <<EOF
 #!/bin/busybox sh
@@ -1078,8 +1083,8 @@ export SIM_W5_MANAGED_PROVIDER_INCARNATION_BASE="$SIM_W5_MANAGED_PROVIDER_INCARN
 export SIM_W5_MANAGED_BOOTSTRAP_GENERATION="$SIM_W5_MANAGED_BOOTSTRAP_GENERATION"
 export SIM_W5_MANAGED_TIMEOUT_MS="$SIM_W5_MANAGED_TIMEOUT_MS"
 export SIM_W5_MANAGED_PROVIDER_LEASE_MS="$SIM_W5_MANAGED_PROVIDER_LEASE_MS"
-export SIM_W5_QWEN3_PTO_TOKEN_TABLE="/tmp/qwen3_pto_token_table.bin"
-export SIM_W5_DEEPSEEK_V4_FLASH_PTO_TOKEN_TABLE="/tmp/deepseek_v4_flash_pto_token_table.bin"
+export SIM_W5_QWEN3_PTO_TOKEN_TABLE="$token_table_dir/qwen3_pto_token_table.bin"
+export SIM_W5_DEEPSEEK_V4_FLASH_PTO_TOKEN_TABLE="$token_table_dir/deepseek_v4_flash_pto_token_table.bin"
 export SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT="$SIM_W5_PTO_UB_GM_PUBLISH_OUTPUT"
 export SIM_W5_PTO_UB_GM_PROGRAM="$SIM_W5_PTO_UB_GM_PROGRAM"
 export SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT="$SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT"
@@ -1720,9 +1725,8 @@ build_w4_openEuler_initramfs() {
   # openEuler boot half: /init becomes init_switch_root; add LVM2 userland and
   # the UB modules that ship as =m on top of the unpacked base tree.
   oe_build_boot_skeleton "$ROOT_DIR" "$RUN_INITRAMFS_DIR/bin/busybox" "$RUN_INITRAMFS_DIR" || return 1
-  # Root overlay deployed verbatim by init_switch_root: the same run_app flow,
-  # the binaries it execs at busybox-flow paths, staged /tmp payloads, and a
-  # systemd unit so openEuler starts run_app after multi-user.target.
+  # Root overlay deployed by init_switch_root before systemd mounts /tmp.
+  # Model token tables must live outside /tmp to survive that mount.
   overlay_dir="$RUN_INITRAMFS_DIR/ub_root_overlay"
   mkdir -p "$overlay_dir/bin" "$overlay_dir/tmp" \
     "$overlay_dir/lib/modules" \
@@ -1742,6 +1746,13 @@ build_w4_openEuler_initramfs() {
   done
   cp -a "$RUN_INITRAMFS_DIR/bin/run_app" "$overlay_dir/bin/run_app"
   cp -a "$RUN_INITRAMFS_DIR/tmp/." "$overlay_dir/tmp/" 2>/dev/null || true
+  for token_table in qwen3_pto_token_table.bin deepseek_v4_flash_pto_token_table.bin; do
+    if [[ -f "$RUN_INITRAMFS_DIR/tmp/$token_table" ]]; then
+      mkdir -p "$overlay_dir/opt/ub_sim"
+      cp -a "$RUN_INITRAMFS_DIR/tmp/$token_table" \
+        "$overlay_dir/opt/ub_sim/$token_table" || return 1
+    fi
+  done
   write_w5_openEuler_systemd_unit "$overlay_dir/etc/systemd/system"
   ln -s ../linqu-w5-guest.service \
     "$overlay_dir/etc/systemd/system/multi-user.target.wants/linqu-w5-guest.service"

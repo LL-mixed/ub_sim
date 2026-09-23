@@ -14868,6 +14868,8 @@ decode_round_start:
                " node=%u step=%" PRIu64 " layers=[%u,%u) next=%u"
                " callable=%u model_io=%s inputs=%u outputs=%u"
                " hidden_bytes=%" PRIu64 " kv_bytes=%" PRIu64
+               " hidden_checksum=0x%016" PRIx64
+               " kv_checksum=0x%016" PRIx64
                " allocation_home=guest-node-%u"
                " terminal=%u status=ok\n",
                round_dispatch_node + 1U, guest_decode_step,
@@ -14882,7 +14884,10 @@ decode_round_start:
                         w5_managed_round.direct_result.reference_count) :
                    w5_managed_round.result.reference_count,
                runtime_forward.payload_bytes,
-               runtime_forward.kv_payload_bytes, round_dispatch_node,
+               runtime_forward.kv_payload_bytes,
+               runtime_forward.payload_checksum,
+               runtime_forward.kv_payload_checksum,
+               round_dispatch_node,
                w5_managed_terminal_ready ? 1U : 0U);
         managed_rc = w5_managed_round_close(&w5_managed_round);
         if (managed_rc != 0) {

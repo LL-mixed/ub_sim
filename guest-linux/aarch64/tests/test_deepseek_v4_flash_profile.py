@@ -140,7 +140,7 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("tokens/deepseek-v4-flash", runner)
         self.assertIn('"flash_weight_catalog"', runner)
 
-    def test_simpler_entry_tokenizes_raw_oracle_prompt_before_guest_launch(self):
+    def test_simpler_entry_supports_raw_prompt_and_pins_acceptance_tokens(self):
         runtime = W5_RUNTIME.read_text()
         config = SIMPLER_CONFIG.read_text()
 
@@ -156,8 +156,8 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
         self.assertIn("layer_wait_secs=600", runtime)
         self.assertIn("deadline_overhead_secs=900", runtime)
         self.assertIn("compute_deadline backend=$deadline_backend", runtime)
-        self.assertIn("SIM_LLM_INFER_PROMPT='Rispondi in italiano", config)
-        self.assertNotIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS=128822", config)
+        self.assertIn("SIM_LLM_INFER_PROMPT_TOKEN_IDS=42,5207,24063,344", config)
+        self.assertNotIn("SIM_LLM_INFER_PROMPT=", config)
 
     def test_terminal_runtime_layer_validation_uses_active_model(self):
         infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
@@ -179,6 +179,16 @@ class DeepseekV4FlashProfileTest(unittest.TestCase):
             "qwen3_rewrite_terminal_token_record_for_selected_candidate",
             infer_source,
         )
+
+    def test_managed_range_records_hidden_and_kv_checksums(self):
+        source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
+        begin = source.index('stage w5_managed_model_range_complete')
+        end = source.index('managed_rc = w5_managed_round_close', begin)
+        completion = source[begin:end]
+        self.assertIn('hidden_checksum=0x%016', completion)
+        self.assertIn('kv_checksum=0x%016', completion)
+        self.assertIn('runtime_forward.payload_checksum', completion)
+        self.assertIn('runtime_forward.kv_payload_checksum', completion)
 
     def test_simpler_backend_uses_the_same_flash_guest_contract(self):
         infer_source = (ROOT / "apps" / "llm_infer" / "llm_infer.c").read_text()
