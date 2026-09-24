@@ -459,6 +459,30 @@ diagnostic bounds are not acceptance criteria. DeepSeek numerical parity is
 contradicted at position 1, so additional functional steps cannot close
 the W6 model acceptance gate.
 
+A DS4 CPU layer trace for the same `[42, 201]` sequence was rebuilt with
+the reference project's own compiler flags. Its complete logits are
+byte-for-byte identical to the independent DS4 CPU oracle, so the trace is
+a valid comparison point. Against that trace, the `-O2` PTO probe's
+position-1 hidden state has relative L2 error `0.004624` after layer 1,
+`0.007949` after layer 2, and `0.012019` after layer 4. Layer-1 raw KV for
+both positions is bitwise identical (`512/512` values per position); the
+layer-2 raw KV errors are `0.011833` and `0.015572`, respectively. The
+first material difference therefore occurs in layer-1 hidden arithmetic,
+before layer-2 KV is written.
+
+A diagnostic probe compiled with `-O3 -ffast-math -fno-finite-math-only`,
+matching the DS4 CPU arithmetic flags more closely,
+reduced the position-1 layer-1 hidden error to `1.018e-6`. Its full
+two-token range selected DS4's token `41`, but complete-logits relative L2
+error remained `0.015672` and maximum absolute error `0.367785`.
+Position-0 layer-1 hidden error remained about `0.004461`, and position-0
+layer-2 raw KV error was `0.013264`; position-1 layer-2 raw KV became
+bitwise identical. This is a diagnostic compiler comparison, not a
+production artifact change or a numerical-parity pass. Next, compare an
+independent DS4 position-0 layer-1 attention-stage trace with the PTO stage
+trace and fix the first divergent operation before selecting production
+compiler flags.
+
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
 W6 must keep two numerical claims separate: same-GGUF direct-path parity for
@@ -524,10 +548,11 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Trace the second token's DS4 CPU and PTO hidden/KV state layer by layer,
-starting with the first layer, and fix the first material divergence. Then
-rerun the same-GGUF full-logits comparison at positions 0 and 1. Exercise
-the new sim-console SSH recovery path with a real disconnect, and run
+Trace the first token's DS4 CPU and PTO layer-1 attention stages and fix
+the first material arithmetic divergence. Keep the diagnostic fast-math
+result separate from the production path until the full-logits comparison
+passes at positions 0 and 1. Exercise the new sim-console SSH recovery path
+with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
 and `n4-910c` 2-node/4-step and 3-node/4-step sim-console gates have
