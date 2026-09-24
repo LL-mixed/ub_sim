@@ -413,6 +413,28 @@ remains open; it does not change the process and original-guest results.
 This closes one 3-node/4-step functional gate, not the 3-node/8-step,
 8-node or independent numerical-oracle gates.
 
+Revision `74929857` completed the `n4-910c` 8-node/4-step model run
+`sim-console-1790236011324-0` on the target. The target-side summary
+reported 4/4 steps, 32 worker timing records and 8/8 guests passed.
+It produced `[201, 361, 1823, 11006]`, with the same four logits
+checksums as the 2-node and 3-node runs above. Each of the eight original
+QEMU logs contains four callable-5 access records with nonzero reads and
+writes, zero shared payload staging and `status=pass`. All eight guest
+cleanup records report zero live objects, mappings, in-flight references
+and quarantined objects. No QEMU process remained afterward.
+
+The local sim-console record for this run is **failed**: its long-lived
+SSH launcher disconnected with status 255 during step 1. The remote
+runner remained alive and completed all four steps after that disconnect.
+The local final log sync also failed during a temporary target hostname
+resolution outage, and recorded both the full-sync and lightweight-sync
+errors. Thus the remote DeepSeek 8-node/4-step **model-function gate**
+passed, while the sim-console end-to-end **session gate** did not. The
+control plane needs to recover a detached target run's final status
+after SSH reconnection; the local failed record must not be reported as a
+sim-console pass. This run does not establish independent DS4 numerical
+oracle parity.
+
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
 W6 must keep two numerical claims separate: same-GGUF direct-path parity for
@@ -478,10 +500,12 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Run committed-source production callable 5 through the remaining 2/3/8-node,
+Recover the final target status after a sim-console SSH disconnect, then
+run committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
-and `n4-910c` 2-node/4-step and 3-node/4-step runs have passed. Compare
-logits and per-layer hidden
+and `n4-910c` 2-node/4-step and 3-node/4-step sim-console gates have
+passed; the 8-node/4-step target-side model run passed with a failed
+sim-console session. Compare logits and per-layer hidden
 against the same-GGUF DS4 CPU oracle for multiple tokens and positions;
 set a justified tolerance for Q8 activation-boundary effects. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
