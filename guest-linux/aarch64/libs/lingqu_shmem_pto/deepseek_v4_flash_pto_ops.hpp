@@ -476,19 +476,41 @@ inline void compressor_pool(const CompressorStateView &state,
         F32Scalar denominator, weighted_sum;
         pto::TEXPANDS(denominator, 0.0f);
         pto::TEXPANDS(weighted_sum, 0.0f);
-        for (uint32_t pair = 0; pair < pair_count; ++pair) {
-            const bool current_lane = state.compress_ratio == 4 && pair >= 4;
-            const uint32_t row = pair;
-            const uint32_t column =
-                dimension + (current_lane ? state.head_dim : 0);
-            F32Scalar value, score, delta, weight, weighted;
-            load_scalar(value, state.kv, row, column);
-            load_scalar(score, state.score, row, column);
-            pto::TSUB(delta, score, maximum);
-            pto::TEXP(weight, delta);
-            pto::TADD(denominator, denominator, weight);
-            pto::TMUL(weighted, value, weight);
-            pto::TADD(weighted_sum, weighted_sum, weighted);
+        if (state.compress_ratio == 4) {
+            for (uint32_t row = 0; row < 4; ++row) {
+                F32Scalar previous_value, current_value;
+                F32Scalar previous_score, current_score;
+                F32Scalar previous_delta, current_delta;
+                F32Scalar previous_weight, current_weight;
+                F32Scalar pair_weight, weighted;
+                load_scalar(previous_value, state.kv, row, dimension);
+                load_scalar(previous_score, state.score, row, dimension);
+                load_scalar(current_value, state.kv, 4 + row,
+                            state.head_dim + dimension);
+                load_scalar(current_score, state.score, 4 + row,
+                            state.head_dim + dimension);
+                pto::TSUB(previous_delta, previous_score, maximum);
+                pto::TSUB(current_delta, current_score, maximum);
+                pto::TEXP(previous_weight, previous_delta);
+                pto::TEXP(current_weight, current_delta);
+                pto::TADD(pair_weight, previous_weight, current_weight);
+                pto::TADD(denominator, denominator, pair_weight);
+                pto::TMUL(weighted, previous_value, previous_weight);
+                pto::TADD(weighted_sum, weighted_sum, weighted);
+                pto::TMUL(weighted, current_value, current_weight);
+                pto::TADD(weighted_sum, weighted_sum, weighted);
+            }
+        } else {
+            for (uint32_t row = 0; row < state.compress_ratio; ++row) {
+                F32Scalar value, score, delta, weight, weighted;
+                load_scalar(value, state.kv, row, dimension);
+                load_scalar(score, state.score, row, dimension);
+                pto::TSUB(delta, score, maximum);
+                pto::TEXP(weight, delta);
+                pto::TADD(denominator, denominator, weight);
+                pto::TMUL(weighted, value, weight);
+                pto::TADD(weighted_sum, weighted_sum, weighted);
+            }
         }
         F32Scalar pooled;
         pto::TDIV(pooled, weighted_sum, denominator);

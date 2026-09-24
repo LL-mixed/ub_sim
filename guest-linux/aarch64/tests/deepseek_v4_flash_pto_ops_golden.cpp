@@ -314,6 +314,20 @@ int main() {
         }
     }
 
+    compressor_kv.fill(0.0f);
+    compressor_score.fill(-std::numeric_limits<float>::infinity());
+    for (uint32_t row = 0; row < 4; ++row) {
+        compressor_kv[row * 4] = row < 2 ? 1.0e8f : -1.0e8f;
+        compressor_kv[(row + 4) * 4 + 2] = 1.0f;
+        compressor_score[row * 4] = 0.0f;
+        compressor_score[row * 4 + 1] = 0.0f;
+        compressor_score[(row + 4) * 4 + 2] = 0.0f;
+        compressor_score[(row + 4) * 4 + 3] = 0.0f;
+    }
+    ds::compressor_pool(compressor_state, compressor_output_view);
+    CHECK(compressor_output[0] == 0.125f);
+    CHECK(compressor_output[1] == 0.0f);
+
     std::array<float, 128> qat_values {};
     qat_values[0] = 1.0f;
     const ds::F32View qat_view {
