@@ -45,7 +45,7 @@ class LingquShmemPtoEndpointTest(unittest.TestCase):
                 "-o", str(binary),
             ], check=True)
             for case in ("completion", "capacity", "protocol", "legacy", "replay",
-                         "arguments", "threads"):
+                         "arguments", "threads", "queue-base-mismatch"):
                 with self.subTest(case=case):
                     result = subprocess.run([str(binary), "--case", case],
                                             capture_output=True, text=True, timeout=5)

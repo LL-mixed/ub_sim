@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -227,6 +228,10 @@ static int map_queues(struct lingqu_shmem_pto_endpoint *endpoint)
     }
     memset(endpoint->cmdq, 0, LINGQU_SHMEM_PTO_PAGE_BYTES);
     memset(endpoint->cq, 0, LINGQU_SHMEM_PTO_PAGE_BYTES);
+    if (mlock(endpoint->cmdq, LINGQU_SHMEM_PTO_PAGE_BYTES) != 0 ||
+        mlock(endpoint->cq, LINGQU_SHMEM_PTO_PAGE_BYTES) != 0) {
+        return -errno;
+    }
     rc = phys_for_virt(endpoint->cmdq, &endpoint->cmdq_phys);
     if (rc != 0) {
         return rc;
@@ -342,6 +347,27 @@ static struct lingqu_shmem_pto_queued_request *queued_request(
     return NULL;
 }
 
+static int queue_mapping_valid(struct lingqu_shmem_pto_endpoint *endpoint)
+{
+    uint64_t cmdq_phys;
+    uint64_t cq_phys;
+    int rc;
+
+    if (!endpoint->cmdq_phys && !endpoint->cq_phys)
+        return 0;
+    if (mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_BASE) !=
+            endpoint->cmdq_phys ||
+        mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CQ_BASE) !=
+            endpoint->cq_phys)
+        return -ESTALE;
+    rc = phys_for_virt(endpoint->cmdq, &cmdq_phys);
+    if (rc) return rc;
+    rc = phys_for_virt(endpoint->cq, &cq_phys);
+    if (rc) return rc;
+    return cmdq_phys == endpoint->cmdq_phys &&
+                   cq_phys == endpoint->cq_phys ? 0 : -ESTALE;
+}
+
 static int queued_collect(struct lingqu_shmem_pto_endpoint *endpoint)
 {
     if (endpoint->protocol_error) return -EPROTO;
@@ -395,11 +421,27 @@ int lingqu_shmem_pto_endpoint_enqueue(
     }
     uint32_t next = (tail + 1) % endpoint->cmdq_depth;
     if (next == head) return -ENOSPC;
-    int rc = queued_collect(endpoint);
+    int rc = queue_mapping_valid(endpoint);
+    if (rc) {
+        endpoint->protocol_error = true;
+        return rc;
+    }
+    rc = queued_collect(endpoint);
     if (rc) return rc;
     struct lingqu_shmem_pto_queued_request *request = queued_request(endpoint, 0);
     if (!request) return -ENOSPC;
     memcpy(endpoint->cmdq + tail * LINGQU_SHMEM_PTO_SLOT_BYTES, slot, sizeof(*slot));
+    rc = queue_mapping_valid(endpoint);
+    if (rc) {
+        endpoint->protocol_error = true;
+        return rc;
+    }
+    fprintf(stderr, "lingqu-shmem-pto enqueue cmdq=%#" PRIx64
+            " slot=%" PRIu64 " tag=%u op_id=%" PRIu64 "\n",
+            endpoint->cmdq_phys, tail,
+            endpoint->cmdq[tail * LINGQU_SHMEM_PTO_SLOT_BYTES],
+            load_u64_le(endpoint->cmdq +
+                        tail * LINGQU_SHMEM_PTO_SLOT_BYTES + 1));
     memset(request, 0, sizeof(*request));
     request->op_id = op_id;
     ++endpoint->queued_count;

@@ -102,6 +102,19 @@ static void check_capacity(void)
     }
 }
 
+static void check_queue_base_mismatch(void)
+{
+    struct lingqu_shmem_pto_endpoint *ep = create(4, 4);
+
+    ep->cmdq_phys = 0x3000;
+    ep->cq_phys = 0x2000;
+    assert(enqueue(ep, 71) == -ESTALE);
+    assert(ep->protocol_error);
+    assert(ep->queued_count == 0);
+    assert(mmio_read64(ep->endpoint_mmio, LINGQU_REG_CMDQ_TAIL) == 0);
+    discard_fixture(ep);
+}
+
 static void check_protocol(void)
 {
     for (unsigned fault = 0; fault < 8; ++fault) {
@@ -280,6 +293,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[2], "replay")) check_replay();
     else if (!strcmp(argv[2], "arguments")) check_arguments();
     else if (!strcmp(argv[2], "threads")) check_threads();
+    else if (!strcmp(argv[2], "queue-base-mismatch")) check_queue_base_mismatch();
     else return 2;
     printf("lingqu_shmem_pto_endpoint_queue=pass case=%s\n", argv[2]);
     return 0;
