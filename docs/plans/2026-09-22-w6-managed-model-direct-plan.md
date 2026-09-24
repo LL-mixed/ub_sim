@@ -507,8 +507,63 @@ pto-ub-gm-model-access: request=11756923584543575407 callable=5 reads=3186 write
 ```
 
 This run proves the two-token guest path selects the expected tokens with
-the new artifact. It does not close full-logits parity: the fast-math probe
-still measured relative L2 error `0.015672` against DS4 at position 1.
+the new artifact. The earlier `0.015672` relative L2 measurement came from
+a locally cross-compiled, statically linked diagnostic probe. That probe did
+not reproduce the deployed kernel's later decode positions and must not be
+used as the production numerical result.
+
+A production-equivalent diagnostic probe was compiled on `n4-910c` with
+GCC 15.3.0 and the simulated kernel's C++23, CPU-sim and DeepSeek arithmetic
+flags. It replayed tokens `[42, 201, 41, 201]` against the same GGUF weight
+index. Its complete 129,280-value logits checksum matched the 2-node W6
+guest at each step: `0xf84d1dee3e293398`, `0xc0eb22f0d2a2534c`,
+`0xde41ab355e5d42ce`, and `0x96cab884bc370e72`. Splitting its final
+43-layer state at the guest's `[0,22)` / `[22,43)` boundary and applying
+the Memory Service provider checksum reproduced both guest KV checksums,
+`0x5e3294b72ed7451b` and `0x92b241f2c338cfdb`. Its final hidden checksum
+also matched the guest, `0xed280939670b0b94`. This validates the
+diagnostic probe as a byte-for-byte reproduction of this deployed 4-step
+run, including state handoff. The old GCC 15.2 static probe matched the
+guest's complete logits through step 2, then selected token `18` at step 3;
+the production-compiled probe and guest selected `35`.
+
+The production-equivalent probe still differs materially from the
+independent DS4 CPU oracle on the same IQ2 GGUF:
+
+| Step | DS4 / W6 top token | Logits relative L2 | Max absolute error | Values outside diagnostic `1e-4 + 1e-3 * abs(ref)` |
+| --- | --- | ---: | ---: | ---: |
+| 0 | 201 / 201 | 0.003836918 | 0.081278 | 108,972 / 129,280 |
+| 1 | 41 / 41 | 0.033569570 | 0.727366 | 127,230 / 129,280 |
+| 2 | 201 / 201 | 0.072947333 | 1.661165 | 128,404 / 129,280 |
+| 3 | 35 / 35 | 0.054312597 | 1.316248 | 128,023 / 129,280 |
+
+These bounds are diagnostic, not acceptance criteria. Matching greedy
+tokens does not close the full-logits gate. The first-token upstream
+query/attention and Q8 activation-boundary differences remain, and the
+first ratio-4 compressed KV row is reached at step 3.
+
+The ratio-4 compressor originally accumulated all previous-lane terms
+before all current-lane terms. DS4 accumulates a previous/current pair
+for each row. Commit `a8cde067` matches that order and adds a cancellation
+fixture that distinguishes the two algorithms. A GCC 15.3 probe using the
+deployed kernel flags replayed `[42, 201, 41, 201]` before and after the
+change. The complete 129,280-value logits files were byte-identical at
+each of steps 0 through 3 (matching SHA-256 for each pair). The initial
+previous lane is empty; the first ratio-4 pool at step 3 is therefore
+unaffected by this order change. The first possible full-model effect is
+the second ratio-4 pool at step 7. This correction cannot explain the
+existing first-token or four-step logits differences against DS4.
+
+A first-layer common-input probe narrowed the earlier discrepancy. The
+DS4 and PTO query tensors differed by relative L2 `2.45e-7`, and the
+attention-head tensors by `8.84e-8`. Their separately computed grouped
+Q8 output-A tensors differed by `9.26e-4`. Feeding the exact DS4 heads
+into the PTO grouped projection reduced output-A error to `1.50e-7`.
+Thus the projection agrees on common input; small differences upstream
+cross activation-quantization boundaries. DS4 uses a double-precision
+squared-sum in RMSNorm while the current PTO path uses float reduction.
+That is a candidate source of the upstream rounding gap, not yet a
+verified sole cause.
 
 These tests use an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
@@ -557,11 +612,24 @@ both guest nodes passed. This is one successful run; it does not prove that
 the earlier connection reset was fixed or that the unpinned reconnect commit
 is ready.
 The cause of the connection reset remains unproven.
+An independent same-GGUF DS4 CPU eight-step greedy reference is also stored
+on `n4-910c` as `out/w6-range-parity/ds4-greedy-42-8.step*.logits.f32`.
+Its token sequence is `[201, 41, 201, 35, 201, 35, 201, 35]`; no eight-step
+W6 guest run has yet been compared against these arrays.
+Two 2-node, eight-step sim-console attempts stopped before step 7. Baseline
+`774ec91a` on `n4-910c` (`sim-console-1790256637013-0`) produced the first
+three DS4 tokens, then nodeB failed to open the previous-token managed
+reference at step 3 after repeated `mem_service client: tcp connect timeout`.
+Revision `a8cde067` on `n4-910c1` (`sim-console-1790257453045-0`) produced
+the first five DS4 tokens, then nodeB failed to close that reference at
+step 5 with `rc=-2`, again after TCP connect timeouts. Both failures are
+in managed-reference access before the affected model step. They provide
+no evidence about the numerical effect of the step-7 compressor change.
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
-revision. The deployed GGUF path has a four-step token reference, but full
-logits parity and an eight-step reference remain open. The official
+revision. The deployed GGUF path has four- and eight-step references, but
+full-logits parity and the eight-step guest comparison remain open. The official
 Safetensors reference covers a different weight format.
 
 ## 5. Acceptance Criteria
@@ -590,10 +658,12 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Trace the first token's query and attention arithmetic to resolve the
-quantization-boundary differences, and rerun the full-logits comparison
-at positions 0 and 1. Extend the independent same-GGUF reference from four
-to eight greedy decode positions before judging eight-step guest runs.
+Trace the first token's pre-projection rounding, including RMSNorm
+accumulation, then rerun the common-input and full-logits comparisons with
+the production compiler. Resolve the managed-reference TCP liveness failure
+that stops long 2-node runs during previous-token access. Compare the
+second ratio-4 compressed KV row at step 7 and eight-step guest output
+against the existing independent same-GGUF DS4 reference.
 Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
