@@ -315,14 +315,54 @@ runner is a differential baseline, not an independent DS4 or official-checkpoint
 oracle. The direct probe's logits-output CLI change has passed focused tests;
 the multi-step guest and oracle gates remain open.
 
-An independent DS4 layer-slice oracle was attempted against clean DS4 source
-revision `931b98e` on `n4-910c`. The adapter's engine-options layout and
-layer-slice call signature had drifted from that header; both are corrected
-and the engine now opens. DS4's CPU backend rejects layer-slice evaluation
-with `layer slices require the graph backend`, so this CPU-only test cannot
-produce a DS4 slice oracle. The unsupported CPU slice CLI option was removed.
-The independent same-GGUF oracle remains open and requires a supported DS4
-graph backend or a separate full-session reference path.
+An independent same-GGUF full-session oracle now runs from clean DS4 source
+revision `931b98e` on `n4-910c`. For raw token ID `42` at position zero,
+DS4 CPU `session_sync` and `session_eval` produced byte-identical full
+129,280-value logits. Both selected token `201` with top logit `19.019411`.
+The DS4 CPU layer-slice API still requires a graph backend, so a separate
+CPU-only diagnostic compilation unit records DS4's per-layer hidden. Its
+43-layer final hidden reproduces the public DS4 session logits bytewise.
+DS4's output head applied to the old PTO final hidden agreed with PTO's
+own logits to relative L2 `2.44e-7`, isolating the major mismatch upstream.
+
+The first large per-layer error appeared at layer 4, the first learned
+top-k MoE layer. DS4 reads `blk.3.exp_probs_b.bias`, while the PTO range
+and Rust GGUF paths had looked for `blk.3.ffn_exp_probs_b.weight` and
+silently omitted the selection bias. Correcting the tensor name made the
+PTO bias dump byte-identical to DS4's. With the same input hidden, both
+selected experts `[247, 27, 67, 69, 143, 118]`; expert weights differed
+by at most about `1e-6`. The layer-4 hidden relative L2 error fell from
+`0.033144` to `0.004511`.
+
+The corrected PTO 43-layer trace completed on `n4-910c` with the same GGUF
+and raw token. Final hidden relative L2 error versus DS4 fell from
+`0.985387` to `0.001489`, with cosine similarity `0.999999560`. Applying
+the DS4 output head to that corrected hidden selected token `201` with
+top logit `19.001715`. Full logits versus the independent DS4 session had
+relative L2 error `0.003281`, cosine similarity `0.999994619`, and maximum
+absolute error `0.069979`. At diagnostic `atol=1e-4`, `rtol=1e-3`, 105,450
+of 129,280 logits remained outside tolerance. These are diagnostic
+thresholds, not final acceptance criteria. This proves the routing fix and
+same top token for one raw-token case. A separate four-layer
+`decoder_range()` probe passed and produced a byte-identical hidden tensor
+to the corrected per-layer PTO trace. Exact numerical parity remains open.
+
+A controlled production guest check then staged only the corrected PTO
+header into the otherwise clean `n4-910c` test checkout at `a9b11b6a`.
+The default-direct openEuler 2-node/1-step run
+`2026-09-24_13-44-30_w5_deepseek_v4_flash_decode_2664` passed 2/2 nodes
+and generated token `201` for the configured raw prompt token `42`.
+Node A recorded callable 5 `reads=23/writes=3164`; node B recorded
+callable 5 `reads=26/writes=132487`. Both host records reported
+`shared_payload_staging_bytes=0 status=pass`. Node B published the token
+from `managed_callable5_logits`; its top logit was `19.001728`, close to
+the corrected standalone PTO probe's `19.001715`. The independent DS4
+CPU session selected the same token with top logit `19.019411`. Both
+guests cleaned up with zero live and quarantined objects, and no QEMU
+process remained. The temporary header was restored, leaving the remote
+tracked checkout clean. This proves the fix reaches a real callable-5
+guest path for one token; a committed-source sim-console gate, later
+decode positions and the full multi-node matrix are still open.
 
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
@@ -389,9 +429,12 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Extend the same-GGUF scalar comparison beyond the first dense layer and
-position-0 token, with a justified tolerance for Q8 activation-boundary
-effects. Separately compare the official-checkpoint path with the existing
-independent Safetensors CPU reference. Complete the 2/3/8-node, 4/8-step
-sim-console matrix on both hosts. Keep W6 acceptance open until every
-condition in Section 5 has direct evidence.
+Land the corrected GGUF selection-bias lookup, then rerun committed-source
+production callable 5 through sim-console on both hosts: 2-node/1-step
+first, followed by the 2/3/8-node, 4/8-step matrix. Compare logits and
+per-layer hidden
+against the same-GGUF DS4 CPU oracle for multiple tokens and positions;
+set a justified tolerance for Q8 activation-boundary effects. Separately
+compare the official-checkpoint path with the independent Safetensors CPU
+reference. Keep W6 acceptance open until every condition in Section 5 has
+direct evidence.

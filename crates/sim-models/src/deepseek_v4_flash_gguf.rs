@@ -10,6 +10,10 @@ pub fn iq2_xxs_codebook() -> (&'static [u64; 256], &'static [u8; 128]) {
     (&IQ2_XXS_GRID, &IQ2_XS_SIGNS)
 }
 
+pub fn selection_bias_tensor_name(layer: u64) -> String {
+    format!("blk.{layer}.exp_probs_b.bias")
+}
+
 const GGUF_MAGIC: u32 = 0x4655_4747;
 const GGUF_VERSION: u32 = 3;
 const MAX_CATALOG_ENTRIES: u64 = 1_000_000;
@@ -1810,6 +1814,11 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(1);
+
+    #[test]
+    fn selection_bias_uses_gguf_bias_name() {
+        assert_eq!(selection_bias_tensor_name(3), "blk.3.exp_probs_b.bias");
+    }
 
     fn push_string(output: &mut Vec<u8>, value: &str) {
         output.extend_from_slice(&(value.len() as u64).to_le_bytes());

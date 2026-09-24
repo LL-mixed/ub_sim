@@ -31,6 +31,11 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
             if "clang" in version.lower():
                 command.insert(6, "-Wno-pass-failed")
             subprocess.run(command, check=True)
+            bias_name = subprocess.run(
+                [str(binary), "--selection-bias-name"],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertEqual(bias_name.stdout.strip(), "blk.3.exp_probs_b.bias")
             for end, expected in [(1, 2096), (2, 4160)]:
                 result = subprocess.run(
                     [str(binary), "--state-bytes", str(end)],

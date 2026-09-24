@@ -167,6 +167,10 @@ inline std::string layer_tensor_name(uint32_t layer,
            ".weight";
 }
 
+inline std::string selection_bias_tensor_name(uint32_t layer) {
+    return "blk." + std::to_string(layer) + ".exp_probs_b.bias";
+}
+
 inline F32View f32_weight_view(const WeightTensor &weight,
                                uint32_t expected_elements) {
     if (weight.tensor_type != kGgufTypeF32 || weight.rank != 1 ||
@@ -644,7 +648,7 @@ inline LocalMatrix ffn_layer(const MappedWeights &weights,
                logits.view());
     std::optional<F32View> selection_bias;
     const std::string selection_bias_name =
-        layer_tensor_name(layer, "ffn_exp_probs_b");
+        selection_bias_tensor_name(layer);
     if (weights.contains(selection_bias_name)) {
         selection_bias =
             f32_weight_view(weights.tensor(selection_bias_name), kExperts);

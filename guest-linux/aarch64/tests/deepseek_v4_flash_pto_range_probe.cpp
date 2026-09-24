@@ -171,6 +171,10 @@ static int sink_attention_fixture() {
 }
 
 static int run(int argc, char **argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--selection-bias-name") {
+        std::puts(ds::selection_bias_tensor_name(3).c_str());
+        return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--sink-attention-fixture") {
         return sink_attention_fixture();
     }

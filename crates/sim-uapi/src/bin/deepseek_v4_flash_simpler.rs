@@ -4,7 +4,9 @@ use sim_models::deepseek_v4_flash::{
     deepseek_v4_flash_layer_compress_ratio, DEEPSEEK_V4_FLASH_PROFILE, DEEPSEEK_V4_FLASH_RMS_EPS,
     DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
 };
-use sim_models::deepseek_v4_flash_gguf::{decode_f16_tensor, decode_f32_tensor, GgufCatalog};
+use sim_models::deepseek_v4_flash_gguf::{
+    decode_f16_tensor, decode_f32_tensor, selection_bias_tensor_name, GgufCatalog,
+};
 use sim_models::deepseek_v4_flash_lowering::DeepseekV4FlashCompressorState;
 use sim_topology::SimTopology;
 use sim_uapi::{
@@ -532,7 +534,7 @@ where
     } else {
         None
     };
-    let bias_name = name("ffn_exp_probs_b");
+    let bias_name = selection_bias_tensor_name(args.layer);
     let bias = if catalog.tensors.contains_key(&bias_name) {
         Some(decode_f32(&bias_name)?)
     } else {
@@ -660,7 +662,7 @@ where
     } else {
         None
     };
-    let bias_name = name("ffn_exp_probs_b");
+    let bias_name = selection_bias_tensor_name(args.layer);
     let bias = if let Some(tensor) = catalog.tensors.get(&bias_name) {
         Some(decode_f32_tensor(
             &catalog.read_tensor(&bias_name)?,
@@ -904,7 +906,7 @@ where
     } else {
         None
     };
-    let bias_name = format!("blk.{}.ffn_exp_probs_b.weight", args.layer);
+    let bias_name = selection_bias_tensor_name(args.layer);
     let bias = if let Some(tensor) = catalog.tensors.get(&bias_name) {
         Some(decode_f32_tensor(
             &catalog.read_tensor(&bias_name)?,

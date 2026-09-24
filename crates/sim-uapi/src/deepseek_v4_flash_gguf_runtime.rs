@@ -5,7 +5,9 @@ use sim_models::deepseek_v4_flash::{
     deepseek_v4_flash_layer_compress_ratio, deepseek_v4_flash_rope_coefficients,
     DEEPSEEK_V4_FLASH_PROFILE, DEEPSEEK_V4_FLASH_RMS_EPS, DEEPSEEK_V4_FLASH_SWIGLU_CLAMP,
 };
-use sim_models::deepseek_v4_flash_gguf::{decode_f16_tensor, decode_f32_tensor, GgufCatalog};
+use sim_models::deepseek_v4_flash_gguf::{
+    decode_f16_tensor, decode_f32_tensor, selection_bias_tensor_name, GgufCatalog,
+};
 use sim_models::deepseek_v4_flash_lowering::{
     deepseek_v4_flash_hc_weighted_sum_reference, deepseek_v4_flash_rms_norm_reference,
 };
@@ -340,7 +342,7 @@ pub fn execute_deepseek_gguf_layer_through_simpler(
         shared_down: &shared_down.payload,
         shared_down_dimensions: &shared_down.dimensions,
     };
-    let selection_bias_name = name("ffn_exp_probs_b");
+    let selection_bias_name = selection_bias_tensor_name(layer_id);
     let selection_bias = if catalog.tensors.contains_key(&selection_bias_name) {
         let metadata = catalog.tensor(&selection_bias_name)?;
         Some(decode_f32_tensor(
