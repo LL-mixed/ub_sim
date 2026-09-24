@@ -616,6 +616,17 @@ An independent same-GGUF DS4 CPU eight-step greedy reference is also stored
 on `n4-910c` as `out/w6-range-parity/ds4-greedy-42-8.step*.logits.f32`.
 Its token sequence is `[201, 41, 201, 35, 201, 35, 201, 35]`; no eight-step
 W6 guest run has yet been compared against these arrays.
+An independent PTO range probe using the same GGUF completed eight greedy
+steps with the same token sequence. Its logits are stored as
+`out/w6-range-parity/pto-neworder-42-8.step*.logits.f32` on `n4-910c`.
+Against the DS4 reference, relative L2 logits error was 0.003837 at step 0,
+0.033570 at step 1, 0.095986 at step 6, and 0.107647 at step 7; the
+respective maximum absolute errors were 0.081278, 0.727366, 2.745873,
+and 2.188519. The ratio-4 compressor's second row first participates at
+step 7. The corrected sum order is a real local parity fix, but it does not
+explain the earlier numerical drift or the managed-reference TCP failures.
+Matching selected tokens does not establish full-logits parity. This probe
+exercises the standalone PTO range, not the multi-node guest path.
 Two 2-node, eight-step sim-console attempts stopped before step 7. Baseline
 `774ec91a` on `n4-910c` (`sim-console-1790256637013-0`) produced the first
 three DS4 tokens, then nodeB failed to open the previous-token managed
