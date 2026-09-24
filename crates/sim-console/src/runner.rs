@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
+use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
@@ -1002,7 +1003,7 @@ impl RunManager {
             include_model_access,
         )?);
         let output = tokio::time::timeout(
-            Duration::from_secs(target.connect_timeout_secs.unwrap_or(10) + 10),
+            remote_log_sync_timeout(target.connect_timeout_secs, include_model_access),
             command.output(),
         )
         .await
@@ -1055,13 +1056,24 @@ impl RunManager {
             .await
             .get(run_id)
             .map(|record| record.target_id.clone());
-        if remote_log_sync_ready(&self.inner.state_root, run_id)
+        let log_sync_issue = if remote_log_sync_ready(&self.inner.state_root, run_id)
             && target_id
                 .as_deref()
                 .and_then(|id| self.inner.targets.find(id))
                 .is_some_and(|target| target.kind == ExecutionTargetKind::Ssh)
         {
-            let _ = self.sync_remote_logs(run_id, true).await;
+            sync_final_remote_logs(|include_model_access| {
+                self.sync_remote_logs(run_id, include_model_access)
+            })
+            .await
+        } else {
+            None
+        };
+        if let Some(issue) = &log_sync_issue {
+            let _ = OpenOptions::new()
+                .append(true)
+                .open(self.inner.state_root.join(run_id).join("process.log"))
+                .and_then(|mut log| writeln!(log, "[sim-console] WARN: {issue}"));
         }
         let stop_requested = self.inner.stop_requested.write().await.remove(run_id)
             || self
@@ -1095,6 +1107,12 @@ impl RunManager {
                 record.status = RunStatus::Failed;
                 record.message = Some(format!("process wait failed: {error}"));
             }
+        }
+        if let Some(issue) = log_sync_issue {
+            record.message = Some(format!(
+                "{}; {issue}",
+                record.message.as_deref().unwrap_or("run completed")
+            ));
         }
         if record.status == RunStatus::Failed {
             let _ = append_host_diagnostics(&self.inner.repo_root, &self.inner.state_root, record);
@@ -2369,6 +2387,33 @@ fn remote_log_archive_command(
     ))
 }
 
+fn remote_log_sync_timeout(
+    connect_timeout_secs: Option<u64>,
+    include_model_access: bool,
+) -> Duration {
+    let scan_budget_secs = if include_model_access { 60 } else { 10 };
+    Duration::from_secs(connect_timeout_secs.unwrap_or(10) + scan_budget_secs)
+}
+
+async fn sync_final_remote_logs<F, Fut, E>(sync: F) -> Option<String>
+where
+    F: Fn(bool) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+    E: std::fmt::Display,
+{
+    match sync(true).await {
+        Ok(()) => None,
+        Err(primary) => match sync(false).await {
+            Ok(()) => Some(format!(
+                "model-access log sync failed; final guest logs recovered: {primary}"
+            )),
+            Err(fallback) => Some(format!(
+                "final remote log sync failed: {primary}; guest-log fallback failed: {fallback}"
+            )),
+        },
+    }
+}
+
 fn remote_repo_root(target: &ExecutionTarget) -> Result<&str, RunManagerError> {
     target
         .repo_root
@@ -3351,6 +3396,14 @@ mod tests {
         let final_archive = remote_log_archive_command(&target, "sim-console-42", true).unwrap();
         assert!(final_archive.contains("qemu_model_access.log"));
         assert!(final_archive.contains("pto-ub-gm-model-access:"));
+        assert_eq!(
+            remote_log_sync_timeout(target.connect_timeout_secs, false),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            remote_log_sync_timeout(target.connect_timeout_secs, true),
+            Duration::from_secs(65)
+        );
         let input = remote_node_input_command(
             &target,
             &NodeInputDefinition {
@@ -3413,6 +3466,36 @@ mod tests {
         assert!(mirror.contains("GIT_NO_LAZY_FETCH=1 git -C"));
         assert!(mirror.contains("MIRROR_NEEDS_CHECKOUT_PACK"));
         assert!(!mirror.contains(" fetch "));
+    }
+
+    #[tokio::test]
+    async fn final_remote_log_sync_recovers_guest_logs_after_full_archive_failure() {
+        let recovered = sync_final_remote_logs(|include_model_access| async move {
+            if include_model_access {
+                Err("model-access scan timed out")
+            } else {
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert!(recovered.contains("final guest logs recovered"));
+        assert!(recovered.contains("model-access scan timed out"));
+
+        let failed = sync_final_remote_logs(|include_model_access| async move {
+            if include_model_access {
+                Err("full archive failed")
+            } else {
+                Err("guest archive failed")
+            }
+        })
+        .await
+        .unwrap();
+        assert!(failed.contains("full archive failed"));
+        assert!(failed.contains("guest archive failed"));
+
+        let complete = sync_final_remote_logs(|_| async { Ok::<(), &str>(()) }).await;
+        assert!(complete.is_none());
     }
 
     #[test]
