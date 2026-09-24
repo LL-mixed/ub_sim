@@ -20,10 +20,12 @@
 
 #define LINGQU_REG_VERSION 0x000u
 #define LINGQU_REG_CMDQ_BASE 0x010u
+#define LINGQU_REG_CMDQ_BASE_HI 0x018u
 #define LINGQU_REG_CMDQ_SIZE 0x020u
 #define LINGQU_REG_CMDQ_HEAD 0x028u
 #define LINGQU_REG_CMDQ_TAIL 0x030u
 #define LINGQU_REG_CQ_BASE 0x038u
+#define LINGQU_REG_CQ_BASE_HI 0x040u
 #define LINGQU_REG_CQ_SIZE 0x048u
 #define LINGQU_REG_CQ_HEAD 0x050u
 #define LINGQU_REG_CQ_TAIL 0x058u
@@ -86,6 +88,16 @@ static uint64_t mmio_read64(volatile uint8_t *base, uint64_t offset)
     uint64_t high = reg[1];
 
     return low | (high << 32);
+}
+
+static uint64_t mmio_read_queue_base(volatile uint8_t *base,
+                                     uint64_t low_offset,
+                                     uint64_t high_offset)
+{
+    uint32_t low = *(volatile uint32_t *)(base + low_offset);
+    uint32_t high = *(volatile uint32_t *)(base + high_offset);
+
+    return (uint64_t)low | ((uint64_t)high << 32);
 }
 
 static void mmio_write64(volatile uint8_t *base,
@@ -357,8 +369,12 @@ static int queue_mapping_valid(struct lingqu_shmem_pto_endpoint *endpoint)
 
     if (!endpoint->cmdq_phys && !endpoint->cq_phys)
         return 0;
-    cmdq_base = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_BASE);
-    cq_base = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CQ_BASE);
+    cmdq_base = mmio_read_queue_base(endpoint->endpoint_mmio,
+                                     LINGQU_REG_CMDQ_BASE,
+                                     LINGQU_REG_CMDQ_BASE_HI);
+    cq_base = mmio_read_queue_base(endpoint->endpoint_mmio,
+                                   LINGQU_REG_CQ_BASE,
+                                   LINGQU_REG_CQ_BASE_HI);
     if (cmdq_base != endpoint->cmdq_phys ||
         cq_base != endpoint->cq_phys) {
         fprintf(stderr, "lingqu-shmem-pto queue base stale"

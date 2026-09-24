@@ -106,6 +106,17 @@ static void check_queue_base_mismatch(void)
 {
     struct lingqu_shmem_pto_endpoint *ep = create(4, 4);
 
+    mmio_write64(ep->endpoint_mmio, LINGQU_REG_CMDQ_BASE,
+                 UINT64_C(0x1bf856000));
+    *(volatile uint32_t *)(ep->endpoint_mmio +
+                           LINGQU_REG_CMDQ_BASE_HI) = 1;
+    assert(mmio_read_queue_base(ep->endpoint_mmio,
+                                LINGQU_REG_CMDQ_BASE,
+                                LINGQU_REG_CMDQ_BASE_HI) ==
+           UINT64_C(0x1bf856000));
+    mmio_write64(ep->endpoint_mmio, LINGQU_REG_CMDQ_BASE, 0x1000);
+    *(volatile uint32_t *)(ep->endpoint_mmio +
+                           LINGQU_REG_CMDQ_BASE_HI) = 0;
     ep->cmdq_phys = 0x3000;
     ep->cq_phys = 0x2000;
     assert(enqueue(ep, 71) == -ESTALE);
