@@ -477,18 +477,45 @@ two-token range selected DS4's token `41`, but complete-logits relative L2
 error remained `0.015672` and maximum absolute error `0.367785`.
 Position-0 layer-1 hidden error remained about `0.004461`, and position-0
 layer-2 raw KV error was `0.013264`; position-1 layer-2 raw KV became
-bitwise identical. This is a diagnostic compiler comparison, not a
-production artifact change or a numerical-parity pass. Next, compare an
-independent DS4 position-0 layer-1 attention-stage trace with the PTO stage
-trace and fix the first divergent operation before selecting production
-compiler flags.
+bitwise identical. This diagnostic measurement preceded the production
+artifact change and did not establish numerical parity.
 
-The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
+An independent DS4 position-0 layer-1 stage trace then localized the
+amplification: the fast-math PTO query and attention heads had relative L2
+errors `2.56e-7` and `8.48e-8`, respectively. The grouped Q8 output-A error
+jumped to `9.29e-4`, the attention output to `2.17e-3`, and the HC state
+after attention to `1.67e-3`. Replaying the exact DS4 heads through the PTO
+grouped Q8 operator reduced output-A error to `1.43e-7`. The grouped
+operator agrees closely for identical input; the preceding tiny heads
+differences cross Q8 activation-rounding boundaries. The remaining work is
+to trace and align the upstream query/attention arithmetic, then recheck
+full-vocabulary logits rather than relax the numerical gate.
+
+Revision `774ec91a` applies `-O3 -ffast-math -fno-finite-math-only` only to
+the simulated DeepSeek range kernel. An isolated artifact build on
+`n4-910c` succeeded and produced a kernel with a different SHA-256 from
+the previous `-O2` artifact. The committed-source sim-console run
+`sim-console-1790249800360-0` then passed on `n4-910c` with 2 nodes and
+2 steps. Its streamed terminal tokens were `[201, 41]`, matching the
+same-GGUF DS4 CPU reference at both positions; the old guest path selected
+`361` at position 1. The four callable-5 ranges reported positive direct
+reads/writes and `shared_payload_staging_bytes=0`, for example:
+
+```text
+pto-ub-gm-model-access: request=11756923580248608108 callable=5 reads=23 writes=3164 shared_payload_staging_bytes=0 status=pass
+pto-ub-gm-model-access: request=11756923584543575407 callable=5 reads=3186 writes=132508 shared_payload_staging_bytes=0 status=pass
+```
+
+This run proves the two-token guest path selects the expected tokens with
+the new artifact. It does not close full-logits parity: the fast-math probe
+still measured relative L2 error `0.015672` against DS4 at position 1.
+
+These tests use an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
 W6 must keep two numerical claims separate: same-GGUF direct-path parity for
 the deployed quantized model, and official-checkpoint parity against the
 independent Safetensors CPU reference. Neither full-model claim is proven by
-this one-layer stage comparison.
+the two-token functional run.
 
 ### 4.3 Serving selection and observability
 
@@ -548,10 +575,11 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Trace the first token's DS4 CPU and PTO layer-1 attention stages and fix
-the first material arithmetic divergence. Keep the diagnostic fast-math
-result separate from the production path until the full-logits comparison
-passes at positions 0 and 1. Exercise the new sim-console SSH recovery path
+Trace the first token's query and attention arithmetic to resolve the
+quantization-boundary differences, and rerun the full-logits comparison
+at positions 0 and 1. Extend the independent same-GGUF reference to four
+and eight greedy decode positions before judging longer guest runs. Exercise
+the new sim-console SSH recovery path
 with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
