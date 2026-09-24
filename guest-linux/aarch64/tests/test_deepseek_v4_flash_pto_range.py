@@ -74,6 +74,20 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
             )
             self.assertNotEqual(sequence.returncode, 0)
             self.assertIn("weight_index_read_failed", sequence.stderr)
+            prefix = subprocess.run(
+                [str(binary), missing_index, "43", "42,201", *outputs[:2],
+                 "--logits-prefix", str(Path(temporary) / "step")],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(prefix.returncode, 0)
+            self.assertIn("weight_index_read_failed", prefix.stderr)
+            invalid_prefix = subprocess.run(
+                [str(binary), missing_index, "1", "42", *outputs[:2],
+                 "--logits-prefix", str(Path(temporary) / "step")],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(invalid_prefix.returncode, 0)
+            self.assertIn("invalid_range_or_token", invalid_prefix.stderr)
             grouped = subprocess.run(
                 [str(binary), missing_index, "--grouped-output-a",
                  outputs[0], outputs[2]],

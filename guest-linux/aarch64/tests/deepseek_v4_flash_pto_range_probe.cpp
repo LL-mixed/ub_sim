@@ -236,7 +236,8 @@ static int run(int argc, char **argv) {
     if (argc != 6 && argc != 8) {
         throw std::invalid_argument(
             "usage: probe INDEX END_LAYER TOKEN[,TOKEN...] HIDDEN_OUT STATE_OUT "
-            "[--attention-out ATTENTION_OUT | --logits-out LOGITS_OUT]; "
+            "[--attention-out ATTENTION_OUT | --logits-out LOGITS_OUT | "
+            "--logits-prefix PREFIX]; "
             "probe INDEX --grouped-output-a HEADS_F32 OUTPUT_F32");
     }
     const uint32_t end = parse_u32(argv[2]);
@@ -245,10 +246,12 @@ static int run(int argc, char **argv) {
         std::string_view(argv[6]) == "--attention-out";
     const bool logits_out = argc == 8 &&
         std::string_view(argv[6]) == "--logits-out";
+    const bool logits_prefix = argc == 8 &&
+        std::string_view(argv[6]) == "--logits-prefix";
     if (!end || end > ds::kLayers ||
-        (argc == 8 && !attention_out && !logits_out) ||
+        (argc == 8 && !attention_out && !logits_out && !logits_prefix) ||
         (attention_out && (end != 1 || tokens.size() != 1)) ||
-        (logits_out && end != ds::kLayers)) {
+        ((logits_out || logits_prefix) && end != ds::kLayers)) {
         throw std::invalid_argument("invalid_range_or_token");
     }
 
@@ -286,6 +289,15 @@ static int run(int argc, char **argv) {
             ds::F32View {reinterpret_cast<uintptr_t>(logits.data()), 1,
                          static_cast<uint32_t>(logits.size()),
                          static_cast<uint32_t>(logits.size()), 1});
+        if (logits_prefix) {
+            const std::string path = std::string(argv[7]) + ".step" +
+                                     std::to_string(position) + ".logits.f32";
+            write_file(path.c_str(), logits.data(), logits.size() * sizeof(float));
+            const auto top = std::max_element(logits.begin(), logits.end());
+            std::printf("direct_step=%zu input=%d top_token=%zu logit=%g\n",
+                        position, tokens[position],
+                        static_cast<size_t>(top - logits.begin()), *top);
+        }
         previous_state = std::move(next_state);
     }
 
