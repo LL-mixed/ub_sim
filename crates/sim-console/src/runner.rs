@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -1587,12 +1587,101 @@ pub fn run_remote_worker(plan_path: &Path) -> Result<(), RunManagerError> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let status = launch.status()?;
-    if !status.success() {
-        return Err(RunManagerError::Io(std::io::Error::other(format!(
-            "remote launcher exited with {status}"
-        ))));
+    if status.success() {
+        return Ok(());
     }
-    Ok(())
+    if status.code() == Some(255) {
+        eprintln!(
+            "[sim-console] SSH launcher disconnected; recovering target run={} status",
+            plan.run_id
+        );
+        return recover_remote_run_completion(&plan.target, &plan.run_id);
+    }
+    Err(RunManagerError::Io(std::io::Error::other(format!(
+        "remote launcher exited with {status}"
+    ))))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RemoteRunState {
+    Running,
+    Missing,
+    Exited(u8),
+}
+
+fn parse_remote_run_state(source: &str) -> Result<RemoteRunState, RunManagerError> {
+    match source.trim() {
+        "running" => Ok(RemoteRunState::Running),
+        "missing" => Ok(RemoteRunState::Missing),
+        value => value
+            .strip_prefix("exit:")
+            .and_then(|code| code.parse::<u8>().ok())
+            .map(RemoteRunState::Exited)
+            .ok_or_else(|| {
+                RunManagerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid remote run status: {value}"),
+                ))
+            }),
+    }
+}
+
+fn recover_remote_run_completion(
+    target: &ExecutionTarget,
+    run_id: &str,
+) -> Result<(), RunManagerError> {
+    let command = remote_run_status_command(target, run_id)?;
+    let deadline = Instant::now() + Duration::from_secs(2 * 60 * 60);
+    let mut missing_count = 0;
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let output = ssh_command_std(target)?.arg(&command).output();
+        match output {
+            Ok(output) if output.status.success() => {
+                match parse_remote_run_state(&String::from_utf8_lossy(&output.stdout))? {
+                    RemoteRunState::Running => missing_count = 0,
+                    RemoteRunState::Missing => {
+                        missing_count += 1;
+                        if missing_count >= 3 {
+                            return Err(RunManagerError::Io(std::io::Error::other(format!(
+                                "target run {run_id} has no process or exit status"
+                            ))));
+                        }
+                    }
+                    RemoteRunState::Exited(0) => {
+                        println!("[sim-console] recovered target run={run_id} status=passed");
+                        return Ok(());
+                    }
+                    RemoteRunState::Exited(code) => {
+                        return Err(RunManagerError::Io(std::io::Error::other(format!(
+                            "target run {run_id} exited with status {code}"
+                        ))));
+                    }
+                }
+            }
+            Ok(output) => {
+                if attempts == 1 || attempts % 20 == 0 {
+                    eprintln!(
+                        "[sim-console] target run={run_id} status unavailable: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                }
+            }
+            Err(error) => {
+                if attempts == 1 || attempts % 20 == 0 {
+                    eprintln!("[sim-console] target run={run_id} status unavailable: {error}");
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(RunManagerError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("target run {run_id} status unavailable after SSH disconnect"),
+            )));
+        }
+        std::thread::sleep(Duration::from_secs(15));
+    }
 }
 
 fn run_checked(command: &mut StdCommand, action: &str) -> Result<(), RunManagerError> {
@@ -2321,7 +2410,7 @@ fn remote_launch_command(
     }
 
     Ok(format!(
-        "set -u; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; cd {repo}; run_dir={run_dir}; mkdir -p \"$run_dir\"; pid_file=\"$run_dir/process-group.pid\"; child_pid=''; cleanup() {{ rm -f \"$pid_file\"; }}; terminate() {{ trap - HUP INT TERM; if [ -n \"$child_pid\" ]; then kill -TERM -- \"-$child_pid\" 2>/dev/null || true; wait \"$child_pid\" 2>/dev/null || true; fi; exit 143; }}; trap cleanup EXIT; trap terminate HUP INT TERM; printf '[sim-console] target=%s run=%s remote_repo=%s\\n' {target_id} {run} {repo_display}; setsid {launch} & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$pid_file\"; wait \"$child_pid\"; status=$?; exit \"$status\"",
+        "set -u; export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\"; cd {repo}; run_dir={run_dir}; mkdir -p \"$run_dir\"; pid_file=\"$run_dir/process-group.pid\"; status_file=\"$run_dir/exit-status\"; status_tmp=\"$run_dir/exit-status.tmp\"; rm -f \"$status_file\" \"$status_tmp\"; child_pid=''; cleanup() {{ status=$?; printf '%s\\n' \"$status\" > \"$status_tmp\"; mv -f \"$status_tmp\" \"$status_file\"; rm -f \"$pid_file\"; }}; terminate() {{ trap - HUP INT TERM; if [ -n \"$child_pid\" ]; then kill -TERM -- \"-$child_pid\" 2>/dev/null || true; wait \"$child_pid\" 2>/dev/null || true; fi; exit 143; }}; trap cleanup EXIT; trap terminate HUP INT TERM; printf '[sim-console] target=%s run=%s remote_repo=%s\\n' {target_id} {run} {repo_display}; setsid {launch} & child_pid=$!; printf '%s\\n' \"$child_pid\" > \"$pid_file\"; wait \"$child_pid\"; status=$?; exit \"$status\"",
         repo = shell_quote(repo_root),
         run_dir = shell_quote(&remote_state),
         target_id = shell_quote(&target.id),
@@ -2338,6 +2427,19 @@ fn remote_stop_command(target: &ExecutionTarget, run_id: &str) -> Result<String,
         "set -eu; for pid_file in {} {}; do if [ -f \"$pid_file\" ]; then pid=$(cat \"$pid_file\"); case \"$pid\" in ''|*[!0-9]*) printf 'invalid remote pid file: %s\\n' \"$pid_file\" >&2; exit 1;; esac; kill -TERM -- \"-$pid\" 2>/dev/null || true; fi; done",
         shell_quote(&prepare_pid),
         shell_quote(&process_pid),
+    ))
+}
+
+fn remote_run_status_command(
+    target: &ExecutionTarget,
+    run_id: &str,
+) -> Result<String, RunManagerError> {
+    let repo_root = remote_repo_root(target)?;
+    let run_dir = format!("{repo_root}/out/sim-console/remote-runs/{run_id}");
+    let status_file = shell_quote(&format!("{run_dir}/exit-status"));
+    let pid_file = shell_quote(&format!("{run_dir}/process-group.pid"));
+    Ok(format!(
+        "set -eu; if [ -f {status_file} ]; then printf 'exit:'; cat {status_file}; elif [ -f {pid_file} ]; then printf 'running\\n'; else printf 'missing\\n'; fi"
     ))
 }
 
@@ -3384,6 +3486,12 @@ mod tests {
         assert!(launch.contains("'Huawei'\\''s future'"));
         assert!(launch.contains("out/sim-console/remote-runs/sim-console-42"));
         assert!(launch.contains("setsid env 'RUN_ID=sim-console-42'"));
+        assert!(launch.contains("status_file=\"$run_dir/exit-status\""));
+        assert!(launch.contains("mv -f \"$status_tmp\" \"$status_file\""));
+        let status_query = remote_run_status_command(&target, "sim-console-42").unwrap();
+        assert!(status_query.contains(
+            "'/home/test/repo with space/out/sim-console/remote-runs/sim-console-42/exit-status'"
+        ));
         let stop = remote_stop_command(&target, "sim-console-42").unwrap();
         assert!(stop.contains("kill -TERM -- \"-$pid\""));
         assert!(stop.contains("process-group.pid"));
@@ -3466,6 +3574,86 @@ mod tests {
         assert!(mirror.contains("GIT_NO_LAZY_FETCH=1 git -C"));
         assert!(mirror.contains("MIRROR_NEEDS_CHECKOUT_PACK"));
         assert!(!mirror.contains(" fetch "));
+    }
+
+    #[test]
+    fn remote_run_status_survives_ssh_launcher_exit() {
+        let root = TempDir::new().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let setsid = bin.join("setsid");
+        fs::write(&setsid, "#!/bin/sh\nexec \"$@\"\n").unwrap();
+        fs::set_permissions(&setsid, fs::Permissions::from_mode(0o755)).unwrap();
+        let program = root.path().join("run_fixture.sh");
+        fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let target = ExecutionTarget {
+            id: "remote-fixture".to_string(),
+            title: "Remote fixture".to_string(),
+            kind: ExecutionTargetKind::Ssh,
+            description: "Fixture".to_string(),
+            ssh_host: Some("unused".to_string()),
+            connect_timeout_secs: Some(5),
+            repo_root: Some(root.path().to_string_lossy().into_owned()),
+            workspace_source_repo: None,
+            source_repo_url: None,
+            submodule_mirrors: vec![],
+            bootstrap_files: vec![],
+            model_sources: BTreeMap::new(),
+            open_euler_disk_image: None,
+        };
+        let resolved = ResolvedCommand {
+            program: "run_fixture.sh".to_string(),
+            args: vec![],
+            environment: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+        };
+        let run_id = "sim-console-42";
+        let query = remote_run_status_command(&target, run_id).unwrap();
+        let read_status = || {
+            let output = StdCommand::new("sh")
+                .arg("-c")
+                .arg(&query)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            parse_remote_run_state(&String::from_utf8_lossy(&output.stdout)).unwrap()
+        };
+        assert_eq!(read_status(), RemoteRunState::Missing);
+
+        let state_dir = root
+            .path()
+            .join("out/sim-console/remote-runs/sim-console-42");
+        fs::create_dir_all(&state_dir).unwrap();
+        fs::write(state_dir.join("process-group.pid"), "123\n").unwrap();
+        assert_eq!(read_status(), RemoteRunState::Running);
+
+        let launch = remote_launch_command(&target, &resolved, run_id).unwrap();
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let output = StdCommand::new("sh")
+            .arg("-c")
+            .arg(&launch)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(read_status(), RemoteRunState::Exited(0));
+
+        fs::write(&program, "#!/bin/sh\nexit 7\n").unwrap();
+        let output = StdCommand::new("sh")
+            .arg("-c")
+            .arg(&launch)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(read_status(), RemoteRunState::Exited(7));
+        assert!(parse_remote_run_state("exit:invalid\n").is_err());
     }
 
     #[tokio::test]
