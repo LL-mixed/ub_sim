@@ -56,8 +56,34 @@ struct Ds4DistributedOptions {
     prefill_chunk: u32,
     prefill_window: u32,
     activation_bits: u32,
+    route_recovery_timeout_ms: u32,
+    payload_provider: *const c_char,
+    payload_provider_config: *const c_char,
     replay_check: bool,
+    dspark_batch_tail: bool,
+    dspark_defer_stale_drain: bool,
+    dspark_runner_up_bridge: bool,
+    dspark_terminal_last_logits: bool,
+    dspark_overlap_output_head: bool,
+    dspark_return_logits: bool,
     debug: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct Ds4TpOptions {
+    role: c_int,
+    requested: bool,
+    listen_host: *const c_char,
+    listen_port: c_int,
+    leader_host: *const c_char,
+    leader_port: c_int,
+    transport: c_int,
+    rdma_device: *const c_char,
+    rdma_gid_index: c_int,
+    rdma_gid_index_set: bool,
+    glm_token_prefill: bool,
+    debug_hash: c_int,
 }
 
 #[repr(C)]
@@ -67,9 +93,17 @@ struct Ds4EngineOptions {
     mtp_path: *const c_char,
     backend: c_int,
     n_threads: c_int,
+    context_size: c_int,
     prefill_chunk: u32,
     mtp_draft_tokens: c_int,
     mtp_margin: c_float,
+    dspark_confidence_threshold: c_float,
+    dspark_confidence_tail_threshold: c_float,
+    dspark_confidence_schedule: [c_float; 16],
+    dspark_confidence_schedule_len: u32,
+    dspark_margin_schedule: [c_float; 16],
+    dspark_margin_schedule_len: u32,
+    dspark_cache_window: u32,
     directional_steering_file: *const c_char,
     expert_profile_path: *const c_char,
     directional_steering_attn: c_float,
@@ -77,18 +111,38 @@ struct Ds4EngineOptions {
     power_percent: c_int,
     ssd_streaming_cache_experts: u32,
     ssd_streaming_cache_bytes: u64,
+    ssd_streaming_full_layers: u32,
     ssd_streaming_preload_experts: u32,
     simulate_used_memory_bytes: u64,
     warm_weights: bool,
     quality: bool,
+    nvfp4_native: bool,
+    glm_mtp: bool,
+    glm_mtp_timing: bool,
+    dspark: bool,
+    dspark_probe: bool,
+    dspark_adaptive_tail: bool,
+    dspark_strict: bool,
+    dspark_confidence_threshold_set: bool,
+    dspark_confidence_tail_threshold_set: bool,
+    dspark_confidence_schedule_set: bool,
+    dspark_margin_schedule_set: bool,
+    cuda_tensor_parallel: bool,
     ssd_streaming: bool,
     ssd_streaming_cold: bool,
+    ssd_streaming_full_layers_set: bool,
     inspect_only: bool,
+    placement_ctx_hint: c_int,
+    placement_session_count_hint: c_int,
+    share_session_prefill_workspace: bool,
+    first_token_test: bool,
+    metal_graph_test: bool,
     load_slice: bool,
     load_layer_start: u32,
     load_layer_end: u32,
     load_output: bool,
     distributed: Ds4DistributedOptions,
+    tp: Ds4TpOptions,
 }
 
 type EngineOpen = unsafe extern "C" fn(*mut *mut c_void, *const Ds4EngineOptions) -> c_int;
@@ -114,6 +168,8 @@ type EvalLayerSlice = unsafe extern "C" fn(
     u32,
     *const c_float,
     *mut c_float,
+    bool,
+    bool,
     bool,
     *mut c_float,
     *mut c_char,
@@ -661,6 +717,8 @@ pub fn ds4_eval_layer_slice_in_memory(
                 input.as_ref().map_or(ptr::null(), |values| values.as_ptr()),
                 hidden_output.as_mut_ptr(),
                 config.output_logits,
+                false,
+                false,
                 if logits.is_empty() {
                     ptr::null_mut()
                 } else {
@@ -946,6 +1004,26 @@ pub fn build_ds4_dynamic_library(ds4_dir: &Path, output: &Path) -> Result<(), St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn engine_options_match_ds4_931b98e_header_layout() {
+        use std::mem::{offset_of, size_of};
+
+        assert_eq!(size_of::<Ds4DistributedOptions>(), 88);
+        assert_eq!(offset_of!(Ds4DistributedOptions, payload_provider), 64);
+        assert_eq!(offset_of!(Ds4DistributedOptions, debug), 87);
+        assert_eq!(size_of::<Ds4TpOptions>(), 64);
+        assert_eq!(size_of::<Ds4EngineOptions>(), 448);
+        assert_eq!(
+            offset_of!(Ds4EngineOptions, dspark_confidence_schedule_set),
+            259
+        );
+        assert_eq!(offset_of!(Ds4EngineOptions, load_slice), 279);
+        assert_eq!(offset_of!(Ds4EngineOptions, load_layer_start), 280);
+        assert_eq!(offset_of!(Ds4EngineOptions, distributed), 296);
+        assert_eq!(offset_of!(Ds4EngineOptions, tp), 384);
+    }
 
     #[test]
     fn f32_payload_round_trips_and_rejects_wrong_size() {

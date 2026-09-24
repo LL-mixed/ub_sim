@@ -42,6 +42,23 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
                 check=True, capture_output=True, text=True,
             )
             self.assertIn("sink_attention_fixture=pass", fixture.stdout)
+            outputs = [str(Path(temporary) / name) for name in
+                       ("hidden.f32", "state.bin", "logits.f32")]
+            missing_index = str(Path(temporary) / "missing-index")
+            rejected = subprocess.run(
+                [str(binary), missing_index, "1", "42", *outputs[:2],
+                 "--logits-out", outputs[2]],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("invalid_range_or_token", rejected.stderr)
+            accepted = subprocess.run(
+                [str(binary), missing_index, "43", "42", *outputs[:2],
+                 "--logits-out", outputs[2]],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(accepted.returncode, 0)
+            self.assertIn("weight_index_read_failed", accepted.stderr)
 
     def test_range_header_compiles_with_strict_warnings(self):
         compiler = os.environ.get("CXX", "c++")

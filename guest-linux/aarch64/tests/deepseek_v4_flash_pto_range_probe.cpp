@@ -1,5 +1,6 @@
 #include "deepseek_v4_flash_pto_range.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -181,12 +182,18 @@ static int run(int argc, char **argv) {
     if (argc != 6 && argc != 8) {
         throw std::invalid_argument(
             "usage: probe INDEX END_LAYER TOKEN HIDDEN_OUT STATE_OUT "
-            "[--attention-out ATTENTION_OUT]");
+            "[--attention-out ATTENTION_OUT | --logits-out LOGITS_OUT]");
     }
     const uint32_t end = parse_u32(argv[2]);
     const uint32_t token = parse_u32(argv[3]);
+    const bool attention_out = argc == 8 &&
+        std::string_view(argv[6]) == "--attention-out";
+    const bool logits_out = argc == 8 &&
+        std::string_view(argv[6]) == "--logits-out";
     if (!end || end > ds::kLayers || token >= ds::kVocab ||
-        (argc == 8 && (end != 1 || std::string_view(argv[6]) != "--attention-out"))) {
+        (argc == 8 && !attention_out && !logits_out) ||
+        (attention_out && end != 1) ||
+        (logits_out && end != ds::kLayers)) {
         throw std::invalid_argument("invalid_range_or_token");
     }
 
@@ -223,7 +230,7 @@ static int run(int argc, char **argv) {
 
     write_file(argv[4], hidden.data(), hidden.size() * sizeof(float));
     write_file(argv[5], next_state.data(), next_state.size());
-    if (argc == 8) {
+    if (attention_out) {
         ds::LocalMatrix embedded(ds::kHcMult, ds::kHidden);
         ds::embedding(weights, token, embedded.view());
         const std::string raw_path = std::string(argv[7]) + ".raw.f32";
@@ -237,6 +244,12 @@ static int run(int argc, char **argv) {
         }
         write_file(argv[7], reinterpret_cast<const void *>(attention.view().address),
                    hidden.size() * sizeof(float));
+    }
+    if (logits_out) {
+        write_file(argv[7], logits.data(), logits.size() * sizeof(float));
+        const auto top = std::max_element(logits.begin(), logits.end());
+        std::printf("direct_terminal_top_token=%zu logit=%g\n",
+                    static_cast<size_t>(top - logits.begin()), *top);
     }
     std::printf("direct_range=pass layers=0:%u token=%u hidden_values=%zu state_bytes=%zu\n",
                 end, token, hidden.size(), next_state.size());

@@ -130,23 +130,43 @@ The committed default is exercised through sim-console on `n4-910c` by:
 | ---: | ---: | --- | --- |
 | 2 | 1 | `sim-console-1790161824664-0` | 2/2 ranges |
 | 2 | 4 | `sim-console-1790162601003-0` | 8/8 ranges |
+| 2 | 8 | `sim-console-1790220092981-0` | 16/16 ranges |
 | 3 | 4 | `sim-console-1790162823449-0` | 12/12 ranges |
+| 3 | 8 | `sim-console-1790219814717-0` | 24/24 ranges |
+| 8 | 4 | `sim-console-1790220274030-0` | 32/32 ranges |
 | 8 | 8 | `sim-console-1790163015394-0` | 64/64 ranges |
 
 Each counted range used callable 3, had nonzero provider reads and writes,
 reported zero shared payload staging, and completed successfully. The 8-step
 run produced token IDs `[264, 3644, 7653, 304, 279, 2070, 315, 1995]`.
+The new 2-node/8-step, 3-node/8-step and 8-node/4-step runs used revision
+`a9b11b6a` and passed with 16, 24 and 32 zero-staging host access records,
+respectively. Every guest cleaned up with zero live or quarantined objects,
+and no QEMU process remained on the target after each run. This completes
+the Qwen sim-console 2/3/8-node by 4/8-step configuration coverage on
+`n4-910c` across the recorded source revisions.
 
-On `n4-910c1`, sim-console 2-node/1-step, 2-node/4-step, 3-node/4-step and
-8-node/8-step cases passed as `sim-console-1790163569079-0`,
-`sim-console-1790218873505-0`, `sim-console-1790163821727-0` and
-`sim-console-1790163981682-0`. The 8-node/8-step case retained 64/64 host
-access records. The new 2-node/4-step run used source revision `16b324c5`:
-both guests completed 4/4 callable 3 ranges, all eight host access records
-had nonzero reads/writes and zero shared staging, and the terminal tokens
-were `[264, 3644, 7653, 304]`. Both guests reported zero live objects,
-backing bytes, mappings and quarantined objects after request cleanup. The
-remaining two-host matrix is still pending at this update.
+On `n4-910c1`, the sim-console matrix also passed:
+
+| Nodes | Steps | Run ID | Host access evidence |
+| ---: | ---: | --- | --- |
+| 2 | 1 | `sim-console-1790163569079-0` | 2/2 ranges |
+| 2 | 4 | `sim-console-1790218873505-0` | 8/8 ranges |
+| 2 | 8 | `sim-console-1790220589352-0` | 16/16 ranges |
+| 3 | 4 | `sim-console-1790163821727-0` | 12/12 ranges |
+| 3 | 8 | `sim-console-1790220794399-0` | 24/24 ranges |
+| 8 | 4 | `sim-console-1790221022099-0` | 32/32 ranges |
+| 8 | 8 | `sim-console-1790163981682-0` | 64/64 ranges |
+
+The new 2-node/8-step, 3-node/8-step and 8-node/4-step runs used revision
+`a9b11b6a`. Their terminal token sequences matched the corresponding
+`n4-910c` runs. All counted host access records used callable 3, had nonzero
+reads/writes and zero shared staging. Every guest reported zero live and
+quarantined objects after cleanup. The target retained 28 unrelated QEMU
+processes that predated these runs by over three days; none of the new runs
+left another QEMU process. Qwen's two-host sim-console functional matrix is
+covered across source revisions. A same-revision rerun of all 12 cases and
+independent logits-reference acceptance remain open.
 
 ### 4.2 DeepSeek complete direct callable
 
@@ -272,6 +292,37 @@ fell from `0.00403349` to `0.00335476`. The 2,096-byte layer-0 KV state stayed
 byte-identical to the previous direct probe. The AArch64 arithmetic fixture
 passed. This is a measured improvement on one layer and token; full-model
 numerical parity remains open.
+
+A full 43-layer, position-0, token-42 same-GGUF differential on `n4-910c`
+compared the direct PTO probe with the existing Simpler bulk range runner. The
+probe now writes all terminal logits via `--logits-out`. Both paths selected
+token `65`, but the full tensors differed:
+
+| Output | Values/bytes | Relative L2 error | Max absolute error | Outside diagnostic tolerance |
+| --- | ---: | ---: | ---: | ---: |
+| Hidden | 16,384 f32 | `0.00567159` | `6.55566` | 14,946 |
+| Logits | 129,280 f32 | `0.00837669` | `0.211663` | 118,524 |
+| Encoded KV state | 12,297,344 bytes | not applicable | first mismatch at byte 2,147 | not applicable |
+
+The diagnostic tolerance was `atol=1e-4`, `rtol=1e-3`; it is not an acceptance
+limit. The direct top logit was approximately `17.3029`, versus `17.3396` for
+bulk. The KV files shared the first 2,146 bytes, including the layer-0 state;
+the first mismatch occurs in the next layer's state. Remote outputs are under
+`/home/ll/sim-console/ub_sim/out/w6-range-parity/` as
+`{hidden,state,logits}-full-{direct,bulk}.*`. This establishes a complete
+same-GGUF numerical mismatch despite top-token agreement. The existing bulk
+runner is a differential baseline, not an independent DS4 or official-checkpoint
+oracle. The direct probe's logits-output CLI change has passed focused tests;
+the multi-step guest and oracle gates remain open.
+
+An independent DS4 layer-slice oracle was attempted against clean DS4 source
+revision `931b98e` on `n4-910c`. The adapter's engine-options layout and
+layer-slice call signature had drifted from that header; both are corrected
+and the engine now opens. DS4's CPU backend rejects layer-slice evaluation
+with `layer slices require the graph backend`, so this CPU-only test cannot
+produce a DS4 slice oracle. The unsupported CPU slice CLI option was removed.
+The independent same-GGUF oracle remains open and requires a supported DS4
+graph backend or a separate full-session reference path.
 
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
