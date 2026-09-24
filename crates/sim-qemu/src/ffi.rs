@@ -415,6 +415,17 @@ pub extern "C" fn linqu_ub_bridge_new_from_yaml(path: *const c_char) -> *mut Lin
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn linqu_ub_bridge_enable_async_pto_ub_gm(ptr: *mut LinquUbBridge) -> c_int {
+    match bridge_mut(ptr) {
+        Ok(bridge) => {
+            bridge.adapter.enable_async_pto_ub_gm();
+            0
+        }
+        Err(code) => code,
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn linqu_ub_bridge_free(ptr: *mut LinquUbBridge) {
     if ptr.is_null() {
         return;
@@ -663,8 +674,21 @@ pub extern "C" fn linqu_ub_bridge_poll_completion(
 #[cfg(test)]
 mod tests {
     use super::{
-        linqu_ub_bridge_enqueue_managed_model_range_v2, ub_gm_callable_is_registered, LinquUbBridge,
+        linqu_ub_bridge_enable_async_pto_ub_gm, linqu_ub_bridge_enqueue_managed_model_range_v2,
+        ub_gm_callable_is_registered, LinquUbBridge,
     };
+
+    #[test]
+    fn qemu_bridge_enables_async_pto_ub_gm_dispatch() {
+        assert_eq!(
+            linqu_ub_bridge_enable_async_pto_ub_gm(std::ptr::null_mut()),
+            -1
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scenarios/mvp_8host_single_domain.yaml");
+        let mut bridge = LinquUbBridge::from_yaml_path(path.to_str().unwrap()).unwrap();
+        assert_eq!(linqu_ub_bridge_enable_async_pto_ub_gm(&mut bridge), 0);
+    }
 
     #[test]
     fn ub_gm_registry_accepts_deepseek_range_callable() {

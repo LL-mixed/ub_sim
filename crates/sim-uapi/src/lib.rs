@@ -355,6 +355,9 @@ pub struct LocalGuestUapiSurface {
     db_service: DbServiceStub,
     object_service: LingquObjectServiceStub,
     pto_ub_gm_access: Option<PtoUbGmAccessRegistration>,
+    async_pto_ub_gm: bool,
+    queued_pto_ub_gm: VecDeque<QueuedPtoUbGmDispatch>,
+    running_pto_ub_gm: Option<RunningPtoUbGmDispatch>,
     segment_payloads: HashMap<SegmentHandle, Vec<u8>>,
     model_runtime_object_payloads:
         HashMap<ModelRuntimeObjectCacheKey, Arc<ModelRuntimeObjectPayload>>,
@@ -373,6 +376,28 @@ pub struct LocalGuestUapiSurface {
     completion_routes: RuntimeCompletionTracker<CqHandle>,
 }
 
+struct QueuedPtoUbGmDispatch {
+    cq: CqHandle,
+    request: PtoUbGmDispatchV2Req,
+    service_time: u64,
+}
+
+struct RunningPtoUbGmDispatch {
+    cq: CqHandle,
+    op_id: u64,
+    request_id: u64,
+    service_time: u64,
+    worker: std::thread::JoinHandle<CompletionEvent>,
+}
+
+impl Drop for LocalGuestUapiSurface {
+    fn drop(&mut self) {
+        if let Some(running) = self.running_pto_ub_gm.take() {
+            let _ = running.worker.join();
+        }
+    }
+}
+
 impl std::fmt::Debug for LocalGuestUapiSurface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalGuestUapiSurface")
@@ -383,6 +408,9 @@ impl std::fmt::Debug for LocalGuestUapiSurface {
             .field("db_service", &self.db_service)
             .field("object_service", &self.object_service)
             .field("pto_ub_gm_access", &self.pto_ub_gm_access.is_some())
+            .field("async_pto_ub_gm", &self.async_pto_ub_gm)
+            .field("queued_pto_ub_gm", &self.queued_pto_ub_gm.len())
+            .field("running_pto_ub_gm", &self.running_pto_ub_gm.is_some())
             .field("segment_payloads", &self.segment_payloads)
             .field(
                 "model_runtime_object_payloads",
@@ -1040,6 +1068,9 @@ impl LocalGuestUapiSurface {
             db_service: DbServiceStub::new(db_profile),
             object_service: LingquObjectServiceStub::new(LingquObjectServiceProfile::default()),
             pto_ub_gm_access: None,
+            async_pto_ub_gm: false,
+            queued_pto_ub_gm: VecDeque::new(),
+            running_pto_ub_gm: None,
             segment_payloads: HashMap::new(),
             model_runtime_object_payloads: HashMap::new(),
             block_payloads: HashMap::new(),
@@ -1056,6 +1087,79 @@ impl LocalGuestUapiSurface {
             runtime_queue: SharedRuntimeExecutor::with_policy(4, 5, 32, 1),
             completion_routes: RuntimeCompletionTracker::default(),
         }
+    }
+
+    pub fn enable_async_pto_ub_gm(&mut self) {
+        self.async_pto_ub_gm = true;
+    }
+
+    fn start_queued_pto_ub_gm(&mut self) -> Result<(), SimError> {
+        if self.running_pto_ub_gm.is_some() {
+            return Ok(());
+        }
+        let Some(queued) = self.queued_pto_ub_gm.pop_front() else {
+            return Ok(());
+        };
+        let topology = self.topology.clone();
+        let access = self.pto_ub_gm_access;
+        let op_id = queued.request.op_id;
+        let request_id = queued.request.request_id;
+        let worker = std::thread::Builder::new()
+            .name("pto-ub-gm-dispatch".into())
+            .spawn(move || {
+                pto_ub_gm_dispatch_event(&topology, queued.request, access, queued.service_time)
+            });
+        match worker {
+            Ok(worker) => {
+                self.running_pto_ub_gm = Some(RunningPtoUbGmDispatch {
+                    cq: queued.cq,
+                    op_id,
+                    request_id,
+                    service_time: queued.service_time,
+                    worker,
+                });
+            }
+            Err(_) => {
+                self.enqueue_to_cq(
+                    queued.cq,
+                    CompletionEvent {
+                        op_id,
+                        task: Some(pto_ub_gm_task(request_id)),
+                        source: CompletionSource::ChipBackend,
+                        status: CompletionStatus::FatalFailure {
+                            code: "pto_ub_gm_worker_unavailable".into(),
+                        },
+                        finished_at: queued.service_time,
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_async_pto_ub_gm(&mut self) -> Result<(), SimError> {
+        if self
+            .running_pto_ub_gm
+            .as_ref()
+            .is_some_and(|running| running.worker.is_finished())
+        {
+            let running = self
+                .running_pto_ub_gm
+                .take()
+                .expect("checked running worker");
+            let mut event = running.worker.join().unwrap_or_else(|_| CompletionEvent {
+                op_id: running.op_id,
+                task: Some(pto_ub_gm_task(running.request_id)),
+                source: CompletionSource::ChipBackend,
+                status: CompletionStatus::FatalFailure {
+                    code: "pto_ub_gm_worker_panicked".into(),
+                },
+                finished_at: running.service_time,
+            });
+            event.finished_at = self.next_service_time();
+            self.enqueue_to_cq(running.cq, event)?;
+        }
+        self.start_queued_pto_ub_gm()
     }
 
     pub fn with_runtime_policy(
@@ -1404,6 +1508,7 @@ impl LocalGuestUapiSurface {
     ) -> Result<(Vec<CompletionEvent>, usize), SimError> {
         self.flush_runtime(u64::MAX)?;
         self.flush_services(u64::MAX)?;
+        self.collect_async_pto_ub_gm()?;
         let queue = self
             .cq_events
             .get_mut(&cq)
@@ -1431,6 +1536,22 @@ impl LocalGuestUapiSurface {
         match desc {
             UapiDescriptor::Io(req) => self.submit_io_to_cq(req, cq),
             UapiDescriptor::DispatchUbGmV2(req) => {
+                if self.async_pto_ub_gm {
+                    let op_id = req.op_id;
+                    if self.queued_pto_ub_gm.len() + usize::from(self.running_pto_ub_gm.is_some())
+                        >= self.runtime_queue_depth
+                    {
+                        return Err(SimError::InvalidInput("pto ub gm queue full"));
+                    }
+                    let service_time = self.next_service_time();
+                    self.queued_pto_ub_gm.push_back(QueuedPtoUbGmDispatch {
+                        cq,
+                        request: req,
+                        service_time,
+                    });
+                    self.start_queued_pto_ub_gm()?;
+                    return Ok(op_id);
+                }
                 let event = self.run_pto_ub_gm_dispatch_v2(req)?;
                 let op_id = event.op_id;
                 self.enqueue_to_cq(cq, event)?;
@@ -1768,29 +1889,12 @@ impl LocalGuestUapiSurface {
         req: PtoUbGmDispatchV2Req,
     ) -> Result<CompletionEvent, SimError> {
         let now = self.next_service_time();
-        let task = TaskKey {
-            logical_system: LogicalSystemId(1),
-            coord: HierarchyCoord { levels: [0; 8] },
-            scope_depth: 0,
-            task_id: req.request_id,
-        };
-        let result = match self.pto_ub_gm_access {
-            None => Err("pto_ub_gm_unbound".to_string()),
-            Some(access) if access.pto_device_cna != req.requester_cna => {
-                Err("pto_ub_gm_access_denied".to_string())
-            }
-            Some(access) => run_pto_ub_gm_chipbackend(&self.topology, &task, &req, access),
-        };
-        Ok(CompletionEvent {
-            op_id: req.op_id,
-            task: Some(task),
-            source: CompletionSource::ChipBackend,
-            status: match result {
-                Ok(()) => CompletionStatus::Success,
-                Err(code) => CompletionStatus::FatalFailure { code },
-            },
-            finished_at: now,
-        })
+        Ok(pto_ub_gm_dispatch_event(
+            &self.topology,
+            req,
+            self.pto_ub_gm_access,
+            now,
+        ))
     }
 
     fn run_model_range_dispatch(
@@ -16251,6 +16355,41 @@ mod pto_ub_gm_access_count_tests {
         assert_eq!(forwarded.load(Ordering::Relaxed), 3);
         assert_eq!(counts.reads.load(Ordering::Relaxed), 1);
         assert_eq!(counts.writes.load(Ordering::Relaxed), 1);
+    }
+}
+
+fn pto_ub_gm_task(request_id: u64) -> TaskKey {
+    TaskKey {
+        logical_system: LogicalSystemId(1),
+        coord: HierarchyCoord { levels: [0; 8] },
+        scope_depth: 0,
+        task_id: request_id,
+    }
+}
+
+fn pto_ub_gm_dispatch_event(
+    topology: &SimTopology,
+    req: PtoUbGmDispatchV2Req,
+    access: Option<PtoUbGmAccessRegistration>,
+    service_time: u64,
+) -> CompletionEvent {
+    let task = pto_ub_gm_task(req.request_id);
+    let result = match access {
+        None => Err("pto_ub_gm_unbound".to_string()),
+        Some(access) if access.pto_device_cna != req.requester_cna => {
+            Err("pto_ub_gm_access_denied".to_string())
+        }
+        Some(access) => run_pto_ub_gm_chipbackend(topology, &task, &req, access),
+    };
+    CompletionEvent {
+        op_id: req.op_id,
+        task: Some(task),
+        source: CompletionSource::ChipBackend,
+        status: match result {
+            Ok(()) => CompletionStatus::Success,
+            Err(code) => CompletionStatus::FatalFailure { code },
+        },
+        finished_at: service_time,
     }
 }
 
@@ -44911,6 +45050,101 @@ outputs:
             "{:?}",
             events[0]
         );
+    }
+
+    #[test]
+    fn async_pto_ub_gm_poll_does_not_wait_for_worker() {
+        use std::time::{Duration, Instant};
+
+        let mut surface = test_surface();
+        surface.enable_async_pto_ub_gm();
+        let cq = surface.register_cq().expect("register cq");
+        let (release, wait) = std::sync::mpsc::channel();
+        let request = super::PtoUbGmDispatchV2Req {
+            op_id: 71,
+            request_id: 72,
+            callable_id: super::PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+            artifact_fingerprint: 0,
+            requester_cna: 0,
+            args: vec![],
+        };
+        let completion = super::pto_ub_gm_dispatch_event(&test_topology(), request, None, 1);
+        let worker = std::thread::spawn(move || {
+            wait.recv_timeout(Duration::from_secs(2))
+                .expect("release worker");
+            completion
+        });
+        surface.running_pto_ub_gm = Some(super::RunningPtoUbGmDispatch {
+            cq,
+            op_id: 71,
+            request_id: 72,
+            service_time: 1,
+            worker,
+        });
+
+        let started = Instant::now();
+        let (events, remaining) = surface
+            .poll_cq_with_owner(cq, 0, None)
+            .expect("poll while worker runs");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(events.is_empty());
+        assert_eq!(remaining, 0);
+
+        release.send(()).expect("release worker");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let (events, _) = surface
+                .poll_cq_with_owner(cq, 0, None)
+                .expect("poll completion");
+            if !events.is_empty() {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].op_id, 71);
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker completion timed out");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn async_pto_ub_gm_dispatches_complete_in_submission_order() {
+        use std::time::{Duration, Instant};
+
+        let mut surface = test_surface();
+        surface.enable_async_pto_ub_gm();
+        let cq = surface.register_cq().expect("register cq");
+        for op_id in [81, 82] {
+            surface
+                .submit_descriptor_to_cq(
+                    UapiDescriptor::DispatchUbGmV2(super::PtoUbGmDispatchV2Req {
+                        op_id,
+                        request_id: op_id + 100,
+                        callable_id: super::PTO_UB_GM_HOST_VECTOR_CALLABLE_ID,
+                        artifact_fingerprint: 0,
+                        requester_cna: 0,
+                        args: vec![],
+                    }),
+                    cq,
+                )
+                .expect("submit async dispatch");
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut completions = vec![];
+        while completions.len() < 2 {
+            completions.extend(surface.drain_cq(cq));
+            assert!(Instant::now() < deadline, "dispatch completion timed out");
+            std::thread::yield_now();
+        }
+        assert_eq!(completions.len(), 2);
+        assert_eq!(completions[0].op_id, 81);
+        assert_eq!(completions[1].op_id, 82);
+        for event in completions {
+            assert!(matches!(
+                event.status,
+                sim_core::CompletionStatus::FatalFailure { ref code }
+                    if code == "pto_ub_gm_unbound"
+            ));
+        }
     }
 
     #[test]

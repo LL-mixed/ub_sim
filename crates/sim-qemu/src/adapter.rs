@@ -34,6 +34,10 @@ impl QemuBackendAdapter {
         }
     }
 
+    pub fn enable_async_pto_ub_gm(&mut self) {
+        self.surface.enable_async_pto_ub_gm();
+    }
+
     pub fn profile(&self) -> &MachineProfile {
         &self.profile
     }
