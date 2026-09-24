@@ -395,6 +395,24 @@ retains the original misclassification. This is one functional 4-step
 result, not multi-position DS4 numerical parity or the full 2/3/8-node
 matrix.
 
+Revision `44226cb8` passed the `n4-910c` 3-node/4-step sim-console gate,
+`sim-console-1790233366506-0`. The process exited 0, its summary reported
+4/4 steps and 3/3 nodes passed, and the token sequence was again
+`[201, 361, 1823, 11006]`. Its four full-vocabulary logits checksums,
+`[0xf70760778103bfe3, 0x656efc28b2db5f75, 0x176ff7bc2eaad88c,
+0xb552aa498178d08f]`, match the 2-node/4-step run at every position.
+The original target QEMU logs contain four
+callable-5 host-access records per node, all with nonzero reads/writes,
+`shared_payload_staging_bytes=0` and `status=pass`. The original guest
+logs end with `w5_managed_request_cleanup status=ok` on all three nodes:
+zero live objects, mappings, in-flight references and quarantined objects.
+No QEMU process remained on `n4-910c`. Sim-console's local node-log mirror
+for this run omitted the final step's tail and model-access extracts, so
+the original target logs were checked directly. The mirror limitation
+remains open; it does not change the process and original-guest results.
+This closes one 3-node/4-step functional gate, not the 3-node/8-step,
+8-node or independent numerical-oracle gates.
+
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
 W6 must keep two numerical claims separate: same-GGUF direct-path parity for
@@ -462,7 +480,8 @@ W6 model direct is complete only when all conditions hold:
 
 Run committed-source production callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
-and one `n4-910c` 2-node/4-step run have passed. Compare logits and per-layer hidden
+and `n4-910c` 2-node/4-step and 3-node/4-step runs have passed. Compare
+logits and per-layer hidden
 against the same-GGUF DS4 CPU oracle for multiple tokens and positions;
 set a justified tolerance for Q8 activation-boundary effects. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
