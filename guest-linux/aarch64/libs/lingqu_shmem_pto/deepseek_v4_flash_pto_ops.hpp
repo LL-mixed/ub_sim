@@ -403,6 +403,9 @@ inline void sink_attention(const F32View &q, const F32View &kv_rows,
             store(scores, 0, weights, row);
         }
 
+        F32Scalar one, inverse_denominator;
+        pto::TEXPANDS(one, 1.0f);
+        pto::TDIV(inverse_denominator, one, denominator);
         for (uint32_t column = 0; column < q.columns;
              column += kVectorCapacity) {
             const uint32_t count =
@@ -418,8 +421,8 @@ inline void sink_attention(const F32View &q, const F32View &kv_rows,
                 pto::TMUL(weighted, values, expanded);
                 pto::TADD(accumulated, accumulated, weighted);
             }
-            pto::TROWEXPAND(expanded, denominator);
-            pto::TDIV(normalized, accumulated, expanded);
+            pto::TROWEXPAND(expanded, inverse_denominator);
+            pto::TMUL(normalized, accumulated, expanded);
             store(output, head, normalized, column);
         }
     }

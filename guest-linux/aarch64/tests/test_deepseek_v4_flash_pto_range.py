@@ -37,6 +37,11 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
                     check=True, capture_output=True, text=True,
                 )
                 self.assertEqual(int(result.stdout.strip()), expected)
+            fixture = subprocess.run(
+                [str(binary), "--sink-attention-fixture"],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertIn("sink_attention_fixture=pass", fixture.stdout)
 
     def test_range_header_compiles_with_strict_warnings(self):
         compiler = os.environ.get("CXX", "c++")

@@ -1,6 +1,6 @@
 # W6 Managed UB_GM Model-Direct Plan
 
-Date: 2026-09-22. Last verified: 2026-09-23.
+Date: 2026-09-22. Last verified: 2026-09-24.
 
 Status: Qwen callable 3 and DeepSeek callable 5 are integrated with managed
 `UB_GM` serving, and the stable W5 config entry selects `direct` by default
@@ -137,11 +137,16 @@ Each counted range used callable 3, had nonzero provider reads and writes,
 reported zero shared payload staging, and completed successfully. The 8-step
 run produced token IDs `[264, 3644, 7653, 304, 279, 2070, 315, 1995]`.
 
-On `n4-910c1`, sim-console 2-node/1-step, 3-node/4-step and 8-node/8-step
-cases passed as `sim-console-1790163569079-0`,
-`sim-console-1790163821727-0` and `sim-console-1790163981682-0`. The last
-case retained 64/64 host access records. The remaining two-host matrix is
-still pending at this update.
+On `n4-910c1`, sim-console 2-node/1-step, 2-node/4-step, 3-node/4-step and
+8-node/8-step cases passed as `sim-console-1790163569079-0`,
+`sim-console-1790218873505-0`, `sim-console-1790163821727-0` and
+`sim-console-1790163981682-0`. The 8-node/8-step case retained 64/64 host
+access records. The new 2-node/4-step run used source revision `16b324c5`:
+both guests completed 4/4 callable 3 ranges, all eight host access records
+had nonzero reads/writes and zero shared staging, and the terminal tokens
+were `[264, 3644, 7653, 304]`. Both guests reported zero live objects,
+backing bytes, mappings and quarantined objects after request cleanup. The
+remaining two-host matrix is still pending at this update.
 
 ### 4.2 DeepSeek complete direct callable
 
@@ -256,6 +261,18 @@ mismatch when those kernels receive identical inputs. The scalar calculation
 reuses a KV row produced by the direct run; it is a stage differential, not
 a full independent model oracle.
 
+A follow-up PTO change uses the DS4 normalization order for sink attention:
+calculate one FP32 reciprocal of the softmax denominator, then multiply each
+output value by it. On `n4-910c`, the same layer-0/token-42 GGUF probe increased
+bitwise-equal heads from 20,957 to 26,863 of 32,768. Changed Q8 activation
+codes fell from 156 to 98; changed scale bit patterns fell from 360 to 188.
+Maximum raw-attention error against the scalar reference fell from `0.0210111`
+to `0.0111675`, and maximum final-hidden error against the bulk layer stage
+fell from `0.00403349` to `0.00335476`. The 2,096-byte layer-0 KV state stayed
+byte-identical to the previous direct probe. The AArch64 arithmetic fixture
+passed. This is a measured improvement on one layer and token; full-model
+numerical parity remains open.
+
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
 W6 must keep two numerical claims separate: same-GGUF direct-path parity for
@@ -281,6 +298,14 @@ counters without repeatedly transferring large QEMU logs.
 The acceptance matrix remains 2/3/8 nodes times 4/8 steps for each model,
 through sim-console on both `n4-910c` and `n4-910c1`. The cluster-runner
 matrix on one host is useful evidence and does not replace that requirement.
+The `n4-910c` DeepSeek 2-node/4-step sim-console run
+`sim-console-1790214179061-0` failed at node B, step 2 after two terminal
+tokens. Callable 5 completed that range with direct UB_GM reads and writes;
+the OBMM worker then stopped on a TCP connection reset during
+`provider-refresh`, quarantining the new allocation before terminal
+publication. The bounded reconnect change in `mem_service` has passed focused
+provider tests and compilation, but has not yet been pinned or verified by a
+multi-step guest rerun. The cause of the connection reset remains unproven.
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source

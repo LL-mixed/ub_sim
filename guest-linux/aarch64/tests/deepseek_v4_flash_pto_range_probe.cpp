@@ -1,6 +1,7 @@
 #include "deepseek_v4_flash_pto_range.hpp"
 
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -129,7 +130,49 @@ static ds::LocalMatrix attention_layer_0_trace(const ds::MappedWeights &weights,
     return output_hc;
 }
 
+static int sink_attention_fixture() {
+    std::vector<float> query(ds::kHeadDim, 0.0f);
+    std::vector<float> key(ds::kHeadDim);
+    std::vector<float> result(ds::kHeadDim, 0.0f);
+    const float sink = 0.25f;
+    for (uint32_t column = 0; column < ds::kHeadDim; ++column) {
+        key[column] = 0.12345f + float(column) * 0.001f;
+    }
+    const ds::F32View q {reinterpret_cast<uintptr_t>(query.data()), 1,
+                         ds::kHeadDim, ds::kHeadDim, 1};
+    const ds::F32View kv {reinterpret_cast<uintptr_t>(key.data()), 1,
+                          ds::kHeadDim, ds::kHeadDim, 1};
+    const ds::F32View sinks {reinterpret_cast<uintptr_t>(&sink), 1, 1, 1, 1};
+    const ds::F32View output {reinterpret_cast<uintptr_t>(result.data()), 1,
+                              ds::kHeadDim, ds::kHeadDim, 1};
+    ds::sink_attention(q, kv, sinks, output);
+    const float weight = std::exp(-sink);
+    const float denominator = 1.0f + weight;
+    const float inverse_denominator = 1.0f / denominator;
+    bool distinguishes_direct_division = false;
+    for (uint32_t column = 0; column < ds::kHeadDim; ++column) {
+        const float weighted = key[column] * weight;
+        const float expected = weighted * inverse_denominator;
+        const float directly_divided = weighted / denominator;
+        distinguishes_direct_division |=
+            std::memcmp(&directly_divided, &expected, sizeof(float)) != 0;
+        if (std::memcmp(&result[column], &expected, sizeof(float)) != 0) {
+            std::fprintf(stderr, "sink_attention_mismatch column=%u\n", column);
+            return 1;
+        }
+    }
+    if (!distinguishes_direct_division) {
+        std::fputs("sink_attention_fixture_has_no_rounding_difference\n", stderr);
+        return 1;
+    }
+    std::puts("sink_attention_fixture=pass");
+    return 0;
+}
+
 static int run(int argc, char **argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--sink-attention-fixture") {
+        return sink_attention_fixture();
+    }
     if (argc == 3 && std::string_view(argv[1]) == "--state-bytes") {
         std::printf("%llu\n",
                     static_cast<unsigned long long>(state_bytes(parse_u32(argv[2]))));
