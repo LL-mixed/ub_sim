@@ -361,8 +361,39 @@ CPU session selected the same token with top logit `19.019411`. Both
 guests cleaned up with zero live and quarantined objects, and no QEMU
 process remained. The temporary header was restored, leaving the remote
 tracked checkout clean. This proves the fix reaches a real callable-5
-guest path for one token; a committed-source sim-console gate, later
-decode positions and the full multi-node matrix are still open.
+guest path for one token; it preceded the committed-source gate.
+
+Revision `a4d7c520` then passed the official sim-console DeepSeek
+2-node/1-step gate on both registered targets, using the same GGUF and
+configured raw input token `42`:
+
+| Target | Sim-console run | Result | Token/logits checksum |
+| --- | --- | --- | --- |
+| `n4-910c` | `sim-console-1790229922646-0` | 2/2 nodes passed | `201` / `0xf70760778103bfe3` |
+| `n4-910c1` | `sim-console-1790230564818-0` | 2/2 nodes passed | `201` / `0xf70760778103bfe3` |
+
+On each host, node A logged callable 5 `reads=23/writes=3164` and node B
+logged callable 5 `reads=26/writes=132487`; all four records reported
+`shared_payload_staging_bytes=0 status=pass`. Node B published token `201`
+from `managed_callable5_logits`. Both guests on each host reported zero
+live and quarantined objects at cleanup. The two remote Git checkouts
+remained clean. No QEMU process from either new run remained; `n4-910c1`
+still has unrelated, older QEMU processes. This closes the committed-source
+two-host 1-step gate.
+
+The same committed revision also passed a `n4-910c` 2-node/4-step run,
+`sim-console-1790231281752-0`: the process exited 0, the cluster reported
+4/4 steps and 2/2 guest passes, and the tokens were
+`[201, 361, 1823, 11006]`. All eight callable-5 host-access records had
+nonzero reads and writes with zero shared payload staging; both guests
+reported zero live and quarantined objects at cleanup. The archived
+sim-console record incorrectly marks node A failed: an unrelated openEuler
+`[FAILED] Failed to start dnf makecache` line matched its broad `] fail`
+log classifier even though node A ended with `[w4_guest] pass`. The
+classifier now distinguishes `fail` from `failed`; the archived record
+retains the original misclassification. This is one functional 4-step
+result, not multi-position DS4 numerical parity or the full 2/3/8-node
+matrix.
 
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
@@ -429,10 +460,9 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Land the corrected GGUF selection-bias lookup, then rerun committed-source
-production callable 5 through sim-console on both hosts: 2-node/1-step
-first, followed by the 2/3/8-node, 4/8-step matrix. Compare logits and
-per-layer hidden
+Run committed-source production callable 5 through the remaining 2/3/8-node,
+4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
+and one `n4-910c` 2-node/4-step run have passed. Compare logits and per-layer hidden
 against the same-GGUF DS4 CPU oracle for multiple tokens and positions;
 set a justified tolerance for Q8 activation-boundary effects. Separately
 compare the official-checkpoint path with the independent Safetensors CPU

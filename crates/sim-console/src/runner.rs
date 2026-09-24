@@ -2712,6 +2712,15 @@ fn final_node_status(demo_id: &str, run: RunStatus, observed: NodeStatus) -> Nod
     }
 }
 
+fn has_explicit_node_fail_marker(source: &str) -> bool {
+    source.match_indices("] fail").any(|(offset, marker)| {
+        source[offset + marker.len()..]
+            .chars()
+            .next()
+            .map_or(true, |next| !next.is_ascii_alphanumeric() && next != '_')
+    })
+}
+
 fn classify_node_log(path: &Path) -> Result<NodeStatus, RunManagerError> {
     let mut file = File::open(path)?;
     let length = file.metadata()?.len();
@@ -2722,15 +2731,10 @@ fn classify_node_log(path: &Path) -> Result<NodeStatus, RunManagerError> {
     file.read_to_end(&mut bytes)?;
     let source = String::from_utf8_lossy(&bytes);
     let lower = source.to_ascii_lowercase();
-    if [
-        "verdict=fail",
-        "kernel panic",
-        "fatal marker",
-        "] fail",
-        "fail:",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
+    if ["verdict=fail", "kernel panic", "fatal marker", "fail:"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+        || has_explicit_node_fail_marker(&lower)
     {
         return Ok(NodeStatus::Failed);
     }
@@ -3694,6 +3698,18 @@ mod tests {
         assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Passed);
 
         fs::write(&log, "[ub_obmm_pool] pass\n[w4_guest] fail\n").unwrap();
+        assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Failed);
+
+        fs::write(
+            &log,
+            "[\x1b[0;1;31mFAILED\x1b[0m] Failed to start dnf makecache.\n\
+             [w4_guest] stage w5_managed_request_cleanup status=ok\n\
+             [w4_guest] pass\n",
+        )
+        .unwrap();
+        assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Passed);
+
+        fs::write(&log, "[w4_guest] fail reason=range_error\n").unwrap();
         assert_eq!(classify_node_log(&log).unwrap(), NodeStatus::Failed);
     }
 
