@@ -278,6 +278,41 @@ class SimplerHostGemmArtifactsTest(unittest.TestCase):
             self.assertIn("-static-libstdc++", wrapper_text)
             self.assertEqual(compiler.gxx15.cxx_path, str(wrapper))
 
+    def test_deepseek_sim_kernel_arithmetic_is_profile_scoped(self):
+        producer = load_producer()
+
+        class Toolchain:
+            cxx_path = "g++-15"
+            is_host = True
+
+            def get_compile_flags(self, core_type=""):
+                return ["-O2", f"-D{core_type}"]
+
+        class Compiler:
+            def __init__(self):
+                self.gxx15 = Toolchain()
+
+        deepseek = Compiler()
+        producer.configure_deepseek_sim_kernel_arithmetic(
+            deepseek, "host_deepseek_v4_flash_range", "a5sim"
+        )
+        self.assertEqual(deepseek.gxx15.cxx_path, "g++-15")
+        self.assertTrue(deepseek.gxx15.is_host)
+        self.assertEqual(
+            deepseek.gxx15.get_compile_flags(core_type="aiv"),
+            ["-O2", "-Daiv", "-O3", "-ffast-math", "-fno-finite-math-only"],
+        )
+        for profile, platform in [
+            ("host_qwen3_range", "a5sim"),
+            ("host_deepseek_v4_flash_range", "a5"),
+        ]:
+            compiler = Compiler()
+            producer.configure_deepseek_sim_kernel_arithmetic(
+                compiler, profile, platform
+            )
+            self.assertIsInstance(compiler.gxx15, Toolchain)
+            self.assertEqual(compiler.gxx15.get_compile_flags(), ["-O2", "-D"])
+
     def test_sim_kernel_compiler_resolves_prepared_user_toolchain(self):
         producer = load_producer()
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -74,6 +74,13 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
             )
             self.assertNotEqual(sequence.returncode, 0)
             self.assertIn("weight_index_read_failed", sequence.stderr)
+            grouped = subprocess.run(
+                [str(binary), missing_index, "--grouped-output-a",
+                 outputs[0], outputs[2]],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(grouped.returncode, 0)
+            self.assertIn("weight_index_read_failed", grouped.stderr)
             malformed = subprocess.run(
                 [str(binary), missing_index, "43", "42,", *outputs[:2],
                  "--logits-out", outputs[2]],

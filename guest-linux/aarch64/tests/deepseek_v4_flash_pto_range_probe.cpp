@@ -212,10 +212,32 @@ static int run(int argc, char **argv) {
                         parse_u32(argv[2]), argc == 4 ? parse_u32(argv[3]) : 1)));
         return 0;
     }
+    if (argc == 5 && std::string_view(argv[2]) == "--grouped-output-a") {
+        const std::vector<uint8_t> descriptor = read_file(argv[1]);
+        const ds::WeightIndex index(descriptor.data(), descriptor.size());
+        const ds::MappedWeights weights(index);
+        const std::vector<uint8_t> encoded_heads = read_file(argv[3]);
+        std::vector<float> heads(ds::kAttentionHeads * ds::kHeadDim);
+        if (encoded_heads.size() != heads.size() * sizeof(float)) {
+            throw std::invalid_argument("invalid_attention_heads_size");
+        }
+        std::memcpy(heads.data(), encoded_heads.data(), encoded_heads.size());
+        ds::LocalMatrix output_a(1, ds::kOutputGroups * ds::kOLora);
+        const ds::F32View input {reinterpret_cast<uintptr_t>(heads.data()), 1,
+                                 static_cast<uint32_t>(heads.size()),
+                                 static_cast<uint32_t>(heads.size()), 1};
+        ds::grouped_q8_0_linear(
+            input, ds::layer_tensor(weights, 0, "attn_output_a"),
+            ds::kOutputGroups, output_a.view());
+        write_file(argv[4], reinterpret_cast<const void *>(output_a.view().address),
+                   ds::kOutputGroups * ds::kOLora * sizeof(float));
+        return 0;
+    }
     if (argc != 6 && argc != 8) {
         throw std::invalid_argument(
             "usage: probe INDEX END_LAYER TOKEN[,TOKEN...] HIDDEN_OUT STATE_OUT "
-            "[--attention-out ATTENTION_OUT | --logits-out LOGITS_OUT]");
+            "[--attention-out ATTENTION_OUT | --logits-out LOGITS_OUT]; "
+            "probe INDEX --grouped-output-a HEADS_F32 OUTPUT_F32");
     }
     const uint32_t end = parse_u32(argv[2]);
     const std::vector<int32_t> tokens = parse_tokens(argv[3]);

@@ -586,6 +586,32 @@ def configure_sim_kernel_libgcc(
     return wrapper_path
 
 
+class DeepseekSimArithmeticToolchain:
+    def __init__(self, delegate):
+        self._delegate = delegate
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+    def get_compile_flags(self, *args, **kwargs):
+        return [
+            *self._delegate.get_compile_flags(*args, **kwargs),
+            "-O3",
+            "-ffast-math",
+            "-fno-finite-math-only",
+        ]
+
+
+def configure_deepseek_sim_kernel_arithmetic(
+    kernel_compiler, profile: str, platform: str
+) -> None:
+    if profile != "host_deepseek_v4_flash_range" or not platform.endswith("sim"):
+        return
+    kernel_compiler.gxx15 = DeepseekSimArithmeticToolchain(
+        kernel_compiler.gxx15
+    )
+
+
 def sim_aicore_arch(platform: str) -> str | None:
     if not platform.endswith("sim"):
         return None
@@ -3218,6 +3244,9 @@ def build(args: argparse.Namespace, simpler_root: Path, pto_isa_root: Path) -> i
     )
     configure_sim_kernel_libgcc(
         kernel_compiler, build_dir, args.sim_kernel_libgcc
+    )
+    configure_deepseek_sim_kernel_arithmetic(
+        kernel_compiler, args.profile, args.platform
     )
 
     runtime_name = "host_build_graph"
