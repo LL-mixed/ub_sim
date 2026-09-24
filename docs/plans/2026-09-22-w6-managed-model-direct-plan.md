@@ -608,14 +608,12 @@ has the same `ds4.c` SHA-256 as local DS4 revision `931b98e5`; its four
 The reference's winning logits were `19.0194111`, `18.572752`,
 `24.3486137`, and `21.1338158`, respectively. All eight callable-5 ranges
 reported positive reads/writes with `shared_payload_staging_bytes=0`, and
-both guest nodes passed. This is one successful run; it does not prove that
-the earlier connection reset was fixed or that the unpinned reconnect commit
-is ready.
+both guest nodes passed. That single earlier run did not prove that the
+connection reset was fixed or that the unpinned reconnect commit was ready.
 The cause of the connection reset remains unproven.
 An independent same-GGUF DS4 CPU eight-step greedy reference is also stored
 on `n4-910c` as `out/w6-range-parity/ds4-greedy-42-8.step*.logits.f32`.
-Its token sequence is `[201, 41, 201, 35, 201, 35, 201, 35]`; no eight-step
-W6 guest run has yet been compared against these arrays.
+Its token sequence is `[201, 41, 201, 35, 201, 35, 201, 35]`.
 An independent PTO range probe using the same GGUF completed eight greedy
 steps with the same token sequence. Its logits are stored as
 `out/w6-range-parity/pto-neworder-42-8.step*.logits.f32` on `n4-910c`.
@@ -636,12 +634,31 @@ the first five DS4 tokens, then nodeB failed to close that reference at
 step 5 with `rc=-2`, again after TCP connect timeouts. Both failures are
 in managed-reference access before the affected model step. They provide
 no evidence about the numerical effect of the step-7 compressor change.
+The QEMU bridge now enables a bounded asynchronous PTO `UB_GM` dispatch
+worker. CQ polling returns while model computation runs, and device reset
+joins the worker before releasing UB_GM mappings. This allows QEMU to keep
+servicing guest memory and network activity during a long model range.
+Focused `sim-uapi` tests cover nonblocking polling and ordered completion;
+the `sim-qemu` FFI test and QEMU C object compile also pass.
+On `n4-910c`, committed source `10cd07c9` with QEMU pin `f8e44ee7`
+passed both 2-node/4-step run `sim-console-1790264001765-0` and
+2-node/8-step run `sim-console-1790265385881-0`. Their token sequences
+were `[201, 41, 201, 35]` and
+`[201, 41, 201, 35, 201, 35, 201, 35]`, respectively. The eight-step
+summary reports 8/8 steps, 2/2 passed nodes and 16 worker timing records.
+All 16 callable-5 host access records report positive reads and writes,
+`shared_payload_staging_bytes=0`, and `status=pass`; mirrored guest logs
+contain no TCP connect timeout. No QEMU processes remained after either run.
+This is evidence that the earlier step-3 and step-5 liveness failures do not
+reproduce with the asynchronous bridge on this host. It does not establish
+full-logits parity, other topology gates, or repeat-run stability.
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
 revision. The deployed GGUF path has four- and eight-step references, but
-full-logits parity and the eight-step guest comparison remain open. The official
-Safetensors reference covers a different weight format.
+full-logits guest comparison remains open. The eight-step guest token
+comparison passes. The official Safetensors reference covers a different
+weight format.
 
 ## 5. Acceptance Criteria
 
@@ -671,15 +688,15 @@ W6 model direct is complete only when all conditions hold:
 
 Trace the first token's pre-projection rounding, including RMSNorm
 accumulation, then rerun the common-input and full-logits comparisons with
-the production compiler. Resolve the managed-reference TCP liveness failure
-that stops long 2-node runs during previous-token access. Compare the
-second ratio-4 compressed KV row at step 7 and eight-step guest output
-against the existing independent same-GGUF DS4 reference.
+the production compiler. Locate the step-1 state difference that expands
+the standalone range's relative L2 logits error to 0.033570. Verify the
+second ratio-4 compressed KV row at step 7 against DS4 state, beyond the
+already-matching guest token sequence.
 Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
-and `n4-910c` 2-node/4-step and 3-node/4-step sim-console gates have
-passed; the 8-node/4-step target-side model run passed with a failed
+and `n4-910c` 2-node/4-step, 2-node/8-step, and 3-node/4-step sim-console
+gates have passed; the 8-node/4-step target-side model run passed with a failed
 sim-console session. Set a justified tolerance for Q8 activation-boundary
 effects only after the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
