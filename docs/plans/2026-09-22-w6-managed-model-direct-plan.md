@@ -542,12 +542,27 @@ the OBMM worker then stopped on a TCP connection reset during
 `provider-refresh`, quarantining the new allocation before terminal
 publication. The bounded reconnect change in `mem_service` has passed focused
 provider tests and compilation, but has not yet been pinned or verified by a
-multi-step guest rerun. The cause of the connection reset remains unproven.
+multi-step guest rerun. A newer committed-source run on the same pinned
+`mem_service` revision, `sim-console-1790250799430-0` at root revision
+`774ec91a`, passed 2 nodes and 4 steps on `n4-910c`. Its streamed tokens
+`[201, 41, 201, 35]` matched an independent four-step DS4 CPU greedy
+reference on the same IQ2 GGUF. The DS4 source copy used for this oracle
+has the same `ds4.c` SHA-256 as local DS4 revision `931b98e5`; its four
+129,280-value logits arrays are stored as
+`out/w6-range-parity/ds4-greedy-42-4.step*.logits.f32` on `n4-910c`.
+The reference's winning logits were `19.0194111`, `18.572752`,
+`24.3486137`, and `21.1338158`, respectively. All eight callable-5 ranges
+reported positive reads/writes with `shared_payload_staging_bytes=0`, and
+both guest nodes passed. This is one successful run; it does not prove that
+the earlier connection reset was fixed or that the unpinned reconnect commit
+is ready.
+The cause of the connection reset remains unproven.
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
-revision. The deployed GGUF path still needs a complete same-GGUF reference;
-the official Safetensors reference covers a different weight format.
+revision. The deployed GGUF path has a four-step token reference, but full
+logits parity and an eight-step reference remain open. The official
+Safetensors reference covers a different weight format.
 
 ## 5. Acceptance Criteria
 
@@ -577,10 +592,9 @@ W6 model direct is complete only when all conditions hold:
 
 Trace the first token's query and attention arithmetic to resolve the
 quantization-boundary differences, and rerun the full-logits comparison
-at positions 0 and 1. Extend the independent same-GGUF reference to four
-and eight greedy decode positions before judging longer guest runs. Exercise
-the new sim-console SSH recovery path
-with a real disconnect, and run
+at positions 0 and 1. Extend the independent same-GGUF reference from four
+to eight greedy decode positions before judging eight-step guest runs.
+Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
 and `n4-910c` 2-node/4-step and 3-node/4-step sim-console gates have
