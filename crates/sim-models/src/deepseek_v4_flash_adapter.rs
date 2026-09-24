@@ -17,6 +17,7 @@ use std::ptr;
 const DS4_HOST_BACKEND: c_int = 0;
 #[cfg(not(target_os = "macos"))]
 const DS4_HOST_BACKEND: c_int = 1;
+const DS4_CPU_BACKEND: c_int = 2;
 const DS4_THINK_NONE: c_int = 0;
 
 #[repr(C)]
@@ -155,7 +156,17 @@ type TokensFree = unsafe extern "C" fn(*mut Ds4Tokens);
 type SessionCreate = unsafe extern "C" fn(*mut *mut c_void, *mut c_void, c_int) -> c_int;
 type SessionFree = unsafe extern "C" fn(*mut c_void);
 type SessionSync = unsafe extern "C" fn(*mut c_void, *const Ds4Tokens, *mut c_char, usize) -> c_int;
+type SessionEval = unsafe extern "C" fn(*mut c_void, c_int, *mut c_char, usize) -> c_int;
 type SessionArgmax = unsafe extern "C" fn(*mut c_void) -> c_int;
+type SessionCopyLogits = unsafe extern "C" fn(*mut c_void, *mut c_float, c_int) -> c_int;
+type SessionEvalOutputHead = unsafe extern "C" fn(
+    *mut c_void,
+    *const c_float,
+    u32,
+    *mut c_float,
+    *mut c_char,
+    usize,
+) -> c_int;
 type SessionTopLogprobs = unsafe extern "C" fn(*mut c_void, *mut Ds4TokenScore, c_int) -> c_int;
 type TokenText = unsafe extern "C" fn(*mut c_void, c_int, *mut usize) -> *mut c_char;
 type SliceReset = unsafe extern "C" fn(*mut c_void, *mut c_char, usize) -> c_int;
@@ -201,7 +212,10 @@ struct Ds4Library {
     session_create: SessionCreate,
     session_free: SessionFree,
     session_sync: SessionSync,
+    session_eval: SessionEval,
     session_argmax: SessionArgmax,
+    session_copy_logits: SessionCopyLogits,
+    session_eval_output_head: SessionEvalOutputHead,
     session_top_logprobs: SessionTopLogprobs,
     token_text: TokenText,
     slice_reset: SliceReset,
@@ -230,7 +244,13 @@ impl Ds4Library {
                 session_create: load_symbol(handle, b"ds4_session_create\0")?,
                 session_free: load_symbol(handle, b"ds4_session_free\0")?,
                 session_sync: load_symbol(handle, b"ds4_session_sync\0")?,
+                session_eval: load_symbol(handle, b"ds4_session_eval\0")?,
                 session_argmax: load_symbol(handle, b"ds4_session_argmax\0")?,
+                session_copy_logits: load_symbol(handle, b"ds4_session_copy_logits\0")?,
+                session_eval_output_head: load_symbol(
+                    handle,
+                    b"ds4_session_eval_output_head_from_hc\0",
+                )?,
                 session_top_logprobs: load_symbol(handle, b"ds4_session_top_logprobs\0")?,
                 token_text: load_symbol(handle, b"ds4_token_text\0")?,
                 slice_reset: load_symbol(handle, b"ds4_session_layer_slice_reset\0")?,
@@ -409,6 +429,55 @@ pub struct Ds4RunConfig {
     pub top_k: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct Ds4ReferenceLogitsConfig {
+    pub library_path: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub model_path: PathBuf,
+    pub token_ids: Vec<i32>,
+    pub context: i32,
+    pub mode: Ds4ReferenceMode,
+    pub output_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Ds4ReferenceMode {
+    Sync,
+    Eval,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Ds4ReferenceLogitsReport {
+    pub model: String,
+    pub token_ids: Vec<i32>,
+    pub mode: Ds4ReferenceMode,
+    pub vocab_size: usize,
+    pub selected_token: i32,
+    pub selected_logit: f32,
+    pub output_path: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Ds4ReferenceHeadConfig {
+    pub library_path: PathBuf,
+    pub runtime_dir: PathBuf,
+    pub model_path: PathBuf,
+    pub hidden_path: PathBuf,
+    pub output_path: PathBuf,
+    pub context: i32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Ds4ReferenceHeadReport {
+    pub model: String,
+    pub hidden_values: usize,
+    pub vocab_size: usize,
+    pub selected_token: i32,
+    pub selected_logit: f32,
+    pub output_path: String,
+}
+
 fn with_runtime_dir<T>(
     runtime_dir: &Path,
     run: impl FnOnce() -> Result<T, String>,
@@ -432,10 +501,26 @@ fn open_engine<'a>(
     layer_range: Option<(u32, u32)>,
     load_output: bool,
 ) -> Result<Engine<'a>, String> {
+    open_engine_with_backend(
+        library,
+        model_path,
+        layer_range,
+        load_output,
+        DS4_HOST_BACKEND,
+    )
+}
+
+fn open_engine_with_backend<'a>(
+    library: &'a Ds4Library,
+    model_path: &Path,
+    layer_range: Option<(u32, u32)>,
+    load_output: bool,
+    backend: c_int,
+) -> Result<Engine<'a>, String> {
     let model_path = path_to_cstring(model_path)?;
     let mut options = Ds4EngineOptions {
         model_path: model_path.as_ptr(),
-        backend: DS4_HOST_BACKEND,
+        backend,
         mtp_draft_tokens: 1,
         mtp_margin: 3.0,
         ..Ds4EngineOptions::default()
@@ -589,6 +674,165 @@ pub fn ds4_first_token(config: &Ds4RunConfig) -> Result<Ds4FirstTokenReport, Str
             prompt_tokens: tokens.as_slice()?.len(),
             token,
             candidates,
+        })
+    })
+}
+
+fn validate_reference_tokens(
+    token_ids: &[i32],
+    context: i32,
+    vocab_size: i32,
+) -> Result<i32, String> {
+    if token_ids.is_empty() {
+        return Err("ds4_reference_tokens_empty".to_string());
+    }
+    let token_count = i32::try_from(token_ids.len())
+        .map_err(|_| "ds4_reference_token_count_overflow".to_string())?;
+    if context <= 0 || token_count > context {
+        return Err(format!(
+            "ds4_reference_context_invalid:tokens={token_count}:context={context}"
+        ));
+    }
+    if vocab_size <= 0 {
+        return Err(format!("ds4_reference_vocab_invalid:{vocab_size}"));
+    }
+    for &token in token_ids {
+        if token < 0 || token >= vocab_size {
+            return Err(format!(
+                "ds4_reference_token_out_of_range:{token}:vocab={vocab_size}"
+            ));
+        }
+    }
+    Ok(token_count)
+}
+
+fn logits_argmax(logits: &[f32]) -> Result<(i32, f32), String> {
+    if logits.is_empty() || logits.iter().any(|value| !value.is_finite()) {
+        return Err("ds4_reference_logits_nonfinite_or_empty".to_string());
+    }
+    let (index, value) = logits
+        .iter()
+        .enumerate()
+        .max_by(|left, right| left.1.total_cmp(right.1))
+        .ok_or_else(|| "ds4_reference_logits_empty".to_string())?;
+    let index = i32::try_from(index).map_err(|_| "ds4_reference_argmax_overflow".to_string())?;
+    Ok((index, *value))
+}
+
+pub fn ds4_reference_logits(
+    config: &Ds4ReferenceLogitsConfig,
+) -> Result<Ds4ReferenceLogitsReport, String> {
+    with_runtime_dir(&config.runtime_dir, || {
+        let library = Ds4Library::open(&config.library_path)?;
+        let engine =
+            open_engine_with_backend(&library, &config.model_path, None, false, DS4_CPU_BACKEND)?;
+        let vocab_size = unsafe { (library.engine_vocab_size)(engine.ptr) };
+        let token_count = validate_reference_tokens(&config.token_ids, config.context, vocab_size)?;
+        let session = create_session(&engine, config.context)?;
+        let mut error = [0 as c_char; 512];
+        let rc = match config.mode {
+            Ds4ReferenceMode::Sync => {
+                let tokens = Ds4Tokens {
+                    values: config.token_ids.as_ptr().cast_mut(),
+                    len: token_count,
+                    cap: token_count,
+                };
+                unsafe {
+                    (library.session_sync)(session.ptr, &tokens, error.as_mut_ptr(), error.len())
+                }
+            }
+            Ds4ReferenceMode::Eval => {
+                for &token in &config.token_ids {
+                    let rc = unsafe {
+                        (library.session_eval)(session.ptr, token, error.as_mut_ptr(), error.len())
+                    };
+                    if rc != 0 {
+                        return Err(format!(
+                            "ds4_session_eval_failed:rc={rc}:{}",
+                            c_error(&error)
+                        ));
+                    }
+                }
+                0
+            }
+        };
+        if rc != 0 {
+            return Err(format!(
+                "ds4_session_sync_failed:rc={rc}:{}",
+                c_error(&error)
+            ));
+        }
+        let mut logits = vec![0.0_f32; vocab_size as usize];
+        let copied =
+            unsafe { (library.session_copy_logits)(session.ptr, logits.as_mut_ptr(), vocab_size) };
+        if copied != vocab_size {
+            return Err(format!(
+                "ds4_reference_logits_copy_failed:copied={copied}:vocab={vocab_size}"
+            ));
+        }
+        let (selected_token, selected_logit) = logits_argmax(&logits)?;
+        let session_token = unsafe { (library.session_argmax)(session.ptr) };
+        if session_token != selected_token {
+            return Err(format!(
+                "ds4_reference_argmax_mismatch:session={session_token}:logits={selected_token}"
+            ));
+        }
+        write_f32_file(&config.output_path, &logits)?;
+        Ok(Ds4ReferenceLogitsReport {
+            model: config.model_path.display().to_string(),
+            token_ids: config.token_ids.clone(),
+            mode: config.mode,
+            vocab_size: logits.len(),
+            selected_token,
+            selected_logit,
+            output_path: config.output_path.display().to_string(),
+        })
+    })
+}
+
+pub fn ds4_reference_output_head(
+    config: &Ds4ReferenceHeadConfig,
+) -> Result<Ds4ReferenceHeadReport, String> {
+    with_runtime_dir(&config.runtime_dir, || {
+        let library = Ds4Library::open(&config.library_path)?;
+        let engine =
+            open_engine_with_backend(&library, &config.model_path, None, false, DS4_CPU_BACKEND)?;
+        let hidden_values =
+            usize::try_from(unsafe { (library.engine_hidden_f32_values)(engine.ptr) })
+                .map_err(|_| "ds4_reference_hidden_size_overflow".to_string())?;
+        let hidden = read_f32_file(&config.hidden_path, hidden_values)?;
+        let vocab_size = unsafe { (library.engine_vocab_size)(engine.ptr) };
+        if vocab_size <= 0 {
+            return Err(format!("ds4_reference_vocab_invalid:{vocab_size}"));
+        }
+        let session = create_session(&engine, config.context)?;
+        let mut logits = vec![0.0_f32; vocab_size as usize];
+        let mut error = [0 as c_char; 512];
+        let rc = unsafe {
+            (library.session_eval_output_head)(
+                session.ptr,
+                hidden.as_ptr(),
+                1,
+                logits.as_mut_ptr(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        if rc != 0 {
+            return Err(format!(
+                "ds4_reference_head_failed:rc={rc}:{}",
+                c_error(&error)
+            ));
+        }
+        let (selected_token, selected_logit) = logits_argmax(&logits)?;
+        write_f32_file(&config.output_path, &logits)?;
+        Ok(Ds4ReferenceHeadReport {
+            model: config.model_path.display().to_string(),
+            hidden_values,
+            vocab_size: logits.len(),
+            selected_token,
+            selected_logit,
+            output_path: config.output_path.display().to_string(),
         })
     })
 }
@@ -1023,6 +1267,24 @@ mod tests {
         assert_eq!(offset_of!(Ds4EngineOptions, load_layer_start), 280);
         assert_eq!(offset_of!(Ds4EngineOptions, distributed), 296);
         assert_eq!(offset_of!(Ds4EngineOptions, tp), 384);
+    }
+
+    #[test]
+    fn reference_logits_rejects_invalid_raw_tokens() {
+        assert_eq!(validate_reference_tokens(&[42], 1, 129_280), Ok(1));
+        assert!(validate_reference_tokens(&[], 1, 129_280).is_err());
+        assert!(validate_reference_tokens(&[42, 43], 1, 129_280).is_err());
+        assert!(validate_reference_tokens(&[-1], 1, 129_280).is_err());
+        assert!(validate_reference_tokens(&[129_280], 1, 129_280).is_err());
+        assert!(validate_reference_tokens(&[42], 0, 129_280).is_err());
+        assert!(validate_reference_tokens(&[42], 1, 0).is_err());
+    }
+
+    #[test]
+    fn reference_argmax_rejects_nonfinite_logits() {
+        assert_eq!(logits_argmax(&[-2.0, 0.5, 0.1]), Ok((1, 0.5)));
+        assert!(logits_argmax(&[]).is_err());
+        assert!(logits_argmax(&[f32::NAN]).is_err());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use sim_models::deepseek_v4_flash_adapter::{
-    build_ds4_dynamic_library, ds4_eval_layer_slice, ds4_first_token, ds4_tokenize_chat,
-    Ds4RunConfig, Ds4SliceConfig,
+    build_ds4_dynamic_library, ds4_eval_layer_slice, ds4_first_token, ds4_reference_logits,
+    ds4_reference_output_head, ds4_tokenize_chat, Ds4ReferenceHeadConfig, Ds4ReferenceLogitsConfig,
+    Ds4ReferenceMode, Ds4RunConfig, Ds4SliceConfig,
 };
 use sim_models::deepseek_v4_flash_gguf::{
     lower_q8_0_matrix_to_bf16_kxn, project_f16_matrix, project_q8_0_matrix, GgufCatalog,
@@ -10,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 
 fn usage() -> &'static str {
-    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter embedding --model FILE --tokens CSV --output FILE\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-f16 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits] [--dump-prefix PATH] [--dump-name NAME]"
+    "usage:\n  deepseek_v4_flash_adapter catalog --model FILE [--tensor NAME]\n  deepseek_v4_flash_adapter embedding --model FILE --tokens CSV --output FILE\n  deepseek_v4_flash_adapter lower-q8-bf16 --model FILE --tensor NAME --output FILE\n  deepseek_v4_flash_adapter project-f16 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter project-q8 --model FILE --tensor NAME --input FILE --output FILE [--token-index N]\n  deepseek_v4_flash_adapter build-library --ds4-dir DIR --output FILE\n  deepseek_v4_flash_adapter tokenize --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT]\n  deepseek_v4_flash_adapter first-token --library FILE --ds4-dir DIR --model FILE (--prompt TEXT | --prompt-file FILE) [--system TEXT] [--ctx N] [--top-k N]\n  deepseek_v4_flash_adapter reference-logits --library FILE --ds4-dir DIR --model FILE --tokens CSV --output FILE [--ctx N] [--mode sync|eval]\n  deepseek_v4_flash_adapter reference-head --library FILE --ds4-dir DIR --model FILE --hidden FILE --output FILE [--ctx N]\n  deepseek_v4_flash_adapter slice --library FILE --ds4-dir DIR --model FILE --layers START:END --tokens CSV --output FILE [--input FILE] [--position N] [--ctx N] [--logits] [--dump-prefix PATH] [--dump-name NAME]"
 }
 
 fn read_f32_payload(path: &PathBuf) -> Result<Vec<f32>, String> {
@@ -161,6 +162,14 @@ fn parse_tokens(value: &str) -> Result<Vec<i32>, String> {
         return Err("tokens_empty".to_string());
     }
     Ok(tokens)
+}
+
+fn parse_reference_mode(value: Option<String>) -> Result<Ds4ReferenceMode, String> {
+    match value.as_deref() {
+        None | Some("sync") => Ok(Ds4ReferenceMode::Sync),
+        Some("eval") => Ok(Ds4ReferenceMode::Eval),
+        Some(value) => Err(format!("invalid_reference_mode:{value}")),
+    }
 }
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -354,6 +363,37 @@ fn run(args: &[String]) -> Result<(), String> {
                     .map_err(|err| format!("json_encode_failed:{err}"))?
             );
         }
+        "reference-logits" => {
+            let report = ds4_reference_logits(&Ds4ReferenceLogitsConfig {
+                library_path: PathBuf::from(required(&options, "--library")?),
+                runtime_dir: PathBuf::from(required(&options, "--ds4-dir")?),
+                model_path: PathBuf::from(required(&options, "--model")?),
+                token_ids: parse_tokens(&required(&options, "--tokens")?)?,
+                context: parse_i32(optional(&options, "--ctx"), 1024, "context")?,
+                mode: parse_reference_mode(optional(&options, "--mode"))?,
+                output_path: PathBuf::from(required(&options, "--output")?),
+            })?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .map_err(|err| format!("json_encode_failed:{err}"))?
+            );
+        }
+        "reference-head" => {
+            let report = ds4_reference_output_head(&Ds4ReferenceHeadConfig {
+                library_path: PathBuf::from(required(&options, "--library")?),
+                runtime_dir: PathBuf::from(required(&options, "--ds4-dir")?),
+                model_path: PathBuf::from(required(&options, "--model")?),
+                hidden_path: PathBuf::from(required(&options, "--hidden")?),
+                output_path: PathBuf::from(required(&options, "--output")?),
+                context: parse_i32(optional(&options, "--ctx"), 1024, "context")?,
+            })?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .map_err(|err| format!("json_encode_failed:{err}"))?
+            );
+        }
         "slice" => {
             let (layer_start, layer_end) = parse_layers(&required(&options, "--layers")?)?;
             let config = Ds4SliceConfig {
@@ -455,7 +495,43 @@ mod tests {
         assert!(usage().contains("embedding"));
         assert!(usage().contains("project-f16"));
         assert!(usage().contains("project-q8"));
+        assert!(usage().contains("reference-logits"));
+        assert!(usage().contains("reference-head"));
         assert!(usage().contains("--dump-prefix PATH"));
         assert!(usage().contains("--dump-name NAME"));
+    }
+
+    #[test]
+    fn reference_logits_requires_explicit_raw_tokens_and_output() {
+        let args = [
+            "reference-logits".to_string(),
+            "--library".to_string(),
+            "libds4.so".to_string(),
+            "--ds4-dir".to_string(),
+            "ds4".to_string(),
+            "--model".to_string(),
+            "model.gguf".to_string(),
+        ];
+        assert_eq!(run(&args).unwrap_err(), "required_option_missing:--tokens");
+        assert_eq!(parse_reference_mode(None), Ok(Ds4ReferenceMode::Sync));
+        assert_eq!(
+            parse_reference_mode(Some("eval".to_string())),
+            Ok(Ds4ReferenceMode::Eval)
+        );
+        assert!(parse_reference_mode(Some("other".to_string())).is_err());
+    }
+
+    #[test]
+    fn reference_head_requires_hidden_input() {
+        let args = [
+            "reference-head".to_string(),
+            "--library".to_string(),
+            "libds4.so".to_string(),
+            "--ds4-dir".to_string(),
+            "ds4".to_string(),
+            "--model".to_string(),
+            "model.gguf".to_string(),
+        ];
+        assert_eq!(run(&args).unwrap_err(), "required_option_missing:--hidden");
     }
 }
