@@ -36,9 +36,12 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
                 check=True, capture_output=True, text=True,
             )
             self.assertEqual(bias_name.stdout.strip(), "blk.3.exp_probs_b.bias")
-            for end, expected in [(1, 2096), (2, 4160)]:
+            for end, positions, expected in [
+                (1, 1, 2096), (2, 1, 4160), (1, 2, 4144),
+                (43, 2, 12385408),
+            ]:
                 result = subprocess.run(
-                    [str(binary), "--state-bytes", str(end)],
+                    [str(binary), "--state-bytes", str(end), str(positions)],
                     check=True, capture_output=True, text=True,
                 )
                 self.assertEqual(int(result.stdout.strip()), expected)
@@ -64,6 +67,20 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
             )
             self.assertNotEqual(accepted.returncode, 0)
             self.assertIn("weight_index_read_failed", accepted.stderr)
+            sequence = subprocess.run(
+                [str(binary), missing_index, "43", "42,201", *outputs[:2],
+                 "--logits-out", outputs[2]],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(sequence.returncode, 0)
+            self.assertIn("weight_index_read_failed", sequence.stderr)
+            malformed = subprocess.run(
+                [str(binary), missing_index, "43", "42,", *outputs[:2],
+                 "--logits-out", outputs[2]],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(malformed.returncode, 0)
+            self.assertIn("invalid_token_sequence", malformed.stderr)
 
     def test_range_header_compiles_with_strict_warnings(self):
         compiler = os.environ.get("CXX", "c++")

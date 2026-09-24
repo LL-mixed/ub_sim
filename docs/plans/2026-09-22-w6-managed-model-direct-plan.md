@@ -435,6 +435,30 @@ after SSH reconnection; the local failed record must not be reported as a
 sim-console pass. This run does not establish independent DS4 numerical
 oracle parity.
 
+Revision `27cb20ba` now writes an atomic target-side per-run exit status and
+reconnects to read it after SSH status 255. A committed-source
+`memory-service-smoke` run, `sim-console-1790238569482-0`, passed 2/2 nodes
+on `n4-910c`; its target-side exit-status file contains `0`. This verifies
+status-file publication in a real remote run. An actual disconnect followed
+by successful recovery has not yet been exercised end to end.
+
+A same-GGUF DS4 CPU session independently evaluated raw tokens `[42, 201]`
+and selected token `41` at position 1. Its logits for tokens `41` and `361`
+were `18.572752` and `18.229273`. The committed W6 2/3/8-node runs all
+selected `361` at that position; the 2-node guest recorded `18.256815` for
+`41` and `18.282267` for `361`. A separate two-token PTO range probe,
+using the same GGUF weight index and carrying its encoded KV state from the
+first token into the second, reproduced the guest's token `361` and logits
+exactly. Its complete 129,280-value logits versus DS4 had relative L2
+error `0.036051`, maximum absolute error `0.962967`, and 127,019 values
+outside the diagnostic `atol=1e-4, rtol=1e-3` bounds. The probe's second
+state was 12,385,408 bytes, matching the production state geometry.
+This localizes the token-selection mismatch to direct PTO model arithmetic
+or its retained KV state, before guest handoff or cluster scheduling. The
+diagnostic bounds are not acceptance criteria. DeepSeek numerical parity is
+contradicted at position 1, so additional functional steps cannot close
+the W6 model acceptance gate.
+
 The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
 W6 must keep two numerical claims separate: same-GGUF direct-path parity for
@@ -500,14 +524,16 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Recover the final target status after a sim-console SSH disconnect, then
-run committed-source callable 5 through the remaining 2/3/8-node,
+Trace the second token's DS4 CPU and PTO hidden/KV state layer by layer,
+starting with the first layer, and fix the first material divergence. Then
+rerun the same-GGUF full-logits comparison at positions 0 and 1. Exercise
+the new sim-console SSH recovery path with a real disconnect, and run
+committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
 and `n4-910c` 2-node/4-step and 3-node/4-step sim-console gates have
 passed; the 8-node/4-step target-side model run passed with a failed
-sim-console session. Compare logits and per-layer hidden
-against the same-GGUF DS4 CPU oracle for multiple tokens and positions;
-set a justified tolerance for Q8 activation-boundary effects. Separately
+sim-console session. Set a justified tolerance for Q8 activation-boundary
+effects only after the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
 reference. Keep W6 acceptance open until every condition in Section 5 has
 direct evidence.
