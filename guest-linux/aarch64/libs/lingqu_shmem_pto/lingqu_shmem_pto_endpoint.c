@@ -351,21 +351,42 @@ static int queue_mapping_valid(struct lingqu_shmem_pto_endpoint *endpoint)
 {
     uint64_t cmdq_phys;
     uint64_t cq_phys;
+    uint64_t cmdq_base;
+    uint64_t cq_base;
     int rc;
 
     if (!endpoint->cmdq_phys && !endpoint->cq_phys)
         return 0;
-    if (mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_BASE) !=
-            endpoint->cmdq_phys ||
-        mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CQ_BASE) !=
-            endpoint->cq_phys)
+    cmdq_base = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_BASE);
+    cq_base = mmio_read64(endpoint->endpoint_mmio, LINGQU_REG_CQ_BASE);
+    if (cmdq_base != endpoint->cmdq_phys ||
+        cq_base != endpoint->cq_phys) {
+        fprintf(stderr, "lingqu-shmem-pto queue base stale"
+                " cmdq_expected=%#" PRIx64 " cmdq_base=%#" PRIx64
+                " cq_expected=%#" PRIx64 " cq_base=%#" PRIx64 "\n",
+                endpoint->cmdq_phys, cmdq_base,
+                endpoint->cq_phys, cq_base);
         return -ESTALE;
+    }
     rc = phys_for_virt(endpoint->cmdq, &cmdq_phys);
-    if (rc) return rc;
+    if (rc) {
+        fprintf(stderr, "lingqu-shmem-pto cmdq pagemap failed rc=%d\n", rc);
+        return rc;
+    }
     rc = phys_for_virt(endpoint->cq, &cq_phys);
-    if (rc) return rc;
-    return cmdq_phys == endpoint->cmdq_phys &&
-                   cq_phys == endpoint->cq_phys ? 0 : -ESTALE;
+    if (rc) {
+        fprintf(stderr, "lingqu-shmem-pto cq pagemap failed rc=%d\n", rc);
+        return rc;
+    }
+    if (cmdq_phys == endpoint->cmdq_phys &&
+        cq_phys == endpoint->cq_phys)
+        return 0;
+    fprintf(stderr, "lingqu-shmem-pto queue page stale"
+            " cmdq_expected=%#" PRIx64 " cmdq_current=%#" PRIx64
+            " cq_expected=%#" PRIx64 " cq_current=%#" PRIx64 "\n",
+            endpoint->cmdq_phys, cmdq_phys,
+            endpoint->cq_phys, cq_phys);
+    return -ESTALE;
 }
 
 static int queued_collect(struct lingqu_shmem_pto_endpoint *endpoint)
