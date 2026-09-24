@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -54,6 +55,78 @@ static void write_file(const char *path, const void *data, uint64_t bytes) {
     output.write(static_cast<const char *>(data),
                  static_cast<std::streamsize>(bytes));
     if (!output) throw std::runtime_error("output_write_failed");
+}
+
+static ds::LocalMatrix attention_layer_0_trace(const ds::MappedWeights &weights,
+                                                const ds::F32View &residual_hc,
+                                                const char *raw_output_path) {
+    ds::HcPrepared prepared = ds::prepare_hc(
+        weights, 0, "hc_attn_fn", "hc_attn_scale", "hc_attn_base",
+        "attn_norm", residual_hc);
+    ds::LocalMatrix q_lora(1, ds::kQLora);
+    ds::q8_0_linear(prepared.normalized.view(),
+                    ds::layer_tensor(weights, 0, "attn_q_a"), q_lora.view());
+    const ds::F32View q_lora_norm = ds::f32_weight_view(
+        ds::layer_tensor(weights, 0, "attn_q_a_norm"), ds::kQLora);
+    ds::rms_norm(q_lora.view(), &q_lora_norm, q_lora.view(), ds::kEpsilon);
+
+    ds::LocalMatrix q_flat(1, ds::kAttentionHeads * ds::kHeadDim);
+    ds::q8_0_linear(q_lora.view(), ds::layer_tensor(weights, 0, "attn_q_b"),
+                    q_flat.view());
+    const ds::F32View q {q_flat.view().address, ds::kAttentionHeads,
+                         ds::kHeadDim, ds::kHeadDim, 1};
+    ds::head_rms_norm(q, nullptr, q, ds::kEpsilon);
+    ds::RopeFactors rope = ds::rope_factors(0, 0);
+    ds::rope_tail(q, ds::kRopeDim, rope.cos_view(), rope.sin_view(), false, q);
+    const std::string q_path = std::string(raw_output_path) + ".q.f32";
+    write_file(q_path.c_str(), reinterpret_cast<const void *>(q.address),
+               ds::kAttentionHeads * ds::kHeadDim * sizeof(float));
+
+    ds::LocalMatrix current_kv(1, ds::kHeadDim);
+    ds::q8_0_linear(prepared.normalized.view(),
+                    ds::layer_tensor(weights, 0, "attn_kv"), current_kv.view());
+    const ds::F32View kv_norm = ds::f32_weight_view(
+        ds::layer_tensor(weights, 0, "attn_kv_a_norm"), ds::kHeadDim);
+    ds::rms_norm(current_kv.view(), &kv_norm, current_kv.view(), ds::kEpsilon);
+    ds::rope_tail(current_kv.view(), ds::kRopeDim, rope.cos_view(),
+                  rope.sin_view(), false, current_kv.view());
+    ds::fp8_kv_roundtrip(current_kv.view(), ds::kRopeDim);
+    ds::f16_roundtrip(current_kv.view());
+
+    ds::LocalMatrix heads(ds::kAttentionHeads, ds::kHeadDim);
+    const ds::F32View sinks = ds::f32_weight_view(
+        ds::layer_tensor(weights, 0, "attn_sinks"), ds::kAttentionHeads);
+    ds::sink_attention(q, current_kv.view(), sinks, heads.view());
+    ds::rope_tail(heads.view(), ds::kRopeDim, rope.cos_view(),
+                  rope.sin_view(), true, heads.view());
+    const std::string heads_path = std::string(raw_output_path) + ".heads.f32";
+    write_file(heads_path.c_str(),
+               reinterpret_cast<const void *>(heads.view().address),
+               ds::kAttentionHeads * ds::kHeadDim * sizeof(float));
+
+    ds::LocalMatrix output_a(1, ds::kOutputGroups * ds::kOLora);
+    const ds::F32View flat_heads {heads.view().address, 1,
+                                  ds::kAttentionHeads * ds::kHeadDim,
+                                  ds::kAttentionHeads * ds::kHeadDim, 1};
+    ds::grouped_q8_0_linear(flat_heads,
+                            ds::layer_tensor(weights, 0, "attn_output_a"),
+                            ds::kOutputGroups, output_a.view());
+    const std::string output_a_path = std::string(raw_output_path) +
+                                      ".output-a.f32";
+    write_file(output_a_path.c_str(),
+               reinterpret_cast<const void *>(output_a.view().address),
+               ds::kOutputGroups * ds::kOLora * sizeof(float));
+    ds::LocalMatrix attention_output(1, ds::kHidden);
+    ds::q8_0_linear(output_a.view(),
+                    ds::layer_tensor(weights, 0, "attn_output_b"),
+                    attention_output.view());
+    write_file(raw_output_path,
+               reinterpret_cast<const void *>(attention_output.view().address),
+               ds::kHidden * sizeof(float));
+    ds::LocalMatrix output_hc(ds::kHcMult, ds::kHidden);
+    ds::hc_post(attention_output.view(), residual_hc, prepared.post.view(),
+                prepared.combine.view(), output_hc.view());
+    return output_hc;
 }
 
 static int run(int argc, char **argv) {
@@ -108,20 +181,11 @@ static int run(int argc, char **argv) {
     write_file(argv[4], hidden.data(), hidden.size() * sizeof(float));
     write_file(argv[5], next_state.data(), next_state.size());
     if (argc == 8) {
-        std::vector<uint8_t> attention_state(state_bytes(1));
-        const ds::RangeStateGeometry state_geometry {
-            0, 1, 1, ds::kHeadDim, ds::kIndexerHeadDim,
-            ds::kSlidingWindow, ds::kIndexerTopK,
-        };
-        ds::RangeStateView stage = ds::range_state(
-            ds::ByteView {reinterpret_cast<uintptr_t>(attention_state.data()),
-                          attention_state.size()},
-            state_geometry, true);
-        ds::initialize_compressors(stage);
         ds::LocalMatrix embedded(ds::kHcMult, ds::kHidden);
         ds::embedding(weights, token, embedded.view());
-        ds::LocalMatrix attention = ds::attention_layer(
-            weights, 0, 0, embedded.view(), stage.layers[0]);
+        const std::string raw_path = std::string(argv[7]) + ".raw.f32";
+        ds::LocalMatrix attention = attention_layer_0_trace(
+            weights, embedded.view(), raw_path.c_str());
         ds::LocalMatrix final = ds::ffn_layer(
             weights, codebook, 0, token, attention.view());
         if (std::memcmp(reinterpret_cast<const void *>(final.view().address),

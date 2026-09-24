@@ -221,9 +221,47 @@ the same GGUF for direct PTO and bulk execution. The encoded KV segment
 mean absolute error `0.0002459195`, relative L2 error `0.0042583656`, and
 cosine similarity `0.9999909384`. At diagnostic tolerances `atol=1e-4` and
 `rtol=1e-3`, 3,635 values were outside tolerance. These thresholds are not
-model acceptance criteria. The matching KV segment narrows the investigation,
-but the differing hidden output still needs attention/FFN stage isolation and
-comparison with a DS4 oracle.
+model acceptance criteria. The matching KV segment narrows the investigation;
+the stage comparison below localizes the first measurable difference.
+
+Stage isolation on the same host, model, token and position confirms that
+the bulk stage runner reproduces its previous 16,384-value final hidden
+output bitwise. The direct probe also checks that replaying layer 0 as
+embedding, attention and FFN reproduces its original range output bitwise.
+The two attention outputs already differ before the FFN:
+
+| Stage | Values | Max absolute error | Relative L2 error | Outside diagnostic tolerance |
+| --- | ---: | ---: | ---: | ---: |
+| Raw attention, before HC post | 4,096 | `0.0210111141` | `0.0021458036` | 2,917 |
+| Attention HC, after HC post | 16,384 | `0.0006673019` | `0.0016561342` | 1,401 |
+
+Both rows use diagnostic `atol=1e-4`, `rtol=1e-3`; these are not acceptance
+limits. A same-GGUF scalar calculation using `sim-models` F16/Q8_0 decoders
+and projections, with the validated layer-0 KV row supplied as input, further
+localized this case:
+
+| Comparison | Result |
+| --- | --- |
+| Query after RoPE, scalar vs PTO | 32,768/32,768 bitwise equal |
+| Attention heads after inverse RoPE, scalar vs PTO | max absolute error `4.7683716e-7`; 20,957/32,768 bitwise equal |
+| Grouped `output_a`, independently computed heads | max absolute error `0.0036337376` |
+| Grouped `output_a`, identical PTO heads supplied to both paths | 8,192/8,192 bitwise equal |
+| Raw attention output, identical PTO heads supplied to both paths | 4,096/4,096 bitwise equal |
+
+The two head tensors produce 156 different Q8 activation codes out of 32,768
+and 360 different scale bit patterns out of 1,024 blocks. The tiny
+sink-attention floating-point difference is amplified at the Q8 activation
+boundary. This case gives no evidence of a grouped Q8 or output-B kernel
+mismatch when those kernels receive identical inputs. The scalar calculation
+reuses a KV row produced by the direct run; it is a stage differential, not
+a full independent model oracle.
+
+The current run uses an IQ2 GGUF. The official checkpoint plan explicitly
+prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
+W6 must keep two numerical claims separate: same-GGUF direct-path parity for
+the deployed quantized model, and official-checkpoint parity against the
+independent Safetensors CPU reference. Neither full-model claim is proven by
+this one-layer stage comparison.
 
 ### 4.3 Serving selection and observability
 
@@ -243,9 +281,11 @@ counters without repeatedly transferring large QEMU logs.
 The acceptance matrix remains 2/3/8 nodes times 4/8 steps for each model,
 through sim-console on both `n4-910c` and `n4-910c1`. The cluster-runner
 matrix on one host is useful evidence and does not replace that requirement.
-For every case, compare terminal tokens and logits with the established model
-oracle, match guest request IDs to host access counts, and confirm zero
-publication copy bytes. Record the exact run ID and source revision.
+For every case, compare terminal tokens and logits with the corresponding
+same-format model reference, match guest request IDs to host access counts,
+and confirm zero publication copy bytes. Record the exact run ID and source
+revision. The deployed GGUF path still needs a complete same-GGUF reference;
+the official Safetensors reference covers a different weight format.
 
 ## 5. Acceptance Criteria
 
@@ -264,15 +304,18 @@ W6 model direct is complete only when all conditions hold:
    including timeout and retry cases.
 7. Hidden and KV handoff publication is in place and reports zero publication
    copy bytes.
-8. Terminal logits and selected tokens match the established model oracle.
+8. Terminal logits and selected tokens match a reference for the same model
+   asset and weight format. GGUF differential results cannot establish
+   official FP8/FP4 checkpoint parity.
 9. The 2/3/8-node, 4/8-step matrix passes on both test-farm hosts.
 10. W6 becomes the default only after Qwen and DeepSeek both satisfy items
     1 through 9. W5 callable 4 remains explicitly selectable for comparison.
 
 ## 6. Immediate Next Change
 
-Compare the first DeepSeek range's full hidden/KV tensors against the model
-oracle with an explicit tolerance, then trace any material discrepancy to
-the responsible operator. Complete the 2/3/8-node, 4/8-step sim-console
-matrix on both hosts. Keep W6 acceptance open until every condition in
-Section 5 has direct evidence.
+Extend the same-GGUF scalar comparison beyond the first dense layer and
+position-0 token, with a justified tolerance for Q8 activation-boundary
+effects. Separately compare the official-checkpoint path with the existing
+independent Safetensors CPU reference. Complete the 2/3/8-node, 4/8-step
+sim-console matrix on both hosts. Keep W6 acceptance open until every
+condition in Section 5 has direct evidence.

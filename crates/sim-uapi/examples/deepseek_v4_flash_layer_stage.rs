@@ -79,6 +79,12 @@ fn run(args: Args) -> Result<(), String> {
         &embedded,
     )?;
     write_f32(&args.attention_output, &execution.attention_output_hc)?;
+    let mut raw_attention_path = args.attention_output.as_os_str().to_os_string();
+    raw_attention_path.push(".raw.f32");
+    write_f32(
+        &PathBuf::from(raw_attention_path),
+        &execution.attention_output,
+    )?;
     write_f32(&args.final_output, &execution.ffn.output_hc)?;
     println!(
         "layer_stage=pass layer=0 token={} attention_values={} final_values={} routes={:?}",
