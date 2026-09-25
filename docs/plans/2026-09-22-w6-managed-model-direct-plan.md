@@ -1,12 +1,13 @@
 # W6 Managed UB_GM Model-Direct Plan
 
-Date: 2026-09-22. Last verified: 2026-09-24.
+Date: 2026-09-22. Last verified: 2026-09-25.
 
 Status: Qwen callable 3 and DeepSeek callable 5 are integrated with managed
 `UB_GM` serving, and the stable W5 config entry selects `direct` by default
-for these two profiles. Functional matrices passed through the cluster runner
-on `n4-910c`. The sim-console two-host matrix and the oracle acceptance gate
-remain open; the configured default is not a claim of full W6 acceptance.
+for these two profiles. The sim-console two-host functional matrices have
+passed across recorded source revisions. Full-logits and official-checkpoint
+oracle acceptance remain open; the configured default is not a claim of
+full W6 acceptance.
 
 ## 1. Goal
 
@@ -909,7 +910,18 @@ All 24 callable-5 host access records had positive reads and writes,
 `shared_payload_staging_bytes=0`, and `status=pass`. This closes the
 second-host three-node eight-step functional gate. It does not establish
 compressed-state or full-logits parity; the second-host eight-node
-eight-step gate remains open.
+eight-step gate remained open at that point.
+
+The same isolated checkout passed DeepSeek 8-node/8-step on `n4-910c1`
+in run `sim-console-1790315528053-0`, exit code 0. All eight nodes
+completed eight ranges. Terminal IDs
+`[201, 41, 201, 35, 201, 35, 201, 35]` matched the same-GGUF DS4
+greedy reference. All 64 callable-5 host access records reported
+positive reads and writes, `shared_payload_staging_bytes=0`, and
+`status=pass`. This completes the recorded second-host 2/3/8-node,
+4/8-step DeepSeek functional matrix. It does not establish full-logits
+or compressed-state parity, same-revision repeatability, or official
+checkpoint acceptance.
 
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
@@ -958,12 +970,10 @@ Locate the step-1 state difference that expands the standalone range's
 relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
 KV row at step 7 against DS4 state, beyond the already-matching guest
 token sequence.
-The 8-node/4-step run exercised sim-console SSH recovery against a real
-disconnect. Run committed-source callable 5 through the remaining 2/3/8-node,
-4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step
-gate and the `n4-910c` 2/3/8-node, 4/8-step matrix have passed.
-`n4-910c1` also passed 2-node/4/8-step, 3-node/4-step, and
-8-node/4-step; its 3-node/8-step and 8-node/8-step gates remain.
+The two-host 2-node/1-step and recorded 2/3/8-node, 4/8-step DeepSeek
+functional gates have passed. The 8-node/4-step run exercised sim-console
+SSH recovery against a real disconnect. Confirm same-revision repeatability
+without conflating it with the recorded cross-revision matrix.
 Set a justified tolerance for Q8
 activation-boundary
 effects only after the first model divergence is understood. Separately
