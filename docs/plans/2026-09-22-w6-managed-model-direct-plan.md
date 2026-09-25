@@ -627,6 +627,18 @@ rose from 108,972 to 118,762 of 129,280. Both selected token 201.
 Attention-only compensation therefore also fails the full-logits gate.
 None of these RMSNorm variants was applied to production code.
 
+The same token-42, position-0 probe dumped all 43 post-layer hidden
+vectors for DS4, baseline PTO, and attention-only compensation. Baseline
+relative L2 error was `0.004371485` after layer 1, `0.002421645`
+after layer 36, `0.006062818` after layer 37, and `0.002307412`
+after layer 43. The attention-only variant measured `0.003683477`,
+`0.004053881`, `0.017845502`, and `0.006605937` at those layers.
+Both traces amplify the error at layer 37; the attention-only variant
+amplifies it more and ends with worse full logits. This trace locates
+where error grows, without identifying the responsible operator. No
+compressed row can be emitted at position 0, so compressor pooling
+cannot explain the first-layer or step-0 logits discrepancy.
+
 A focused comparison of the existing first-layer token-42 DS4 and PTO
 diagnostic dumps found Q8 activation sensitivity. Their query
 tensors have relative L2 error `2.45110827e-7`; their post-attention,
@@ -887,6 +899,17 @@ pre-existing QEMU processes. This is a real SSH-disconnect recovery case;
 the target result and fetched logs establish the functional gate despite
 the interrupted launcher output. It leaves full-logits parity and the
 second-host 3-node/8-step and 8-node/8-step gates open.
+
+The same isolated checkout passed DeepSeek 3-node/8-step on `n4-910c1`
+in run `sim-console-1790312839485-0`, exit code 0. All three nodes
+completed eight ranges. Terminal IDs
+`[201, 41, 201, 35, 201, 35, 201, 35]` matched the same-GGUF DS4
+greedy reference, including selection after the second ratio-4 pool.
+All 24 callable-5 host access records had positive reads and writes,
+`shared_payload_staging_bytes=0`, and `status=pass`. This closes the
+second-host three-node eight-step functional gate. It does not establish
+compressed-state or full-logits parity; the second-host eight-node
+eight-step gate remains open.
 
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
