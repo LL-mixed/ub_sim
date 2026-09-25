@@ -826,6 +826,27 @@ which PTO-compatible reduction should replace it or predict the effect
 on complete logits and later multi-row attention. Diagnostic sources
 and outputs remain in ignored `out/w6-range-parity/` on `n4-910c`.
 
+A PTO `TMUL`/`TROWSUM` chunk sweep then tested widths 1 through 512 on
+the same DS4 Q/KV. Replaying the width-512 scores reproduced the current
+PTO heads byte-for-byte; replaying exact DS4 scores produced DS4 heads
+byte-for-byte. Widths 32, 128 and 256 reduced score relative L2 from
+the width-512 baseline `1.3518e-7` to `9.5690e-8`, `9.8381e-8` and
+`9.2045e-8`, respectively. They increased Q8 code differences from 74
+to 157, 125 and 183. Lower score error alone is therefore an invalid
+selection rule for this quantized boundary; none of these three chunk
+variants is a validated production correction.
+
+A separate first-layer intervention replayed the same PTO projection
+and FFN with substituted attention heads. Re-injecting PTO's own heads
+reproduced its original final hidden byte-for-byte. Relative to DS4's
+16,384-value layer-1 hidden, the baseline PTO error was `0.004371485`;
+using heads computed from exact DS4 Q/KV with PTO attention gave
+`0.003897843`, and substituting exact DS4 heads gave `0.001756476`.
+This establishes substantial downstream sensitivity to the heads
+boundary. The latter intervention also removes upstream Q/KV error, so
+the result does not assign the entire improvement to dot reduction.
+It is a one-token, one-layer causal probe, not a full-logits result.
+
 Two 2-node, eight-step sim-console attempts stopped before step 7. Baseline
 `774ec91a` on `n4-910c` (`sim-console-1790256637013-0`) produced the first
 three DS4 tokens, then nodeB failed to open the previous-token managed
@@ -1034,11 +1055,12 @@ relative L2 logits error to 0.033570. The step-7 ratio-4 compressed
 row differs, and its rolling KV/score state already differs at step 6.
 The common-input layer-2 projection probe found only `1e-7`-scale
 operator differences; native-input errors are `1e-3`-scale. Focus the
-next numerical probe on a PTO-compatible Q/KV dot reduction, using
-identical DS4 inputs before extending to multi-row attention. The
-one-row scalar trace identifies the dot score as the first difference;
-its 74 downstream Q8 code changes still need a validated correction.
-Require any candidate to improve complete logits under production
+next numerical probe on a PTO-compatible Q/KV dot implementation with
+full-model validation. The one-row scalar trace identifies the dot score
+as the first difference, while the chunk sweep rejects simple reduction
+granularity tuning: it worsened Q8 code parity despite smaller FP32
+score error. Require a candidate to improve the heads/Q8 boundary,
+layer-1 hidden, multi-row attention and complete logits under production
 compiler flags before changing the production operator.
 The two-host 2-node/1-step and recorded 2/3/8-node, 4/8-step DeepSeek
 functional gates have passed. The 8-node/4-step run exercised sim-console
