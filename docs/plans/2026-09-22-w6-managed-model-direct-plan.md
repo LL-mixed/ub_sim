@@ -779,6 +779,20 @@ upstream state divergence before the second pool; it does not identify
 the first responsible operator or prove pool arithmetic is bitwise equal.
 The outputs remain in ignored `out/w6-range-parity/` on `n4-910c`.
 
+A controlled layer-2 projection probe used the same DS4 GGUF and verified
+that both DS4 compressor KV/gate weight pairs are F16, as in the PTO
+path. With DS4's exact normalized input, PTO attention KV/score output
+relative L2 errors were `5.19e-7`/`1.78e-7`; indexer KV/score errors
+were `3.94e-7`/`2.59e-7`. Given the same DS4 layer-1 hidden tensor,
+PTO's layer-2 HC/attention normalized output differed by `1.69e-7`
+and its attention KV projection by `5.49e-7`. With PTO's native layer-1
+hidden instead, those errors rose to `0.003359` and `0.003231`; indexer
+KV projection error was `0.002138`. The native layer-1 hidden itself
+differs from DS4 by `0.004371485`. Thus the measured large layer-2
+compressor-input drift follows the upstream hidden difference. The
+common-input projection retains small FP32 differences and is not
+bitwise equal. No production operator was changed by these probes.
+
 Two 2-node, eight-step sim-console attempts stopped before step 7. Baseline
 `774ec91a` on `n4-910c` (`sim-console-1790256637013-0`) produced the first
 three DS4 tokens, then nodeB failed to open the previous-token managed
@@ -985,8 +999,11 @@ quantizer unchanged.
 Locate the step-1 state difference that expands the standalone range's
 relative L2 logits error to 0.033570. The step-7 ratio-4 compressed
 row differs, and its rolling KV/score state already differs at step 6.
-Trace the layer-2 compressor projection under common hidden input to
-separate upstream input drift from compressor operator arithmetic.
+The common-input layer-2 projection probe found only `1e-7`-scale
+operator differences; native-input errors are `1e-3`-scale. Focus the
+next numerical probe on the first-layer attention-head and grouped-Q8
+boundary that produces the upstream hidden drift, then recheck complete
+logits under production compiler flags.
 The two-host 2-node/1-step and recorded 2/3/8-node, 4/8-step DeepSeek
 functional gates have passed. The 8-node/4-step run exercised sim-console
 SSH recovery against a real disconnect. Confirm same-revision repeatability
