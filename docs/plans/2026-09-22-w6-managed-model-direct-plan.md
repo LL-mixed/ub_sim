@@ -731,6 +731,18 @@ No QEMU process remained after the run. This closes the 8-node/4-step
 functional gate on one host. It does not establish repeat-run stability,
 the 8-node/8-step gate, second-host coverage, or full-logits parity.
 
+The same isolated checkout passed the DeepSeek 8-node/8-step sim-console
+run `sim-console-1790297485314-0` on `n4-910c` with exit code 0. All
+eight nodes completed 8/8 ranges; the terminal IDs
+`[201, 41, 201, 35, 201, 35, 201, 35]` match the independent same-GGUF
+DS4 greedy reference. All 64 callable-5 host access records had positive
+reads and writes, `shared_payload_staging_bytes=0`, and `status=pass`.
+The post-run process check found no remaining QEMU process. This closes
+the eight-node eight-step functional gate on one host, including token
+selection at the second ratio-4 pool in step 7. It does not establish
+compressed-state or full-logits parity, repeat-run stability, or
+second-host coverage.
+
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
@@ -776,8 +788,8 @@ committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
 and `n4-910c` 2-node/4-step, 2-node/8-step, 3-node/4-step,
 3-node/8-step, and 8-node/4-step sim-console gates have passed. The next
-functional gate is 8-node/8-step on `n4-910c`, followed by the full
-second-host matrix. Set a justified tolerance for Q8 activation-boundary
+functional gate is the full second-host matrix; the `n4-910c` 8-node/8-step
+gate has also passed. Set a justified tolerance for Q8 activation-boundary
 effects only after the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
 reference. Keep W6 acceptance open until every condition in Section 5 has
