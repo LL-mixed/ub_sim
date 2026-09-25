@@ -10,6 +10,21 @@ namespace ds = lingqu::deepseek_v4_flash_pto;
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (0)
 
 int main() {
+    // Token-42 first-layer heads on opposite sides of a Q8 rounding boundary.
+    std::array<float, 64> boundary_input {};
+    boundary_input[0] = 1.04024875f;
+    boundary_input[27] = 0.520124376f;
+    boundary_input[32] = 1.04024887f;
+    boundary_input[59] = 0.520124435f;
+    const ds::F32View boundary_view {
+        reinterpret_cast<uintptr_t>(boundary_input.data()), 2, 32, 32, 1};
+    const ds::QuantizedQ8Block ds4_input_quantized =
+        ds::quantize_q8_0(boundary_view, 0, 0);
+    const ds::QuantizedQ8Block pto_input_quantized =
+        ds::quantize_q8_0(boundary_view, 1, 0);
+    CHECK(ds4_input_quantized.values[27] == 63);
+    CHECK(pto_input_quantized.values[27] == 64);
+
     std::array<float, 32> input {};
     input.fill(1.0f);
     std::array<uint8_t, 68> encoded {};

@@ -574,6 +574,31 @@ RMSNorm on the PTO HC-mixed tensor reduced the normalized-output error to
 replay on DS4's own input matched all 4,096 values bitwise. This isolates
 RMSNorm reduction as a measured first-layer error source.
 
+A focused comparison of the existing first-layer token-42 DS4 and PTO
+diagnostic dumps found a concrete Q8 activation boundary. Their query
+tensors have relative L2 error `2.45110827e-7`; their post-attention,
+inverse-RoPE heads have relative L2 error `8.84045342e-8`.
+Replaying DS4's 32-value Q8 activation formula over both heads tensors
+gives the first differing code at block 1, lane 27 (flat index 59):
+the DS4 input `0.520124376` scales to `63.4999962` and code 63;
+the PTO input `0.520124435` scales to exactly `63.5` and code 64.
+Both blocks take their absolute maximum from lane 0, whose inputs are
+`1.04024875` and `1.04024887`, respectively. Holding the DS4 scale
+while substituting only the PTO lane-27 input yields `63.5000038`, so
+the lane input difference alone crosses the rounding boundary. The
+replay found 217 differing Q8 codes across 32,768 head values. These
+are predicted codes from the dumped float tensors; the actual PTO
+`TCVT` output was not captured. A focused CPU-sim golden fixture using
+these two 32-value block inputs called the PTO `quantize_q8_0` operator
+and passed with codes 63 and 64 at lane 27. This fixture does not yet
+measure the production GCC 15.3 kernel's in-run code. The query
+difference precedes sink attention, while the quantization boundary
+explains how a small heads difference can affect grouped output-A. The
+next check must capture
+the production PTO code for this block and trace the earliest query
+stage value that differs from DS4. Do not treat the Q8 quantizer itself
+as defective on this evidence.
+
 An ignored, diagnostic-only PTO copy changed the RMSNorm reduction from
 one 4,096-element `TROWSUM` to 32-element chunks, keeping PTO tile
 operations throughout. The table compares both PTO probes against the same
@@ -777,11 +802,13 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Trace the first token's pre-projection rounding, including RMSNorm
-accumulation, then rerun the common-input and full-logits comparisons with
-the production compiler. Locate the step-1 state difference that expands
-the standalone range's relative L2 logits error to 0.033570. Verify the
-second ratio-4 compressed KV row at step 7 against DS4 state, beyond the
+Capture the actual production PTO `TCVT` code for first-layer grouped
+output-A activation block 1, lane 27, then trace the first upstream
+query-stage value that diverges from DS4. Rerun the common-input and
+full-logits comparisons with the production compiler after a correction.
+Locate the step-1 state difference that expands the standalone range's
+relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
+KV row at step 7 against DS4 state, beyond the
 already-matching guest token sequence.
 Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
