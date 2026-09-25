@@ -784,13 +784,19 @@ second-host coverage.
 
 `sim-console prepare-target n4-910c1` materialized the exact committed
 submodules for isolated source revision `8be893ca` and reported 19 ready
-demos with zero readiness blockers. No second-host run was launched:
-the pre-run process check found 28 existing QEMU processes, all about
-four days old. A sampled process was parented by PID 1 and still used
-about one CPU core. Their ownership and lifecycle were not established,
-so this validation did not stop them or add another guest cluster.
-Second-host W6 gates remain open until the host can run without
-interference.
+demos with zero readiness blockers. The pre-run check found 28 QEMU
+processes from older runs. A sampled process was parented by PID 1;
+their ownership was not established, so none was stopped. With 320 CPUs
+and about 1.8 TiB of available memory, the host had capacity for a
+separate two-node gate. Run `sim-console-1790302387279-0` then passed
+DeepSeek 2-node/4-step on that revision: 4/4 steps, 2/2 passed nodes,
+terminal IDs `[201, 41, 201, 35]` matching the same-GGUF DS4 greedy
+reference. All eight callable-5 host access records had positive reads
+and writes, `shared_payload_staging_bytes=0`, and `status=pass`.
+The post-run process list still contained the same 28 older QEMU
+processes and no process from this run. This closes one second-host
+functional gate. The remaining second-host topology/step matrix,
+repeat-run stability, and full-logits parity stay open.
 
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
@@ -829,19 +835,19 @@ W6 model direct is complete only when all conditions hold:
 Trace the earliest HC/query-stage value that diverges from DS4 under
 common input. The complete first-layer DS4/PTO Q8 activation code and
 scale streams already match bytewise on either heads dump; keep the
-quantizer unchanged. Rerun the common-input and
-full-logits comparisons with the production compiler after a correction.
+quantizer unchanged. Rerun the common-input and full-logits comparisons
+with the production compiler after a correction.
 Locate the step-1 state difference that expands the standalone range's
 relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
 KV row at step 7 against DS4 state, beyond the already-matching guest
 token sequence.
 Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
-4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
-and `n4-910c` 2-node/4-step, 2-node/8-step, 3-node/4-step,
-3-node/8-step, and 8-node/4-step sim-console gates have passed. The next
-functional gate is the full second-host matrix; the `n4-910c` 8-node/8-step
-gate has also passed. Set a justified tolerance for Q8 activation-boundary
+4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step
+gate and the `n4-910c` 2/3/8-node, 4/8-step matrix have passed.
+`n4-910c1` also passed 2-node/4-step; its 2-node/8-step, 3-node/4/8-step,
+and 8-node/4/8-step gates remain. Set a justified tolerance for Q8
+activation-boundary
 effects only after the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
 reference. Keep W6 acceptance open until every condition in Section 5 has
