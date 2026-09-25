@@ -609,6 +609,7 @@ first-layer comparison against DS4 produced:
 | Committed baseline | 0 / 16,384 | `4.352559e-7` | `0.004371485` |
 | All RMSNorm calls | 16,384 / 16,384 | `5.604918e-8` | `0.004486001` |
 | HC control only | 16,384 / 16,384 | `4.352559e-7` | `0.004371411` |
+| Attention RMSNorm only | 0 / 16,384 | `5.604918e-8` | `0.003683477` |
 
 The control-only variant's attention norm output was byte-identical to
 the committed baseline (4,096 of 4,096 values), even though its HC
@@ -616,8 +617,15 @@ control norm matched DS4 exactly. The all-RMSNorm variant improved the
 attention norm but worsened the complete layer. These controlled results
 reject both variants as production fixes. They show why locating the
 earliest numerical difference alone cannot explain the much larger
-complete-layer error. No full-logits acceptance claim follows from this
-single-layer probe.
+complete-layer error. The attention-only variant reduced the complete
+first-layer error by about 15.7%, so it was also run through all 43 layers
+and the output head. Its step-0 full-logits relative L2 error increased
+from the committed baseline's `0.003836918` to `0.007350699`, and maximum
+absolute error increased from `0.081278` to `0.159392`. Under the
+diagnostic `1e-4 + 1e-3 * abs(ref)` threshold, values outside tolerance
+rose from 108,972 to 118,762 of 129,280. Both selected token 201.
+Attention-only compensation therefore also fails the full-logits gate.
+None of these RMSNorm variants was applied to production code.
 
 A focused comparison of the existing first-layer token-42 DS4 and PTO
 diagnostic dumps found Q8 activation sensitivity. Their query
@@ -914,13 +922,15 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-The first HC control divergence is measured, and compensated FP32
-reduction did not improve the complete layer. Next isolate the attention
-RMSNorm-to-query and post-attention-heads-to-grouped-Q8 boundaries using
-common DS4 input tensors, then test any correction against full layer
-and logits under production compiler flags. The complete first-layer
-DS4/PTO Q8 activation code and scale streams already match bytewise on
-either heads dump; keep the quantizer unchanged.
+The HC control divergence is measured. Global, control-only, and
+attention-only compensated reductions all failed either the complete
+layer or full-logits comparison. Stop varying RMSNorm arithmetic until
+per-layer traces locate where the error grows. Isolate the attention
+RMSNorm-to-query and post-attention-heads-to-grouped-Q8 boundaries with
+common DS4 inputs, then require any correction to improve full logits
+under production compiler flags. The first-layer DS4/PTO Q8 activation
+codes and scales already match bytewise on either heads dump; keep the
+quantizer unchanged.
 Locate the step-1 state difference that expands the standalone range's
 relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
 KV row at step 7 against DS4 state, beyond the already-matching guest
