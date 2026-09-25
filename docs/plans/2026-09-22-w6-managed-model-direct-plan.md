@@ -763,6 +763,22 @@ step 7. The corrected sum order is a real local parity fix, but it does not
 explain the earlier numerical drift or the managed-reference TCP failures.
 Matching selected tokens does not establish full-logits parity. This probe
 exercises the standalone PTO range, not the multi-node guest path.
+
+A target-local DS4 CPU probe then exported layer-2 ratio-4 compressor
+state after steps 6 and 7, using the same eight-token greedy sequence.
+Its step-7 full logits matched the earlier DS4 reference byte-for-byte.
+The committed-order PTO probe's seven-token state and existing eight-token
+state were parsed with validated header, layer and tensor dimensions.
+At step 6, before the second pool, DS4 versus PTO relative L2 errors
+were `0.011901` for attention state KV, `0.003943` for attention scores,
+`0.007710` for indexer state KV, and `0.004766` for indexer scores.
+Their first compressed attention row already differed by `0.011534`.
+After step 7, the newly emitted second attention and indexer rows
+differed by `0.020515` and `0.017863`, respectively. This establishes
+upstream state divergence before the second pool; it does not identify
+the first responsible operator or prove pool arithmetic is bitwise equal.
+The outputs remain in ignored `out/w6-range-parity/` on `n4-910c`.
+
 Two 2-node, eight-step sim-console attempts stopped before step 7. Baseline
 `774ec91a` on `n4-910c` (`sim-console-1790256637013-0`) produced the first
 three DS4 tokens, then nodeB failed to open the previous-token managed
@@ -967,9 +983,10 @@ under production compiler flags. The first-layer DS4/PTO Q8 activation
 codes and scales already match bytewise on either heads dump; keep the
 quantizer unchanged.
 Locate the step-1 state difference that expands the standalone range's
-relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
-KV row at step 7 against DS4 state, beyond the already-matching guest
-token sequence.
+relative L2 logits error to 0.033570. The step-7 ratio-4 compressed
+row differs, and its rolling KV/score state already differs at step 6.
+Trace the layer-2 compressor projection under common hidden input to
+separate upstream input drift from compressor operator arithmetic.
 The two-host 2-node/1-step and recorded 2/3/8-node, 4/8-step DeepSeek
 functional gates have passed. The 8-node/4-step run exercised sim-console
 SSH recovery against a real disconnect. Confirm same-revision repeatability
