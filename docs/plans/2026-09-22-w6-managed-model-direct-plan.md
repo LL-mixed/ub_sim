@@ -574,6 +574,31 @@ RMSNorm on the PTO HC-mixed tensor reduced the normalized-output error to
 replay on DS4's own input matched all 4,096 values bitwise. This isolates
 RMSNorm reduction as a measured first-layer error source.
 
+A narrower token-42 first-HC probe on `n4-910c` compared the same IQ2 GGUF
+through DS4 CPU and the production-flag PTO CPU simulator. Both diagnostic
+stage replays matched their respective original HC preparation paths. The
+existing FP32 comparison tool produced these zero-tolerance results:
+
+| Stage | Values | Exact values | Relative L2 error |
+| --- | ---: | ---: | ---: |
+| HC token embedding | 16,384 | 16,384 | 0 |
+| HC control RMSNorm output | 16,384 | 0 | `1.228742e-6` |
+| HC control projection | 24 | 0 | `9.796435e-7` |
+| HC split | 24 | 5 | `5.093556e-8` |
+| HC weighted mix | 4,096 | 3,646 | `2.297681e-8` |
+| Attention RMSNorm output | 4,096 | 0 | `4.352559e-7` |
+
+The embedding is byte-identical; the first observed difference is therefore
+the HC control RMSNorm, before the HC projection, weighted mix, attention,
+or compressed pooling. The common embedding's double-precision mean square
+is `0.00143036300916`. Fitting one scale to all 16,384 outputs gives
+`26.4316997026` for DS4 and `26.4317321667` for PTO; the DS4 formula
+with the same `1e-6` epsilon gives `26.4316997528`. DS4 accumulates its
+squared sum in `double`; PTO's `TROWSUM` and cross-chunk total are FP32.
+The matching input, scale measurements, and implementations identify
+reduction arithmetic as the first-layer control-norm discrepancy. They do
+not establish that it is the sole source of the full-model logits drift.
+
 A focused comparison of the existing first-layer token-42 DS4 and PTO
 diagnostic dumps found Q8 activation sensitivity. Their query
 tensors have relative L2 error `2.45110827e-7`; their post-attention,
@@ -869,11 +894,14 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Trace the earliest HC/query-stage value that diverges from DS4 under
-common input. The complete first-layer DS4/PTO Q8 activation code and
+The first HC/query-stage divergence is now localized to the HC control
+RMSNorm on byte-identical embedding input. Evaluate a PTO-compatible
+compensated FP32 reduction against the measured DS4 double-accumulation
+result under production compiler flags. Keep it out of production until
+the first-layer Q8 activation boundary, later layers, and full logits
+improve together. The complete first-layer DS4/PTO Q8 activation code and
 scale streams already match bytewise on either heads dump; keep the
-quantizer unchanged. Rerun the common-input and full-logits comparisons
-with the production compiler after a correction.
+quantizer unchanged.
 Locate the step-1 state difference that expands the standalone range's
 relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
 KV row at step 7 against DS4 state, beyond the already-matching guest
@@ -883,9 +911,7 @@ disconnect. Run committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step
 gate and the `n4-910c` 2/3/8-node, 4/8-step matrix have passed.
 `n4-910c1` also passed 2-node/4/8-step, 3-node/4-step, and
-8-node/4-step; its 3-node/8-step and 8-node/8-step gates remain. The
-8-node/4-step run exercised SSH-disconnect recovery against a target
-run that completed successfully.
+8-node/4-step; its 3-node/8-step and 8-node/8-step gates remain.
 Set a justified tolerance for Q8
 activation-boundary
 effects only after the first model divergence is understood. Separately
