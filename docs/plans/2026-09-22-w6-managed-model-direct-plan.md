@@ -798,6 +798,17 @@ processes and no process from this run. This closes one second-host
 functional gate. The remaining second-host topology/step matrix,
 repeat-run stability, and full-logits parity stay open.
 
+The same isolated checkout passed DeepSeek 3-node/4-step on `n4-910c1`
+in run `sim-console-1790304017814-0`, exit code 0. All three nodes
+completed 4/4 ranges, with layer splits `[0,15)`, `[15,29)`, and
+`[29,43)`. Terminal IDs `[201, 41, 201, 35]` matched the independent
+same-GGUF DS4 greedy reference. All 12 callable-5 host access records
+had positive reads and writes, `shared_payload_staging_bytes=0`, and
+`status=pass`. The post-run process list still had the original 28 QEMU
+processes and none from this run. This closes the second-host
+three-node four-step functional gate; eight-step and eight-node gates
+remain open there.
+
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
@@ -845,8 +856,9 @@ Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step
 gate and the `n4-910c` 2/3/8-node, 4/8-step matrix have passed.
-`n4-910c1` also passed 2-node/4-step; its 2-node/8-step, 3-node/4/8-step,
-and 8-node/4/8-step gates remain. Set a justified tolerance for Q8
+`n4-910c1` also passed 2-node/4-step and 3-node/4-step; its
+2-node/8-step, 3-node/8-step, and 8-node/4/8-step gates remain.
+Set a justified tolerance for Q8
 activation-boundary
 effects only after the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
