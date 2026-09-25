@@ -813,6 +813,19 @@ prove that changing any one operation will improve full-model logits.
 The probes and raw tensors remain in ignored `out/w6-range-parity/` on
 `n4-910c`; product code was unchanged.
 
+A scalar-stage follow-up replayed that same one-row attention input.
+DS4 and PTO dot scores differed for 38 of 64 heads (relative L2
+`1.3518e-7`, maximum absolute error `1.9073e-6`). The sink exponential
+weight, KV exponential weight, denominator and inverse differed for
+20, 14, 13 and 11 heads, respectively. For all 26 heads whose dot
+scores were bitwise equal, every downstream scalar was bitwise equal,
+as were all 13,312 values of their pre-inverse-RoPE output heads.
+Thus the Q/KV dot score is the first measured divergent operation in
+this common-input, single-KV-row case. The result does not establish
+which PTO-compatible reduction should replace it or predict the effect
+on complete logits and later multi-row attention. Diagnostic sources
+and outputs remain in ignored `out/w6-range-parity/` on `n4-910c`.
+
 Two 2-node, eight-step sim-console attempts stopped before step 7. Baseline
 `774ec91a` on `n4-910c` (`sim-console-1790256637013-0`) produced the first
 three DS4 tokens, then nodeB failed to open the previous-token managed
@@ -1021,11 +1034,11 @@ relative L2 logits error to 0.033570. The step-7 ratio-4 compressed
 row differs, and its rolling KV/score state already differs at step 6.
 The common-input layer-2 projection probe found only `1e-7`-scale
 operator differences; native-input errors are `1e-3`-scale. Focus the
-next numerical probe on the first-layer sink-attention dot score,
-exponential weights and normalization factor under identical DS4 Q/KV
-and sink weights. The common-input attention output already differs
-before inverse RoPE and crosses 74 Q8 code boundaries. Require any
-candidate correction to improve complete logits under production
+next numerical probe on a PTO-compatible Q/KV dot reduction, using
+identical DS4 inputs before extending to multi-row attention. The
+one-row scalar trace identifies the dot score as the first difference;
+its 74 downstream Q8 code changes still need a validated correction.
+Require any candidate to improve complete logits under production
 compiler flags before changing the production operator.
 The two-host 2-node/1-step and recorded 2/3/8-node, 4/8-step DeepSeek
 functional gates have passed. The 8-node/4-step run exercised sim-console
