@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -50,6 +51,50 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
                 check=True, capture_output=True, text=True,
             )
             self.assertIn("sink_attention_fixture=pass", fixture.stdout)
+            q8_input = Path(temporary) / "boundary.f32"
+            boundary = [0.0] * 64
+            boundary[0], boundary[27] = 1.04024875, 0.520124376
+            boundary[32], boundary[59] = 1.04024887, 0.520124435
+            q8_input.write_bytes(struct.pack("<64f", *boundary))
+            for block, expected in ((0, "63"), (1, "64")):
+                result = subprocess.run(
+                    [str(binary), "--q8-code", str(q8_input), str(block), "27"],
+                    check=True, capture_output=True, text=True,
+                )
+                self.assertIn(f"code={expected}", result.stdout)
+            invalid_q8 = subprocess.run(
+                [str(binary), "--q8-code", str(q8_input), "2", "27"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(invalid_q8.returncode, 0)
+            self.assertIn("invalid_q8_probe_geometry", invalid_q8.stderr)
+            ds4_heads = Path(temporary) / "ds4-heads.f32"
+            pto_heads = Path(temporary) / "pto-heads.f32"
+            ds4_heads.write_bytes(struct.pack("<32f", *boundary[:32]))
+            pto_heads.write_bytes(struct.pack("<32f", *boundary[32:]))
+            diff = subprocess.run(
+                [str(binary), "--q8-diff", str(ds4_heads), str(pto_heads)],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertIn("first_code_block=0 lane=27", diff.stdout)
+            self.assertIn("code_differences=1", diff.stdout)
+            identical = subprocess.run(
+                [str(binary), "--q8-diff", str(ds4_heads), str(ds4_heads)],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertIn("code_differences=0", identical.stdout)
+            q8_codes = Path(temporary) / "codes.bin"
+            q8_scales = Path(temporary) / "scales.f32"
+            dumped = subprocess.run(
+                [str(binary), "--q8-dump", str(q8_input),
+                 str(q8_codes), str(q8_scales)],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertIn("q8_blocks=2 dump=pass", dumped.stdout)
+            self.assertEqual(q8_codes.stat().st_size, 64)
+            self.assertEqual(q8_scales.stat().st_size, 8)
+            self.assertEqual(q8_codes.read_bytes()[27], 63)
+            self.assertEqual(q8_codes.read_bytes()[59], 64)
             outputs = [str(Path(temporary) / name) for name in
                        ("hidden.f32", "state.bin", "logits.f32")]
             missing_index = str(Path(temporary) / "missing-index")

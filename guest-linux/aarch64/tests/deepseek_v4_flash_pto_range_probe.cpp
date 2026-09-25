@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -76,6 +77,19 @@ static std::vector<uint8_t> read_file(const char *path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) throw std::runtime_error("weight_index_read_failed");
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(input), {});
+}
+
+static std::vector<float> read_q8_values(const char *path) {
+    const std::vector<uint8_t> encoded = read_file(path);
+    const uint64_t elements = encoded.size() / sizeof(float);
+    if (encoded.size() % sizeof(float) || elements == 0 ||
+        elements % ds::kQ8BlockElements ||
+        elements > std::numeric_limits<uint32_t>::max()) {
+        throw std::invalid_argument("invalid_q8_probe_geometry");
+    }
+    std::vector<float> values(elements);
+    std::memcpy(values.data(), encoded.data(), encoded.size());
+    return values;
 }
 
 static void write_file(const char *path, const void *data, uint64_t bytes) {
@@ -233,12 +247,95 @@ static int run(int argc, char **argv) {
                    ds::kOutputGroups * ds::kOLora * sizeof(float));
         return 0;
     }
+    if (argc == 5 && std::string_view(argv[1]) == "--q8-code") {
+        const std::vector<float> values = read_q8_values(argv[2]);
+        const uint32_t block = parse_u32(argv[3]);
+        const uint32_t lane = parse_u32(argv[4]);
+        if (block >= values.size() / ds::kQ8BlockElements ||
+            lane >= ds::kQ8BlockElements) {
+            throw std::invalid_argument("invalid_q8_probe_geometry");
+        }
+        const ds::F32View input {
+            reinterpret_cast<uintptr_t>(values.data()), 1,
+            static_cast<uint32_t>(values.size()),
+            static_cast<uint32_t>(values.size()), 1};
+        const ds::QuantizedQ8Block quantized = ds::quantize_q8_0(
+            input, 0, block * ds::kQ8BlockElements);
+        std::printf("q8_block=%u lane=%u input=%.9g scale=%.9g code=%d\n",
+                    block, lane, values[block * ds::kQ8BlockElements + lane],
+                    quantized.scale, int(quantized.values[lane]));
+        return 0;
+    }
+    if (argc == 4 && std::string_view(argv[1]) == "--q8-diff") {
+        const std::vector<float> left = read_q8_values(argv[2]);
+        const std::vector<float> right = read_q8_values(argv[3]);
+        if (left.size() != right.size()) {
+            throw std::invalid_argument("q8_probe_size_mismatch");
+        }
+        const uint32_t elements = static_cast<uint32_t>(left.size());
+        const ds::F32View left_view {
+            reinterpret_cast<uintptr_t>(left.data()), 1, elements, elements, 1};
+        const ds::F32View right_view {
+            reinterpret_cast<uintptr_t>(right.data()), 1, elements, elements, 1};
+        uint64_t code_differences = 0;
+        uint64_t scale_differences = 0;
+        for (uint32_t block = 0; block < elements / ds::kQ8BlockElements; ++block) {
+            const uint32_t column = block * ds::kQ8BlockElements;
+            const ds::QuantizedQ8Block left_q =
+                ds::quantize_q8_0(left_view, 0, column);
+            const ds::QuantizedQ8Block right_q =
+                ds::quantize_q8_0(right_view, 0, column);
+            scale_differences +=
+                std::memcmp(&left_q.scale, &right_q.scale, sizeof(float)) != 0;
+            for (uint32_t lane = 0; lane < ds::kQ8BlockElements; ++lane) {
+                if (left_q.values[lane] == right_q.values[lane]) continue;
+                if (code_differences == 0) {
+                    std::printf(
+                        "first_code_block=%u lane=%u left_input=%.9g "
+                        "right_input=%.9g left_scale=%.9g right_scale=%.9g "
+                        "left_code=%d right_code=%d\n",
+                        block, lane, left[column + lane], right[column + lane],
+                        left_q.scale, right_q.scale,
+                        int(left_q.values[lane]), int(right_q.values[lane]));
+                }
+                ++code_differences;
+            }
+        }
+        std::printf("q8_blocks=%u code_differences=%llu scale_differences=%llu\n",
+                    elements / ds::kQ8BlockElements,
+                    static_cast<unsigned long long>(code_differences),
+                    static_cast<unsigned long long>(scale_differences));
+        return 0;
+    }
+    if (argc == 5 && std::string_view(argv[1]) == "--q8-dump") {
+        const std::vector<float> values = read_q8_values(argv[2]);
+        const uint32_t elements = static_cast<uint32_t>(values.size());
+        const ds::F32View input {
+            reinterpret_cast<uintptr_t>(values.data()), 1, elements, elements, 1};
+        std::vector<int8_t> codes(elements);
+        std::vector<float> scales(elements / ds::kQ8BlockElements);
+        const uint32_t blocks = static_cast<uint32_t>(scales.size());
+        for (uint32_t block = 0; block < blocks; ++block) {
+            const ds::QuantizedQ8Block quantized = ds::quantize_q8_0(
+                input, 0, block * ds::kQ8BlockElements);
+            scales[block] = quantized.scale;
+            std::copy(quantized.values.begin(), quantized.values.end(),
+                      codes.begin() + block * ds::kQ8BlockElements);
+        }
+        write_file(argv[3], codes.data(), codes.size());
+        write_file(argv[4], scales.data(), scales.size() * sizeof(float));
+        std::printf("q8_blocks=%zu dump=pass\n", scales.size());
+        return 0;
+    }
     if (argc != 6 && argc != 8) {
         throw std::invalid_argument(
             "usage: probe INDEX END_LAYER TOKEN[,TOKEN...] HIDDEN_OUT STATE_OUT "
             "[--attention-out ATTENTION_OUT | --logits-out LOGITS_OUT | "
             "--logits-prefix PREFIX]; "
-            "probe INDEX --grouped-output-a HEADS_F32 OUTPUT_F32");
+            "probe INDEX --grouped-output-a HEADS_F32 OUTPUT_F32; "
+            "probe --q8-code HEADS_F32 BLOCK LANE; "
+            "probe --q8-diff LEFT_F32 RIGHT_F32; "
+            "probe --q8-dump HEADS_F32 CODES_OUT SCALES_OUT");
     }
     const uint32_t end = parse_u32(argv[2]);
     const std::vector<int32_t> tokens = parse_tokens(argv[3]);

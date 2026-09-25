@@ -575,29 +575,43 @@ replay on DS4's own input matched all 4,096 values bitwise. This isolates
 RMSNorm reduction as a measured first-layer error source.
 
 A focused comparison of the existing first-layer token-42 DS4 and PTO
-diagnostic dumps found a concrete Q8 activation boundary. Their query
+diagnostic dumps found Q8 activation sensitivity. Their query
 tensors have relative L2 error `2.45110827e-7`; their post-attention,
 inverse-RoPE heads have relative L2 error `8.84045342e-8`.
-Replaying DS4's 32-value Q8 activation formula over both heads tensors
-gives the first differing code at block 1, lane 27 (flat index 59):
-the DS4 input `0.520124376` scales to `63.4999962` and code 63;
-the PTO input `0.520124435` scales to exactly `63.5` and code 64.
-Both blocks take their absolute maximum from lane 0, whose inputs are
-`1.04024875` and `1.04024887`, respectively. Holding the DS4 scale
-while substituting only the PTO lane-27 input yields `63.5000038`, so
-the lane input difference alone crosses the rounding boundary. The
-replay found 217 differing Q8 codes across 32,768 head values. These
-are predicted codes from the dumped float tensors; the actual PTO
-`TCVT` output was not captured. A focused CPU-sim golden fixture using
-these two 32-value block inputs called the PTO `quantize_q8_0` operator
-and passed with codes 63 and 64 at lane 27. This fixture does not yet
-measure the production GCC 15.3 kernel's in-run code. The query
-difference precedes sink attention, while the quantization boundary
-explains how a small heads difference can affect grouped output-A. The
-next check must capture
-the production PTO code for this block and trace the earliest query
-stage value that differs from DS4. Do not treat the Q8 quantizer itself
-as defective on this evidence.
+An initial strict-FP32 replay predicted 217 differing Q8 codes and put
+the first difference at block 1, lane 27. A local `-O2` PTO CPU-sim
+fixture also returned codes 63 and 64 there. These results do not match
+the deployed arithmetic flags. On `n4-910c`, GCC 15.3 with the DeepSeek
+kernel's `-O3 -ffast-math -fno-finite-math-only` flags compiled the PTO
+`quantize_q8_0` operator. Applied to the same two 32,768-value heads
+dumps, it found 212 differing codes and 449 differing scale bit patterns.
+Its first code difference was block 0, lane 21: the DS4-dump input
+`-0.693499148` produced code `-64` with scale `0.0109212464`, while
+the PTO-dump input `-0.693499207` produced code `-63` with scale
+`0.0109212473`. At block 1, lane 27, both inputs produced code 64.
+The earlier strict-FP32 first-difference claim is therefore invalid for
+the production compiler. This probe applies the *PTO* operator to both
+float dumps.
+
+An independent wrapper around DS4 revision `931b98e` then called its
+`quantize_q8_0_activation` on each of the same heads dumps. DS4 used
+its Makefile-equivalent `-O3 -ffast-math -fno-finite-math-only`
+arithmetic; both probes ran with GCC 15.3. The SHA-256 results compare
+the complete 32,768-byte code stream and 1,024-scale FP32 stream:
+
+| Heads input | Code SHA-256, DS4 and PTO | Scale SHA-256, DS4 and PTO |
+| --- | --- | --- |
+| DS4 dump | `e192af232cfddc3f6cd4e6ee21ed8b81527f388ae64497e7b5f5014efc40d16d` | `d9bac9d70ac9dc8e9ec27f9cb0deee9a90bacdb713fbf75294d3a38f4e22f679` |
+| PTO dump | `3a27c234330287bbdb0155330df4357f0b025794b879ccc620affa376b08bff7` | `b3c194eccf5dbf91dc06ec3cd870b0ac41203c384c16d46bcf3565df309f9e89` |
+
+For either input, the two implementations were byte-identical across
+all codes and scales. The 212 code and 449 scale differences arise from
+the differing heads inputs. At the first code difference, both
+implementations return `-64` for the DS4 heads and `-63` for the PTO
+heads. This isolates the grouped Q8 activation mismatch upstream of
+quantization for this token and layer. The query already differs before
+sink attention; trace the earliest HC/query-stage value that changes
+under common input. Full-model logits parity remains unproven.
 
 An ignored, diagnostic-only PTO copy changed the RMSNorm reduction from
 one 4,096-element `TROWSUM` to 32-element chunks, keeping PTO tile
@@ -768,6 +782,16 @@ selection at the second ratio-4 pool in step 7. It does not establish
 compressed-state or full-logits parity, repeat-run stability, or
 second-host coverage.
 
+`sim-console prepare-target n4-910c1` materialized the exact committed
+submodules for isolated source revision `8be893ca` and reported 19 ready
+demos with zero readiness blockers. No second-host run was launched:
+the pre-run process check found 28 existing QEMU processes, all about
+four days old. A sampled process was parented by PID 1 and still used
+about one CPU core. Their ownership and lifecycle were not established,
+so this validation did not stop them or add another guest cluster.
+Second-host W6 gates remain open until the host can run without
+interference.
+
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
@@ -802,14 +826,15 @@ W6 model direct is complete only when all conditions hold:
 
 ## 6. Immediate Next Change
 
-Capture the actual production PTO `TCVT` code for first-layer grouped
-output-A activation block 1, lane 27, then trace the first upstream
-query-stage value that diverges from DS4. Rerun the common-input and
+Trace the earliest HC/query-stage value that diverges from DS4 under
+common input. The complete first-layer DS4/PTO Q8 activation code and
+scale streams already match bytewise on either heads dump; keep the
+quantizer unchanged. Rerun the common-input and
 full-logits comparisons with the production compiler after a correction.
 Locate the step-1 state difference that expands the standalone range's
 relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
-KV row at step 7 against DS4 state, beyond the
-already-matching guest token sequence.
+KV row at step 7 against DS4 state, beyond the already-matching guest
+token sequence.
 Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
