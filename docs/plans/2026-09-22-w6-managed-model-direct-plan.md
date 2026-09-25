@@ -793,6 +793,26 @@ compressor-input drift follows the upstream hidden difference. The
 common-input projection retains small FP32 differences and is not
 bitwise equal. No production operator was changed by these probes.
 
+A follow-up first-layer common-input test on `n4-910c` fed the exact DS4
+query and KV dumps into the production-header PTO `sink_attention` path.
+The 64 sink weights were byte-identical between DS4 and PTO (SHA-256
+`7aa4f19ba809780629a5f9b4188221931740c2a1bf7cf5391d776bfcb16e8e4b`).
+The DS4 diagnostic separately replayed sink attention and inverse RoPE;
+its replayed heads matched the original first-layer trace byte-for-byte.
+Against those DS4 heads, the common-input PTO heads had relative L2
+`5.7962e-8`, maximum absolute error `9.5367e-7`, and 23,430 exact
+values out of 32,768. The error was identical before and after inverse
+RoPE at position 0. Quantizing the two heads tensors with the same PTO
+Q8 operator changed 74 codes out of 32,768 and 295 scales out of 1,024.
+The resulting grouped output-A relative L2 error was `4.9851e-4`.
+This isolates a numerically consequential difference within the
+sink-attention computation on identical Q/KV and weights. It does not
+yet identify whether the first difference is in dot-product reduction,
+exponentiation, denominator accumulation, or division, and it does not
+prove that changing any one operation will improve full-model logits.
+The probes and raw tensors remain in ignored `out/w6-range-parity/` on
+`n4-910c`; product code was unchanged.
+
 Two 2-node, eight-step sim-console attempts stopped before step 7. Baseline
 `774ec91a` on `n4-910c` (`sim-console-1790256637013-0`) produced the first
 three DS4 tokens, then nodeB failed to open the previous-token managed
@@ -1001,9 +1021,12 @@ relative L2 logits error to 0.033570. The step-7 ratio-4 compressed
 row differs, and its rolling KV/score state already differs at step 6.
 The common-input layer-2 projection probe found only `1e-7`-scale
 operator differences; native-input errors are `1e-3`-scale. Focus the
-next numerical probe on the first-layer attention-head and grouped-Q8
-boundary that produces the upstream hidden drift, then recheck complete
-logits under production compiler flags.
+next numerical probe on the first-layer sink-attention dot score,
+exponential weights and normalization factor under identical DS4 Q/KV
+and sink weights. The common-input attention output already differs
+before inverse RoPE and crosses 74 Q8 code boundaries. Require any
+candidate correction to improve complete logits under production
+compiler flags before changing the production operator.
 The two-host 2-node/1-step and recorded 2/3/8-node, 4/8-step DeepSeek
 functional gates have passed. The 8-node/4-step run exercised sim-console
 SSH recovery against a real disconnect. Confirm same-revision repeatability
