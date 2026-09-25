@@ -818,7 +818,22 @@ writes, `shared_payload_staging_bytes=0`, and `status=pass`. A post-run
 process check found no process with this run ID; the 28 pre-existing
 QEMU processes remained. This closes the second-host two-node eight-step
 functional gate, but does not establish full-logits or compressed-state
-parity. The second-host 3-node/8-step and 8-node/4/8-step gates remain.
+parity. At this point, the second-host 3-node/8-step and 8-node/4/8-step
+gates remained.
+
+The same revision passed DeepSeek 8-node/4-step on `n4-910c1` in
+`sim-console-1790308262561-0`, exit code 0. The SSH launcher stream
+disconnected near the end; the first status query timed out during SSH
+banner exchange, and sim-console recovered the target's `passed` state.
+All eight fetched guest logs contain four range-complete records, and
+nodeH published terminal IDs `[201, 41, 201, 35]`, matching the same-GGUF
+DS4 greedy reference. All 32 callable-5 host access records had positive
+reads and writes, `shared_payload_staging_bytes=0`, and `status=pass`.
+No process with this run ID remained, and the host still had the 28
+pre-existing QEMU processes. This is a real SSH-disconnect recovery case;
+the target result and fetched logs establish the functional gate despite
+the interrupted launcher output. It leaves full-logits parity and the
+second-host 3-node/8-step and 8-node/8-step gates open.
 
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
@@ -863,12 +878,14 @@ Locate the step-1 state difference that expands the standalone range's
 relative L2 logits error to 0.033570. Verify the second ratio-4 compressed
 KV row at step 7 against DS4 state, beyond the already-matching guest
 token sequence.
-Exercise the new sim-console SSH recovery path with a real disconnect, and run
-committed-source callable 5 through the remaining 2/3/8-node,
+The 8-node/4-step run exercised sim-console SSH recovery against a real
+disconnect. Run committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step
 gate and the `n4-910c` 2/3/8-node, 4/8-step matrix have passed.
-`n4-910c1` also passed 2-node/4/8-step and 3-node/4-step; its
-3-node/8-step and 8-node/4/8-step gates remain.
+`n4-910c1` also passed 2-node/4/8-step, 3-node/4-step, and
+8-node/4-step; its 3-node/8-step and 8-node/8-step gates remain. The
+8-node/4-step run exercised SSH-disconnect recovery against a target
+run that completed successfully.
 Set a justified tolerance for Q8
 activation-boundary
 effects only after the first model divergence is understood. Separately
