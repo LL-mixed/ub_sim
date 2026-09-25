@@ -694,7 +694,18 @@ reference. All 12 callable-5 model-direct access records reported positive
 reads and writes, `shared_payload_staging_bytes=0`, and `status=pass`.
 The remote process list had no remaining `qemu-system-aarch64` after the
 run. This proves one three-node, four-step managed direct functional gate;
-it does not prove full-logits parity or the three-node eight-step gate.
+its evidence alone does not prove full-logits parity or eight-step behavior.
+
+The same isolated validation checkout at `8be893ca` passed the DeepSeek
+3-node/8-step sim-console run `sim-console-1790294940097-0` on `n4-910c`.
+It exited 0 with all three guest nodes at 8/8 ranges. The terminal IDs
+`[201, 41, 201, 35, 201, 35, 201, 35]` match the independent same-GGUF
+eight-step DS4 greedy reference and include the second ratio-4 pool at
+step 7. All 24 callable-5 host access records report positive reads and
+writes, `shared_payload_staging_bytes=0`, and `status=pass`. The remote
+process list had no remaining QEMU process after the run. This closes the
+three-node eight-step functional gate on one host; a matching token at
+step 7 does not prove that its full logits or compressed state match DS4.
 
 The first committed-source 8-node/4-step sim-console run on `n4-910c`,
 `sim-console-1790271676343-0` at `10cd07c9`, failed at step 0. NodeB
@@ -763,9 +774,9 @@ already-matching guest token sequence.
 Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
-and `n4-910c` 2-node/4-step, 2-node/8-step, 3-node/4-step, and
-8-node/4-step sim-console gates have passed. Next functional gates are
-3-node/8-step and 8-node/8-step on `n4-910c`, followed by the full
+and `n4-910c` 2-node/4-step, 2-node/8-step, 3-node/4-step,
+3-node/8-step, and 8-node/4-step sim-console gates have passed. The next
+functional gate is 8-node/8-step on `n4-910c`, followed by the full
 second-host matrix. Set a justified tolerance for Q8 activation-boundary
 effects only after the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
