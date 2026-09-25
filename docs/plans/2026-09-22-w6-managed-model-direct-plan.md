@@ -562,8 +562,41 @@ into the PTO grouped projection reduced output-A error to `1.50e-7`.
 Thus the projection agrees on common input; small differences upstream
 cross activation-quantization boundaries. DS4 uses a double-precision
 squared-sum in RMSNorm while the current PTO path uses float reduction.
-That is a candidate source of the upstream rounding gap, not yet a
-verified sole cause.
+The following audit verifies that as one first-layer rounding source;
+it does not establish a sole cause of full-model logits drift.
+
+A same-GGUF, token-42, first-layer probe on `n4-910c` subsequently captured
+the HC-mixed tensor and its attention RMSNorm output from both programs.
+The unmodified PTO path differed from DS4 by relative L2 `2.30e-8` at
+HC mixing and `5.10e-7` after RMSNorm. Replaying DS4's double-accumulation
+RMSNorm on the PTO HC-mixed tensor reduced the normalized-output error to
+`2.62e-8`; 3,740 of 4,096 values then matched DS4 bitwise. The DS4
+replay on DS4's own input matched all 4,096 values bitwise. This isolates
+RMSNorm reduction as a measured first-layer error source.
+
+An ignored, diagnostic-only PTO copy changed the RMSNorm reduction from
+one 4,096-element `TROWSUM` to 32-element chunks, keeping PTO tile
+operations throughout. The table compares both PTO probes against the same
+DS4 first-layer output (relative L2 error):
+
+| Tensor | Original PTO | 32-element diagnostic |
+| --- | ---: | ---: |
+| Attention RMSNorm output | `5.10e-7` | `5.60e-8` |
+| Q projection | `2.28e-7` | `1.69e-7` |
+| Grouped Q8 output-A | `6.80e-4` | `9.00e-4` |
+| Layer-1 final hidden | `3.90e-3` | `4.24e-3` |
+
+The local RMSNorm improvement did not improve grouped Q8 output-A or the
+final layer output. It is therefore not a validated production fix.
+The ratio-4 compressor cannot produce its first pooled row before position
+3, and the ratio-128 compressor cannot produce one before position 127.
+The measured step-1 logits drift predates both. DS4 and PTO also use the
+same previous/current pair accumulation order in the ratio-4 pool loop;
+the output may still differ because its input values and transcendental
+arithmetic differ. Next numerical work should locate the first Q8 activation
+block whose quantized code changes under otherwise common layer input,
+then trace the contributing pre-quantization values. Do not infer a full
+model fix from a reduction-order change alone.
 
 These tests use an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
@@ -652,6 +685,41 @@ contain no TCP connect timeout. No QEMU processes remained after either run.
 This is evidence that the earlier step-3 and step-5 liveness failures do not
 reproduce with the asynchronous bridge on this host. It does not establish
 full-logits parity, other topology gates, or repeat-run stability.
+The same committed source `10cd07c9` passed the DeepSeek 3-node/4-step
+sim-console gate on `n4-910c`: run `sim-console-1790270198285-0` exited 0,
+all three guest nodes passed, and the layer ranges were `[0,15)`,
+`[15,29)`, and `[29,43)`. The streamed token IDs
+`[201, 41, 201, 35]` matched the independent four-step DS4 CPU greedy
+reference. All 12 callable-5 model-direct access records reported positive
+reads and writes, `shared_payload_staging_bytes=0`, and `status=pass`.
+The remote process list had no remaining `qemu-system-aarch64` after the
+run. This proves one three-node, four-step managed direct functional gate;
+it does not prove full-logits parity or the three-node eight-step gate.
+
+The first committed-source 8-node/4-step sim-console run on `n4-910c`,
+`sim-console-1790271676343-0` at `10cd07c9`, failed at step 0. NodeB
+rang the PTO doorbell, but QEMU read `opcode=0, op_id=0` from its command
+queue and rejected the slot. NodeA completed its range; downstream nodes
+never received the required hidden output. This is a command-queue
+visibility/lifetime failure, independent of DS4/PTO numerical parity.
+Commits `2505c1a0`, `a87de85c`, and `43bdda4f` lock both queue pages,
+verify their physical addresses and MMIO bases before submission, and
+read the MMIO high-word mirror correctly for addresses above 4 GiB. The
+endpoint test suite passed all five tests, including a stale-base guard.
+The original empty-slot mechanism was not isolated to one kernel event;
+the new checks fail closed if queue addresses change.
+
+The isolated validation checkout at `8be893ca` (the same endpoint source
+as those three `master` commits) passed the 8-node/4-step sim-console run
+`sim-console-1790293399754-0` on `n4-910c` with exit code 0. All eight
+nodes completed four ranges, the terminal IDs were `[201, 41, 201, 35]`,
+and all 32 callable-5 host access records had positive reads and writes,
+`shared_payload_staging_bytes=0`, and `status=pass`. QEMU read nodeB's
+first command as `opcode=10` with the same op ID that the guest logged.
+No QEMU process remained after the run. This closes the 8-node/4-step
+functional gate on one host. It does not establish repeat-run stability,
+the 8-node/8-step gate, second-host coverage, or full-logits parity.
+
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
@@ -695,9 +763,10 @@ already-matching guest token sequence.
 Exercise the new sim-console SSH recovery path with a real disconnect, and run
 committed-source callable 5 through the remaining 2/3/8-node,
 4/8-step sim-console matrix on both hosts. The two-host 2-node/1-step gate
-and `n4-910c` 2-node/4-step, 2-node/8-step, and 3-node/4-step sim-console
-gates have passed; the 8-node/4-step target-side model run passed with a failed
-sim-console session. Set a justified tolerance for Q8 activation-boundary
+and `n4-910c` 2-node/4-step, 2-node/8-step, 3-node/4-step, and
+8-node/4-step sim-console gates have passed. Next functional gates are
+3-node/8-step and 8-node/8-step on `n4-910c`, followed by the full
+second-host matrix. Set a justified tolerance for Q8 activation-boundary
 effects only after the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
 reference. Keep W6 acceptance open until every condition in Section 5 has
