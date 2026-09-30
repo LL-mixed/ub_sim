@@ -36,8 +36,7 @@ static uint64_t state_bytes(uint32_t end, uint32_t positions = 1) {
         bytes += 8 + 8 + uint64_t(std::min(positions, ds::kSlidingWindow)) *
                              ds::kHeadDim * sizeof(float);
         if (!ratio) continue;
-        const uint32_t compressed_rows =
-            std::min(positions / ratio, ds::kIndexerTopK);
+        const uint32_t compressed_rows = positions / ratio;
         bytes += 8 + uint64_t(compressed_rows) * ds::kHeadDim * sizeof(float);
         if (ratio == 4) {
             bytes += 8 + uint64_t(compressed_rows) * ds::kIndexerHeadDim *
@@ -211,6 +210,36 @@ static int sink_attention_fixture() {
     return 0;
 }
 
+static int token_control_fixture() {
+    int32_t ids[] {17, static_cast<int32_t>(ds::kVocab - 1), -1};
+    const ds::I32View input {reinterpret_cast<uintptr_t>(ids), 3};
+    ds::operator_counts = {};
+    if (ds::token_id_at(input, 0) != 17 ||
+        ds::token_id_at(input, 1) != ds::kVocab - 1 ||
+        ds::operator_counts.tload != 2 ||
+        ds::operator_counts.tstore != 0) {
+        throw std::runtime_error("token_control_direct_load_failed");
+    }
+    try {
+        (void)ds::token_id_at(input, 2);
+        throw std::runtime_error("negative_token_accepted");
+    } catch (const std::invalid_argument &) {
+    }
+    try {
+        (void)ds::token_id_at(input, 3);
+        throw std::runtime_error("out_of_range_token_accepted");
+    } catch (const std::invalid_argument &) {
+    }
+    ids[2] = static_cast<int32_t>(ds::kVocab);
+    try {
+        (void)ds::token_id_at(input, 2);
+        throw std::runtime_error("vocab_limit_token_accepted");
+    } catch (const std::invalid_argument &) {
+    }
+    std::puts("token_control_fixture=pass tload=2 tstore=0");
+    return 0;
+}
+
 static int run(int argc, char **argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--selection-bias-name") {
         std::puts(ds::selection_bias_tensor_name(3).c_str());
@@ -218,6 +247,39 @@ static int run(int argc, char **argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--sink-attention-fixture") {
         return sink_attention_fixture();
+    }
+    if (argc == 2 && std::string_view(argv[1]) == "--token-control-fixture") {
+        return token_control_fixture();
+    }
+    if (argc == 7 &&
+        std::string_view(argv[1]) == "--attention-heads-from-qkv") {
+        const std::vector<float> q = read_q8_values(argv[2]);
+        const std::vector<float> kv = read_q8_values(argv[3]);
+        const std::vector<float> sinks = read_q8_values(argv[4]);
+        if (q.size() != ds::kAttentionHeads * ds::kHeadDim ||
+            kv.size() % ds::kHeadDim != 0 ||
+            sinks.size() != ds::kAttentionHeads) {
+            throw std::invalid_argument("invalid_attention_input_geometry");
+        }
+        const ds::F32View q_view {
+            reinterpret_cast<uintptr_t>(q.data()), ds::kAttentionHeads,
+            ds::kHeadDim, ds::kHeadDim, 1};
+        const ds::F32View kv_view {
+            reinterpret_cast<uintptr_t>(kv.data()),
+            static_cast<uint32_t>(kv.size() / ds::kHeadDim),
+            ds::kHeadDim, ds::kHeadDim, 1};
+        const ds::F32View sinks_view {
+            reinterpret_cast<uintptr_t>(sinks.data()), 1,
+            ds::kAttentionHeads, ds::kAttentionHeads, 1};
+        ds::LocalMatrix heads(ds::kAttentionHeads, ds::kHeadDim);
+        ds::sink_attention(q_view, kv_view, sinks_view, heads.view());
+        ds::RopeFactors rope = ds::rope_factors(0, parse_u32(argv[5]));
+        ds::rope_tail(heads.view(), ds::kRopeDim, rope.cos_view(),
+                      rope.sin_view(), true, heads.view());
+        write_file(argv[6],
+                   reinterpret_cast<const void *>(heads.view().address),
+                   ds::kAttentionHeads * ds::kHeadDim * sizeof(float));
+        return 0;
     }
     if ((argc == 3 || argc == 4) &&
         std::string_view(argv[1]) == "--state-bytes") {
@@ -331,11 +393,14 @@ static int run(int argc, char **argv) {
         throw std::invalid_argument(
             "usage: probe INDEX END_LAYER TOKEN[,TOKEN...] HIDDEN_OUT STATE_OUT "
             "[--attention-out ATTENTION_OUT | --logits-out LOGITS_OUT | "
-            "--logits-prefix PREFIX]; "
+            "--logits-prefix PREFIX | --seeded-past POSITION]; "
             "probe INDEX --grouped-output-a HEADS_F32 OUTPUT_F32; "
             "probe --q8-code HEADS_F32 BLOCK LANE; "
             "probe --q8-diff LEFT_F32 RIGHT_F32; "
-            "probe --q8-dump HEADS_F32 CODES_OUT SCALES_OUT");
+            "probe --q8-dump HEADS_F32 CODES_OUT SCALES_OUT; "
+            "probe --token-control-fixture; "
+            "probe --attention-heads-from-qkv Q_F32 KV_F32 SINKS_F32 "
+            "POSITION HEADS_OUT");
     }
     const uint32_t end = parse_u32(argv[2]);
     const std::vector<int32_t> tokens = parse_tokens(argv[3]);
@@ -345,10 +410,17 @@ static int run(int argc, char **argv) {
         std::string_view(argv[6]) == "--logits-out";
     const bool logits_prefix = argc == 8 &&
         std::string_view(argv[6]) == "--logits-prefix";
+    const bool seeded_past = argc == 8 &&
+        std::string_view(argv[6]) == "--seeded-past";
+    const uint32_t initial_past = seeded_past ? parse_u32(argv[7]) : 0;
     if (!end || end > ds::kLayers ||
-        (argc == 8 && !attention_out && !logits_out && !logits_prefix) ||
+        (argc == 8 && !attention_out && !logits_out && !logits_prefix &&
+         !seeded_past) ||
         (attention_out && (end != 1 || tokens.size() != 1)) ||
-        ((logits_out || logits_prefix) && end != ds::kLayers)) {
+        ((logits_out || logits_prefix) && end != ds::kLayers) ||
+        (seeded_past && (end < 3 || initial_past < 2051 ||
+                         tokens.size() != 1 ||
+                         uint64_t(initial_past) + tokens.size() > (1u << 20)))) {
         throw std::invalid_argument("invalid_range_or_token");
     }
 
@@ -361,22 +433,37 @@ static int run(int argc, char **argv) {
     std::vector<float> hidden(ds::kHidden * ds::kHcMult);
     std::vector<uint8_t> previous_state;
     std::vector<float> logits(end == ds::kLayers ? ds::kVocab : 1);
+    if (seeded_past) {
+        previous_state.resize(state_bytes(end, initial_past));
+        const ds::RangeStateGeometry prior_geometry {
+            0, end, initial_past, ds::kHeadDim, ds::kIndexerHeadDim,
+            ds::kSlidingWindow};
+        const ds::ByteView prior_state {
+            reinterpret_cast<uintptr_t>(previous_state.data()),
+            previous_state.size()};
+        (void)ds::range_state(prior_state, prior_geometry, true);
+        ds::operator_counts = {};
+    }
     for (size_t position = 0; position < tokens.size(); ++position) {
+        const uint32_t absolute_position = initial_past +
+            static_cast<uint32_t>(position);
         const ds::RangeGeometry geometry {
-            0, end, ds::kLayers, static_cast<uint32_t>(position), 1,
+            0, end, ds::kLayers, absolute_position, 1,
             ds::kHidden, ds::kHcMult, ds::kVocab, ds::kAttentionHeads, 1,
             ds::kHeadDim, ds::kRopeDim, ds::kQLora, ds::kOLora,
             ds::kOutputGroups, ds::kExperts, ds::kExpertsUsed, 1,
             ds::kMoeIntermediate, ds::kSlidingWindow, ds::kIndexerHeads,
             ds::kIndexerHeadDim, ds::kIndexerTopK,
         };
-        std::vector<uint8_t> next_state(state_bytes(end, position + 1));
+        std::vector<uint8_t> next_state(
+            state_bytes(end, absolute_position + 1));
         ds::decoder_range(
             weights, codebook, geometry,
             ds::F32View {reinterpret_cast<uintptr_t>(&unused_input), 1, 1, 1, 1},
-            position ? ds::ByteView {reinterpret_cast<uintptr_t>(previous_state.data()),
-                                     previous_state.size()}
-                     : ds::ByteView {reinterpret_cast<uintptr_t>(&unused_state), 1},
+            absolute_position ?
+                ds::ByteView {reinterpret_cast<uintptr_t>(previous_state.data()),
+                              previous_state.size()} :
+                ds::ByteView {reinterpret_cast<uintptr_t>(&unused_state), 1},
             ds::I32View {reinterpret_cast<uintptr_t>(&tokens[position]), 1},
             ds::F32View {reinterpret_cast<uintptr_t>(hidden.data()), 1,
                          static_cast<uint32_t>(hidden.size()),
@@ -396,6 +483,16 @@ static int run(int argc, char **argv) {
                         static_cast<size_t>(top - logits.begin()), *top);
         }
         previous_state = std::move(next_state);
+    }
+
+    if (seeded_past) {
+        if (!ds::operator_counts.sparse_indexer_topk) {
+            throw std::runtime_error("seeded_indexer_topk_not_executed");
+        }
+        std::printf("seeded_indexer=pass past=%u candidates=%u topk_calls=%llu\n",
+                    initial_past, (initial_past + 1) / 4,
+                    static_cast<unsigned long long>(
+                        ds::operator_counts.sparse_indexer_topk));
     }
 
     write_file(argv[4], hidden.data(), hidden.size() * sizeof(float));

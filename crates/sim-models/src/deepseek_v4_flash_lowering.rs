@@ -270,8 +270,8 @@ pub struct DeepseekV4FlashAttentionCachePlan {
 
 impl DeepseekV4FlashAttentionCachePlan {
     pub fn decode(layer_id: u32, sequence_len: u32) -> Result<Self, String> {
-        if sequence_len == 0 {
-            return Err("deepseek attention sequence length must be non-zero".to_string());
+        if sequence_len == 0 || sequence_len > 1 << 20 {
+            return Err("deepseek attention sequence length must be 1..=1048576".to_string());
         }
         let compress_ratio = deepseek_v4_flash_layer_compress_ratio(u64::from(layer_id))
             .ok_or_else(|| format!("deepseek layer out of range: {layer_id}"))?;
@@ -286,12 +286,12 @@ impl DeepseekV4FlashAttentionCachePlan {
             ),
             4 => (
                 DeepseekV4FlashAttentionKind::CompressedSparseRatio4,
-                (sequence_len / 4).min(profile.indexer_top_k as u32),
+                sequence_len / 4,
                 DeepseekV4FlashCompressedSelection::LearnedIndexer,
             ),
             128 => (
                 DeepseekV4FlashAttentionKind::HeavilyCompressedRatio128,
-                (sequence_len / 128).min(profile.indexer_top_k as u32),
+                sequence_len / 128,
                 DeepseekV4FlashCompressedSelection::DeterministicPrefix,
             ),
             other => return Err(format!("unsupported deepseek compression ratio: {other}")),
@@ -1743,12 +1743,16 @@ mod tests {
     }
 
     #[test]
-    fn attention_cache_plan_caps_compressed_rows_at_model_topk() {
+    fn attention_cache_plan_retains_rows_beyond_model_topk() {
         let csa = DeepseekV4FlashAttentionCachePlan::decode(2, 16_384).expect("long CSA cache");
         let hca = DeepseekV4FlashAttentionCachePlan::decode(3, 131_072).expect("long HCA cache");
-        assert_eq!(csa.compressed_rows, 512);
-        assert_eq!(hca.compressed_rows, 512);
+        assert_eq!(csa.compressed_rows, 4_096);
+        assert_eq!(hca.compressed_rows, 1_024);
+        let boundary =
+            DeepseekV4FlashAttentionCachePlan::decode(2, 2_052).expect("first indexed CSA row");
+        assert_eq!(boundary.compressed_rows, 513);
         assert!(DeepseekV4FlashAttentionCachePlan::decode(1, 0).is_err());
+        assert!(DeepseekV4FlashAttentionCachePlan::decode(2, (1 << 20) + 1).is_err());
     }
 
     #[test]

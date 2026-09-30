@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ LIB = ROOT / "guest-linux" / "aarch64" / "libs" / "lingqu_shmem_pto"
 
 class DeepseekV4FlashPtoStateTest(unittest.TestCase):
     def test_state_layout_is_direct_and_matches_rust_encoding(self):
-        compiler = os.environ.get("CXX", "c++")
+        compiler = os.environ.get("CXX") or shutil.which("g++-15") or "c++"
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "deepseek_v4_flash_pto_state_golden"
             command = [
@@ -53,6 +54,7 @@ class DeepseekV4FlashPtoStateTest(unittest.TestCase):
         self.assertEqual(fields["previous_bytes"], "618680")
         self.assertEqual(fields["next_bytes"], "625336")
         self.assertEqual(fields["layers"], "2")
+        self.assertEqual(fields["boundary_rows"], "513")
         self.assertGreater(int(fields["tload"]), 0)
         self.assertGreater(int(fields["tstore"]), 0)
 

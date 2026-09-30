@@ -100,34 +100,21 @@ struct I32View {
 using I32Row = pto::Tile<pto::TileType::Vec, int32_t, 1, kVectorCapacity,
                          pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
 
-inline std::vector<uint32_t> token_ids(const I32View &source,
-                                       uint32_t count) {
+inline uint32_t token_id_at(const I32View &source, uint32_t offset) {
     source.validate();
-    if (!count || count > source.elements) {
+    if (offset >= source.elements) {
         throw std::invalid_argument("deepseek_pto_token_geometry");
     }
-    std::vector<int32_t> private_ids(count);
-    for (uint32_t offset = 0; offset < count; offset += kVectorCapacity) {
-        const uint32_t width = std::min(kVectorCapacity, count - offset);
-        I32Row tile(width);
-        auto input = global_row<int32_t>(
-            source.address + uint64_t(offset) * sizeof(int32_t), width);
-        auto output = global_row<int32_t>(
-            reinterpret_cast<uintptr_t>(private_ids.data() + offset), width);
-        pto::TLOAD(tile, input);
-        pto::TSTORE(output, tile);
-        ++operator_counts.tload;
-        ++operator_counts.tstore;
+    I32Row tile(1);
+    auto input = global_row<int32_t>(
+        source.address + uint64_t(offset) * sizeof(int32_t), 1);
+    pto::TLOAD(tile, input);
+    ++operator_counts.tload;
+    const int32_t value = tile.GetValue(0);
+    if (value < 0 || uint32_t(value) >= kVocab) {
+        throw std::invalid_argument("deepseek_pto_token_id");
     }
-    std::vector<uint32_t> result;
-    result.reserve(count);
-    for (int32_t value : private_ids) {
-        if (value < 0 || uint32_t(value) >= kVocab) {
-            throw std::invalid_argument("deepseek_pto_token_id");
-        }
-        result.push_back(uint32_t(value));
-    }
-    return result;
+    return uint32_t(value);
 }
 
 class LocalMatrix {
@@ -578,10 +565,9 @@ inline LocalMatrix attention_layer(const MappedWeights &weights,
                 throw std::invalid_argument(
                     "deepseek_pto_attention_compressed_state");
             }
-            const uint32_t previous =
-                std::min(position / state.ratio, kIndexerTopK);
-            append_bounded_row(*state.compressed, previous, kIndexerTopK,
-                               compressed.view());
+            const uint32_t previous = position / state.ratio;
+            append_bounded_row(*state.compressed, previous,
+                               state.compressed->rows, compressed.view());
         }
         if (state.ratio == 4) {
             if (!state.indexer_compressor) {
@@ -596,15 +582,13 @@ inline LocalMatrix attention_layer(const MappedWeights &weights,
                     throw std::invalid_argument(
                         "deepseek_pto_indexer_compressed_state");
                 }
-                const uint32_t previous =
-                    std::min(position / state.ratio, kIndexerTopK);
+                const uint32_t previous = position / state.ratio;
                 append_bounded_row(*state.indexer_compressed, previous,
-                                   kIndexerTopK,
+                                   state.indexer_compressed->rows,
                                    indexer_compressed.view());
             }
         }
-        compressed_rows =
-            std::min((position + 1) / state.ratio, kIndexerTopK);
+        compressed_rows = (position + 1) / state.ratio;
     }
 
     const auto selected = selected_compressed_rows(
@@ -686,7 +670,8 @@ inline LocalMatrix ffn_layer(const MappedWeights &weights,
 
 inline void output_head(const MappedWeights &weights,
                         const F32View &hidden_hc,
-                        const F32View &logits) {
+                        const F32View &logits,
+                        const F32View *trace_logits = nullptr) {
     hidden_hc.validate();
     logits.validate();
     if (hidden_hc.rows != kHcMult || hidden_hc.columns != kHidden ||
@@ -715,7 +700,8 @@ inline void output_head(const MappedWeights &weights,
     const F32View norm =
         f32_weight_view(weights.tensor("output_norm.weight"), kHidden);
     rms_norm(embedding.view(), &norm, embedding.view(), kEpsilon);
-    q8_0_linear(embedding.view(), weights.tensor("output.weight"), logits);
+    q8_0_linear(embedding.view(), weights.tensor("output.weight"), logits,
+                trace_logits);
 }
 
 inline void initialize_compressors(RangeStateView &state) {
@@ -781,7 +767,8 @@ inline void decoder_range(const MappedWeights &weights,
                           const I32View &token_input,
                           const F32View &hidden_output,
                           const ByteView &next_state,
-                          const F32View &logits) {
+                          const F32View &logits,
+                          const F32View *trace_logits = nullptr) {
     validate_range_io(geometry, hidden_input, previous_state, token_input,
                       hidden_output, next_state, logits);
     codebook.validate();
@@ -792,7 +779,6 @@ inline void decoder_range(const MappedWeights &weights,
         kHeadDim,
         kIndexerHeadDim,
         kSlidingWindow,
-        kIndexerTopK,
     };
     RangeStateView next = range_state(next_state, next_geometry, true);
     if (geometry.past) {
@@ -803,7 +789,6 @@ inline void decoder_range(const MappedWeights &weights,
             kHeadDim,
             kIndexerHeadDim,
             kSlidingWindow,
-            kIndexerTopK,
         };
         const RangeStateView previous =
             range_state(previous_state, previous_geometry, false);
@@ -812,13 +797,12 @@ inline void decoder_range(const MappedWeights &weights,
         initialize_compressors(next);
     }
 
-    const std::vector<uint32_t> tokens =
-        token_ids(token_input, geometry.tokens);
     for (uint32_t token_index = 0; token_index < geometry.tokens;
          ++token_index) {
+        const uint32_t token = token_id_at(token_input, token_index);
         LocalMatrix hidden_hc(kHcMult, kHidden);
         if (geometry.first == 0) {
-            embedding(weights, tokens[token_index], hidden_hc.view());
+            embedding(weights, token, hidden_hc.view());
         } else {
             const F32View source {
                 hidden_input.at(token_index), kHcMult, kHidden, kHidden, 1};
@@ -832,7 +816,7 @@ inline void decoder_range(const MappedWeights &weights,
             hidden_hc = attention_layer(weights, layer, position,
                                         hidden_hc.view(), layer_state);
             hidden_hc = ffn_layer(weights, codebook, layer,
-                                  tokens[token_index], hidden_hc.view());
+                                  token, hidden_hc.view());
         }
         const F32View flattened {hidden_hc.view().address, 1,
                                  kHcMult * kHidden, kHcMult * kHidden, 1};
@@ -842,7 +826,7 @@ inline void decoder_range(const MappedWeights &weights,
         copy(flattened, destination);
         if (geometry.end == geometry.layers &&
             token_index + 1 == geometry.tokens) {
-            output_head(weights, hidden_hc.view(), logits);
+            output_head(weights, hidden_hc.view(), logits, trace_logits);
         }
     }
 }

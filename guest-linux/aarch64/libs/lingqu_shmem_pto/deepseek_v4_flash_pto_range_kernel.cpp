@@ -1,6 +1,7 @@
 #include "deepseek_v4_flash_pto_range.hpp"
 #include "tensor.h"
 #ifdef __CPU_SIM
+#include "deepseek_v4_flash_pto_trace.hpp"
 #include <cstdio>
 #endif
 
@@ -97,10 +98,22 @@ kernel_entry(int64_t *args) {
     const ds::MappedWeights weights(index);
     const ds::Iq2Codebook codebook {index.iq2_grid(), index.iq2_signs()};
     try {
+        const ds::F32View *trace_output = nullptr;
+#ifdef __CPU_SIM
+        ds::TerminalLogitsTrace trace(geometry);
+        ds::F32View trace_view {};
+        if (trace.enabled()) {
+            trace_view = trace.view();
+            trace_output = &trace_view;
+        }
+#endif
         ds::decoder_range(weights, codebook, geometry, f32_view(hidden_input),
                           byte_view(previous_state), i32_view(token_input),
                           f32_view(hidden_output), byte_view(next_state),
-                          f32_view(logits));
+                          f32_view(logits), trace_output);
+#ifdef __CPU_SIM
+        trace.finish();
+#endif
     } catch (const std::exception &error) {
 #ifdef __CPU_SIM
         std::fprintf(stderr, "deepseek_pto_kernel_error=%s\n", error.what());

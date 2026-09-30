@@ -76,11 +76,10 @@ struct RangeStateGeometry {
     uint32_t head_dim;
     uint32_t indexer_head_dim;
     uint32_t sliding_window;
-    uint32_t compressed_capacity;
 
     void validate() const {
         if (first >= end || end > 43 || !positions || !head_dim ||
-            !indexer_head_dim || !sliding_window || !compressed_capacity) {
+            !indexer_head_dim || !sliding_window) {
             throw std::invalid_argument("deepseek_pto_state_geometry");
         }
     }
@@ -176,8 +175,7 @@ inline RangeStateView range_state(const ByteView &bytes,
         LayerStateView view {ratio, *raw, std::nullopt, std::nullopt,
                              std::nullopt, std::nullopt};
         if (ratio) {
-            const uint32_t compressed_rows = std::min(
-                geometry.positions / ratio, geometry.compressed_capacity);
+            const uint32_t compressed_rows = geometry.positions / ratio;
             view.compressed = cursor.matrix(compressed_rows, geometry.head_dim);
             if (ratio == 4) {
                 view.indexer_compressed =

@@ -14,9 +14,9 @@ int main() {
     std::vector<uint8_t> previous_storage(previous_bytes);
     std::vector<uint8_t> next_storage(next_bytes);
     const ds::RangeStateGeometry previous_geometry {
-        2, 4, 3, 512, 128, 128, 512};
+        2, 4, 3, 512, 128, 128};
     const ds::RangeStateGeometry next_geometry {
-        2, 4, 4, 512, 128, 128, 512};
+        2, 4, 4, 512, 128, 128};
     const ds::ByteView previous_bytes_view {
         reinterpret_cast<uintptr_t>(previous_storage.data()),
         previous_storage.size()};
@@ -86,11 +86,29 @@ int main() {
         rejected_truncated = true;
     }
     CHECK(rejected_truncated);
+
+    constexpr uint64_t boundary_bytes =
+        4 * 8 + 8 + (8 + 128 * 512 * 4) + (8 + 513 * 512 * 4) +
+        (8 + 513 * 128 * 4) + (32 + 8 * 1024 * 8) + (32 + 8 * 256 * 8);
+    std::vector<uint8_t> boundary_storage(boundary_bytes);
+    const ds::RangeStateGeometry boundary_geometry {
+        2, 3, 2052, 512, 128, 128};
+    const ds::ByteView boundary_bytes_view {
+        reinterpret_cast<uintptr_t>(boundary_storage.data()),
+        boundary_storage.size()};
+    const ds::RangeStateView boundary =
+        ds::range_state(boundary_bytes_view, boundary_geometry, true);
+    CHECK(boundary.layers[0].compressed->rows == 513);
+    CHECK(boundary.layers[0].indexer_compressed->rows == 513);
+    const ds::RangeStateView boundary_parsed =
+        ds::range_state(boundary_bytes_view, boundary_geometry, false);
+    CHECK(boundary_parsed.layers[0].compressed->rows == 513);
+
     CHECK(ds::operator_counts.tload > 0);
     CHECK(ds::operator_counts.tstore > 0);
     std::printf(
         "deepseek_v4_flash_pto_state=pass previous_bytes=%llu "
-        "next_bytes=%llu layers=2 tload=%llu tstore=%llu\n",
+        "next_bytes=%llu layers=2 boundary_rows=513 tload=%llu tstore=%llu\n",
         static_cast<unsigned long long>(previous_bytes),
         static_cast<unsigned long long>(next_bytes),
         static_cast<unsigned long long>(ds::operator_counts.tload),

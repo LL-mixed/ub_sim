@@ -114,8 +114,6 @@ static int range_state_bytes(
             uint64_t compressed;
             uint64_t snapshot;
 
-            if (compressed_rows > geometry->indexer_top_k)
-                compressed_rows = geometry->indexer_top_k;
             rc = mul_u64(compressed_rows, geometry->head_dim, &compressed);
             if (!rc) rc = f32_vector_bytes(compressed, &vector_bytes);
             if (!rc) rc = add_u64(&bytes, vector_bytes);

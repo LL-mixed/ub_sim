@@ -1,6 +1,8 @@
 import importlib.util
+import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import struct
 import sys
@@ -13,8 +15,94 @@ LIB = ROOT / "guest-linux" / "aarch64" / "libs" / "lingqu_shmem_pto"
 
 
 class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
+    def test_terminal_trace_mirrors_complete_logits_without_output_read(self):
+        compiler = os.environ.get("CXX") or shutil.which("g++-15") or "c++"
+        source = (
+            '#include "deepseek_v4_flash_pto_trace.hpp"\n'
+            '#include <array>\n'
+            '#include <cstdint>\n'
+            '#include <vector>\n'
+            'int main(int argc, char **) {\n'
+            '  namespace ds = lingqu::deepseek_v4_flash_pto;\n'
+            '  ds::RangeGeometry geometry{};\n'
+            '  geometry.first = 40;\n'
+            '  geometry.end = argc == 1 ? ds::kLayers : ds::kLayers - 1;\n'
+            '  geometry.past = 7;\n'
+            '  geometry.tokens = 1;\n'
+            '  ds::TerminalLogitsTrace trace(geometry);\n'
+            '  if (!trace.enabled()) return 0;\n'
+            '  const ds::F32View logits = trace.view();\n'
+            '  const uint32_t samples[]{0, 42, ds::kVocab - 1};\n'
+            '  for (uint32_t i : samples) {\n'
+            '    ds::F32Scalar value;\n'
+            '    pto::TEXPANDS(value, float(i) * 0.125f);\n'
+            '    auto destination = ds::global_row<float>(logits.at(0, i), 1);\n'
+            '    pto::TSTORE(destination, value);\n'
+            '  }\n'
+            '  std::array<float, 32> input;\n'
+            '  input.fill(1.0f);\n'
+            '  std::array<uint8_t, 34> encoded{};\n'
+            '  encoded[1] = 0x3c;\n'
+            '  for (uint32_t i = 2; i < encoded.size(); ++i) encoded[i] = 1;\n'
+            '  ds::WeightTensor weight{};\n'
+            '  weight.payload = encoded.data();\n'
+            '  weight.bytes = encoded.size();\n'
+            '  weight.dimensions[0] = input.size();\n'
+            '  weight.dimensions[1] = 1;\n'
+            '  weight.tensor_type = ds::kGgufTypeQ8_0;\n'
+            '  weight.rank = 2;\n'
+            '  float output = 0.0f;\n'
+            '  ds::F32View source{reinterpret_cast<uintptr_t>(input.data()),\n'
+            '                     1, 32, 32, 1};\n'
+            '  ds::F32View destination{reinterpret_cast<uintptr_t>(&output),\n'
+            '                          1, 1, 1, 1};\n'
+            '  ds::F32View mirror{logits.at(0, 42), 1, 1, 1, 1};\n'
+            '  ds::q8_0_linear(source, weight, destination, &mirror);\n'
+            '  if (output != *reinterpret_cast<float *>(mirror.address))\n'
+            '    return 2;\n'
+            '  trace.finish();\n'
+            '  return 0;\n'
+            '}\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / "deepseek-pto-trace-fixture"
+            command = [
+                compiler, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
+                "-D__CPU_SIM", "-pthread", "-isystem",
+                str(ROOT / "vendor" / "pto-isa" / "include"),
+                "-I", str(LIB), "-x", "c++", "-", "-o", str(binary),
+            ]
+            version = subprocess.run(
+                [compiler, "--version"], check=True, capture_output=True,
+                text=True,
+            ).stdout
+            if "clang" in version.lower():
+                command.insert(6, "-Wno-pass-failed")
+            subprocess.run(command, input=source, text=True, check=True)
+            environment = os.environ.copy()
+            environment["SIM_W5_TEST_PTO_TRACE_DIR"] = temporary
+            subprocess.run([str(binary), "nonterminal"], env=environment,
+                           check=True)
+            self.assertEqual(list(Path(temporary).glob("*.f32")), [])
+            subprocess.run([str(binary)], env=environment, check=True)
+            output = (
+                Path(temporary) /
+                "deepseek-range-40-43-past-7-tokens-1-logits.f32"
+            )
+            data = output.read_bytes()
+            self.assertEqual(len(data), 129280 * 4)
+            self.assertEqual(struct.unpack_from("<f", data, 0)[0], 0.0)
+            self.assertEqual(struct.unpack_from("<f", data, 129279 * 4)[0],
+                             129279 * 0.125)
+            self.assertGreater(struct.unpack_from("<f", data, 42 * 4)[0],
+                               0.0)
+            duplicate = subprocess.run([str(binary)], env=environment,
+                                       capture_output=True, text=True)
+            self.assertNotEqual(duplicate.returncode, 0)
+            self.assertIn("deepseek_pto_trace_open_failed", duplicate.stderr)
+
     def test_direct_range_probe_compiles_and_sizes_state(self):
-        compiler = os.environ.get("CXX", "c++")
+        compiler = os.environ.get("CXX") or shutil.which("g++-15") or "c++"
         with tempfile.TemporaryDirectory() as temporary:
             binary = Path(temporary) / "deepseek_v4_flash_pto_range_probe"
             command = [
@@ -46,11 +134,70 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
                     check=True, capture_output=True, text=True,
                 )
                 self.assertEqual(int(result.stdout.strip()), expected)
+            before = subprocess.run(
+                [str(binary), "--state-bytes", "3", "2051"],
+                check=True, capture_output=True, text=True,
+            )
+            after = subprocess.run(
+                [str(binary), "--state-bytes", "3", "2052"],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertEqual(int(after.stdout) - int(before.stdout), 2560)
+            invalid_seed = subprocess.run(
+                [str(binary), "missing.index", "3", "42",
+                 str(Path(temporary) / "hidden.f32"),
+                 str(Path(temporary) / "state.bin"), "--seeded-past", "2050"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(invalid_seed.returncode, 0)
+            self.assertIn("invalid_range_or_token", invalid_seed.stderr)
             fixture = subprocess.run(
                 [str(binary), "--sink-attention-fixture"],
                 check=True, capture_output=True, text=True,
             )
             self.assertIn("sink_attention_fixture=pass", fixture.stdout)
+            token_fixture = subprocess.run(
+                [str(binary), "--token-control-fixture"],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertIn(
+                "token_control_fixture=pass tload=2 tstore=0",
+                token_fixture.stdout,
+            )
+            q_input = Path(temporary) / "q.f32"
+            kv_input = Path(temporary) / "kv.f32"
+            sinks_input = Path(temporary) / "sinks.f32"
+            attention_heads = Path(temporary) / "attention-heads.f32"
+            q_values = bytearray(64 * 512 * 4)
+            kv_values = bytearray(512 * 4)
+            struct.pack_into("<f", q_values, 0, 1.0)
+            struct.pack_into("<f", kv_values, 0, 1.0)
+            q_input.write_bytes(q_values)
+            kv_input.write_bytes(kv_values)
+            sinks_input.write_bytes(bytes(64 * 4))
+            subprocess.run(
+                [str(binary), "--attention-heads-from-qkv",
+                 str(q_input), str(kv_input), str(sinks_input), "0",
+                 str(attention_heads)],
+                check=True, capture_output=True, text=True,
+            )
+            heads = attention_heads.read_bytes()
+            self.assertEqual(len(heads), 64 * 512 * 4)
+            score = 1.0 / math.sqrt(512)
+            expected = math.exp(score) / (1.0 + math.exp(score))
+            self.assertAlmostEqual(struct.unpack_from("<f", heads, 0)[0],
+                                   expected, places=5)
+            self.assertAlmostEqual(struct.unpack_from("<f", heads, 512 * 4)[0],
+                                   0.5, places=5)
+            invalid_attention = subprocess.run(
+                [str(binary), "--attention-heads-from-qkv",
+                 str(q_input), str(sinks_input), str(sinks_input), "0",
+                 str(attention_heads)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(invalid_attention.returncode, 0)
+            self.assertIn("invalid_attention_input_geometry",
+                          invalid_attention.stderr)
             q8_input = Path(temporary) / "boundary.f32"
             boundary = [0.0] * 64
             boundary[0], boundary[27] = 1.04024875, 0.520124376
@@ -149,7 +296,7 @@ class DeepseekV4FlashPtoRangeTest(unittest.TestCase):
             self.assertIn("invalid_token_sequence", malformed.stderr)
 
     def test_range_header_compiles_with_strict_warnings(self):
-        compiler = os.environ.get("CXX", "c++")
+        compiler = os.environ.get("CXX") or shutil.which("g++-15") or "c++"
         source = '#include "deepseek_v4_flash_pto_range.hpp"\nint main() { return 0; }\n'
         command = [
             compiler,

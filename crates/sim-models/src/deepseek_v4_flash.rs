@@ -67,7 +67,7 @@ pub struct DeepseekV4FlashProfile {
     pub indexer_heads: u64,
     /// Width of one sparse-attention indexer head.
     pub indexer_head_dim: u64,
-    /// Number of compressed positions retained by the indexer.
+    /// Maximum number of compressed positions selected per query.
     pub indexer_top_k: u64,
     /// Hyper-connection stack width.
     pub hc_mult: u64,

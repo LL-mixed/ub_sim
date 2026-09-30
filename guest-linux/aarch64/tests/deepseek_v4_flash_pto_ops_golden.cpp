@@ -56,6 +56,14 @@ int main() {
     CHECK(ds::operator_counts.q8_linear == 1);
     CHECK(ds::operator_counts.tload > 0);
     CHECK(ds::operator_counts.tstore > 0);
+    const uint64_t base_tstores = ds::operator_counts.tstore;
+    std::array<float, 2> trace_output {};
+    const ds::F32View trace_output_view {
+        reinterpret_cast<uintptr_t>(trace_output.data()), 1, 2, 2, 1};
+    ds::operator_counts = {};
+    ds::q8_0_linear(input_view, weight, output_view, &trace_output_view);
+    CHECK(trace_output == output);
+    CHECK(ds::operator_counts.tstore == base_tstores + output_view.columns);
 
     std::array<uint8_t, 16> f16_weight {
         0x00, 0x3c, 0x00, 0x40, 0x00, 0x42, 0x00, 0x44,
@@ -367,27 +375,87 @@ int main() {
         indexer_q_view, indexer_kv_view, indexer_weights_view, 2);
     CHECK((selected == std::vector<uint32_t> {1, 0}));
 
-    std::array<float, 4> router_logits {0.0f, 1.0f, -1.0f, 2.0f};
-    std::array<float, 4> router_probabilities {};
+    std::vector<float> long_indexer_kv(513 * 2, 0.0f);
+    for (uint32_t row = 0; row < 513; ++row) {
+        long_indexer_kv[row * 2] = static_cast<float>(row);
+    }
+    const ds::F32View long_indexer_kv_view {
+        reinterpret_cast<uintptr_t>(long_indexer_kv.data()), 513, 2, 2, 1};
+    const std::vector<uint32_t> long_selected = ds::sparse_indexer(
+        indexer_q_view, long_indexer_kv_view, indexer_weights_view, 512);
+    CHECK(long_selected.size() == 512);
+    CHECK(long_selected.front() == 512);
+    CHECK(long_selected.back() == 1);
+    CHECK(ds::operator_counts.sparse_indexer == 2);
+    CHECK(ds::operator_counts.sparse_indexer_topk == 2);
+
+    std::array<float, 9> router_logits {
+        -20.0f, -10.0f, -5.0f, -1.0f, 0.0f, 1.0f, 5.0f, 10.0f, 20.0f};
+    std::array<float, 9> router_probabilities {};
     const ds::F32View router_logits_view {
-        reinterpret_cast<uintptr_t>(router_logits.data()), 1, 4, 4, 1};
+        reinterpret_cast<uintptr_t>(router_logits.data()), 1, 9, 9, 1};
     const ds::F32View router_probabilities_view {
-        reinterpret_cast<uintptr_t>(router_probabilities.data()), 1, 4, 4,
+        reinterpret_cast<uintptr_t>(router_probabilities.data()), 1, 9, 9,
         1};
     const ds::RouterSelection router_selection = ds::router(
         router_logits_view, nullptr, std::span<const uint32_t>(), 2, 2.0f,
         router_probabilities_view);
     CHECK((router_selection.expert_indices ==
-           std::vector<uint32_t> {3, 1}));
+           std::vector<uint32_t> {8, 7}));
+    CHECK(ds::operator_counts.router_argmax == 2);
     for (size_t index = 0; index < router_logits.size(); ++index) {
         const float expected =
             std::sqrt(std::max(router_logits[index], 0.0f) +
                       std::log1p(std::exp(-std::abs(router_logits[index]))));
-        CHECK(std::abs(router_probabilities[index] - expected) < 1.0e-6f);
+        const float error = std::abs(router_probabilities[index] - expected);
+        if (error >= 1.0e-6f) {
+            std::fprintf(stderr, "router_softplus index=%zu input=%g actual=%g expected=%g error=%g\n",
+                         index, router_logits[index], router_probabilities[index], expected, error);
+        }
+        CHECK(error < 1.0e-6f);
     }
     CHECK(std::abs(router_selection.expert_weights[0] +
                        router_selection.expert_weights[1] -
                    2.0f) < 1.0e-6f);
+
+    std::array<float, 4> tied_logits {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> selection_bias {0.0f, 1.0f, 1.0f, -1.0f};
+    std::array<float, 4> tied_probabilities {};
+    const ds::F32View tied_logits_view {
+        reinterpret_cast<uintptr_t>(tied_logits.data()), 1, 4, 4, 1};
+    const ds::F32View selection_bias_view {
+        reinterpret_cast<uintptr_t>(selection_bias.data()), 1, 4, 4, 1};
+    const ds::F32View tied_probabilities_view {
+        reinterpret_cast<uintptr_t>(tied_probabilities.data()), 1, 4, 4, 1};
+    const ds::RouterSelection tied_selection = ds::router(
+        tied_logits_view, &selection_bias_view, std::span<const uint32_t>(),
+        2, 1.0f, tied_probabilities_view);
+    CHECK((tied_selection.expert_indices == std::vector<uint32_t> {1, 2}));
+    CHECK(ds::operator_counts.router_argmax == 4);
+    const std::array<uint32_t, 2> fixed_experts {3, 0};
+    const ds::RouterSelection fixed_selection = ds::router(
+        tied_logits_view, nullptr, fixed_experts, 2, 1.0f,
+        tied_probabilities_view);
+    CHECK((fixed_selection.expert_indices == std::vector<uint32_t> {3, 0}));
+    CHECK(ds::operator_counts.router_argmax == 4);
+
+    std::array<float, 256> full_router_logits {};
+    std::array<float, 256> full_router_probabilities {};
+    for (uint32_t expert = 0; expert < full_router_logits.size(); ++expert) {
+        full_router_logits[expert] = -4.0f + expert / 64.0f;
+    }
+    const ds::F32View full_router_logits_view {
+        reinterpret_cast<uintptr_t>(full_router_logits.data()), 1, 256, 256,
+        1};
+    const ds::F32View full_router_probabilities_view {
+        reinterpret_cast<uintptr_t>(full_router_probabilities.data()), 1,
+        256, 256, 1};
+    const ds::RouterSelection full_selection = ds::router(
+        full_router_logits_view, nullptr, std::span<const uint32_t>(), 8,
+        1.0f, full_router_probabilities_view);
+    CHECK((full_selection.expert_indices ==
+           std::vector<uint32_t> {255, 254, 253, 252, 251, 250, 249, 248}));
+    CHECK(ds::operator_counts.router_argmax == 12);
 
     std::vector<uint8_t> zero_iq2(256 * ds::kIq2XxsBlockBytes, 0);
     std::vector<uint8_t> zero_q2(256 * ds::kQ2KBlockBytes, 0);
@@ -548,7 +616,7 @@ int main() {
         "q2_k_linear=1 iq2_xxs_linear=1 rms_norm=1 "
         "head_rms_norm=1 rope_tail=1 kv_write=1 kv_gather=1 "
         "sink_attention=1 compressor_update=1 indexer_qat=1 "
-        "sparse_indexer=1 router=1 routed_experts=1 shared_expert=1 "
+        "sparse_indexer=2 router=1 routed_experts=1 shared_expert=1 "
         "hc_split=1 hc_weighted_sum=1 hc_post=1 swiglu=1 "
         "tload=%llu tstore=%llu\n",
         static_cast<unsigned long long>(ds::operator_counts.tload),

@@ -159,11 +159,17 @@ static void run_case(uint32_t first, uint32_t end, uint32_t past,
 int main(void)
 {
     struct deepseek_v4_flash_managed_direct_geometry invalid = {0};
+    struct deepseek_v4_flash_managed_direct_geometry boundary;
     struct deepseek_v4_flash_managed_direct_description invalid_description;
 
     run_case(0, 2, 0, 3, 1, 12352);
     run_case(2, 4, 3, 1, 618680, 625336);
     run_case(41, 43, 4, 1, 625336, 629432);
+    boundary = geometry(2, 3, 2051, 1);
+    CHECK(!deepseek_v4_flash_managed_direct_describe(&boundary,
+                                                      &description));
+    CHECK(description.tensors[1].byte_length == 1654912);
+    CHECK(description.tensors[4].byte_length == 1657472);
     CHECK(deepseek_v4_flash_managed_direct_describe(
               &invalid, &invalid_description) == -EINVAL);
     CHECK(prepares == 3 && submits == 3 && polls == 3 && releases == 3);

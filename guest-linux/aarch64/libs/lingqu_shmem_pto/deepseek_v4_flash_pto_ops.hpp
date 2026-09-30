@@ -45,7 +45,9 @@ struct OperatorCounts {
     uint64_t compressor_update = 0;
     uint64_t indexer_qat = 0;
     uint64_t sparse_indexer = 0;
+    uint64_t sparse_indexer_topk = 0;
     uint64_t router = 0;
+    uint64_t router_argmax = 0;
     uint64_t routed_experts = 0;
     uint64_t shared_expert = 0;
     uint64_t hc_split = 0;
@@ -89,6 +91,12 @@ using F32Row = pto::Tile<pto::TileType::Vec, float, 1, kVectorCapacity,
                          pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
 using F32Scalar = pto::Tile<pto::TileType::Vec, float, 1, 8,
                             pto::BLayout::RowMajor, 1, 1>;
+using U32Scalar = pto::Tile<pto::TileType::Vec, uint32_t, 1, 8,
+                            pto::BLayout::RowMajor, 1, 1>;
+using U32Row = pto::Tile<pto::TileType::Vec, uint32_t, 1, kVectorCapacity,
+                         pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
+using I32Row = pto::Tile<pto::TileType::Vec, int32_t, 1, kVectorCapacity,
+                         pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
 using F16Scalar = pto::Tile<pto::TileType::Vec, half, 1, 16,
                             pto::BLayout::RowMajor, 1, 1>;
 using F16Row = pto::Tile<pto::TileType::Vec, half, 1, kVectorCapacity,
@@ -98,6 +106,14 @@ using I8Block = pto::Tile<pto::TileType::Vec, int8_t, 1, kQ8BlockElements,
 using I8SuperBlock =
     pto::Tile<pto::TileType::Vec, int8_t, 1, kQ8KBlockElements,
               pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
+using I16Block = pto::Tile<pto::TileType::Vec, int16_t, 1, kQ8BlockElements,
+                           pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
+using I16Scalar = pto::Tile<pto::TileType::Vec, int16_t, 1, 16,
+                            pto::BLayout::RowMajor, 1, 1>;
+using U8Block = pto::Tile<pto::TileType::Vec, uint8_t, 1, kQ8BlockElements,
+                          pto::BLayout::RowMajor, 1, pto::DYNAMIC>;
+using U8Scalar = pto::Tile<pto::TileType::Vec, uint8_t, 1, kQ8BlockElements,
+                           pto::BLayout::RowMajor, 1, 1>;
 using RowShape = pto::Shape<1, 1, 1, 1, pto::DYNAMIC>;
 using RowStride = pto::Stride<pto::DYNAMIC, pto::DYNAMIC, pto::DYNAMIC,
                               pto::DYNAMIC, pto::DYNAMIC>;
@@ -587,6 +603,36 @@ inline bool compressor_update_pre_scored(uint32_t position,
     return true;
 }
 
+inline void fp4_e2m1_roundtrip(F32Row &block, float scale) {
+    if (block.GetValidCol() != 32 || !std::isfinite(scale) || scale <= 0.0f) {
+        throw std::invalid_argument("deepseek_pto_fp4_roundtrip_geometry");
+    }
+    F32Row magnitude(32), selected_a(32), selected_b(32);
+    F32Row negative(32), signed_values(32), scratch(32);
+    U8Block mask(4);
+    pto::TABS(magnitude, block);
+    pto::TDIVS(magnitude, magnitude, scale);
+    pto::TMINS(magnitude, magnitude, 6.0f);
+    pto::TEXPANDS(selected_a, 0.0f);
+    F32Row *selected = &selected_a;
+    F32Row *next = &selected_b;
+    constexpr std::array<float, 8> fp4_values {
+        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
+    for (uint32_t upper = 1; upper < fp4_values.size(); ++upper) {
+        const float midpoint =
+            0.5f * (fp4_values[upper - 1] + fp4_values[upper]);
+        const pto::CmpMode keep =
+            upper % 2 == 0 ? pto::CmpMode::LT : pto::CmpMode::LE;
+        pto::TCMPS(mask, magnitude, midpoint, keep);
+        pto::TSELS(*next, mask, *selected, scratch, fp4_values[upper]);
+        std::swap(selected, next);
+    }
+    pto::TCMPS(mask, block, 0.0f, pto::CmpMode::LT);
+    pto::TNEG(negative, *selected);
+    pto::TSEL(signed_values, mask, negative, *selected, scratch);
+    pto::TMULS(block, signed_values, scale);
+}
+
 inline void indexer_qat(const F32View &values) {
     ++operator_counts.indexer_qat;
     values.validate();
@@ -628,33 +674,7 @@ inline void indexer_qat(const F32View &values) {
                 std::max(absolute_maximum, 7.052966104933725e-38f);
             const float scale =
                 std::exp2(std::ceil(std::log2(bounded_maximum / 6.0f)));
-            std::array<float, 32> private_values {};
-            const F32View private_view {
-                reinterpret_cast<uintptr_t>(private_values.data()), 1, 32, 32,
-                1};
-            store(private_view, 0, block);
-            constexpr std::array<float, 8> fp4_values {
-                0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f};
-            for (float &value : private_values) {
-                const float sign = value < 0.0f ? -1.0f : 1.0f;
-                const float magnitude =
-                    std::min(std::abs(value / scale), 6.0f);
-                uint32_t best = 0;
-                for (uint32_t candidate = 1; candidate < fp4_values.size();
-                     ++candidate) {
-                    const float difference =
-                        std::abs(magnitude - fp4_values[candidate]);
-                    const float best_difference =
-                        std::abs(magnitude - fp4_values[best]);
-                    if (difference < best_difference ||
-                        (difference == best_difference && candidate % 2 == 0 &&
-                         best % 2 != 0)) {
-                        best = candidate;
-                    }
-                }
-                value = sign * fp4_values[best] * scale;
-            }
-            load(block, private_view, 0);
+            fp4_e2m1_roundtrip(block, scale);
             store(values, head, block, column);
         }
     }
@@ -678,6 +698,7 @@ sparse_indexer(const F32View &q, const F32View &compressed_kv,
         for (uint32_t row = 0; row < compressed_kv.rows; ++row) all[row] = row;
         return all;
     }
+    ++operator_counts.sparse_indexer_topk;
 
     std::vector<float> score_storage(compressed_kv.rows);
     const F32View scores {reinterpret_cast<uintptr_t>(score_storage.data()), 1,
@@ -1037,19 +1058,28 @@ inline RouterSelection router(const F32View &logits,
          column += kVectorCapacity) {
         const uint32_t count =
             std::min(kVectorCapacity, logits.columns - column);
-        F32Row values(count), result(count);
+        F32Row values(count), positive(count), absolute(count), negative(count);
+        F32Row exponential(count), denominator(count), ratio(count);
+        F32Row ratio_squared(count), power(count), term(count), sum(count);
+        F32Row result(count);
         load(values, logits, 0, column);
-        std::vector<float> private_values(count);
-        const F32View private_view {
-            reinterpret_cast<uintptr_t>(private_values.data()), 1, count,
-            count, 1};
-        store(private_view, 0, values);
-        for (float &value : private_values) {
-            const float softplus = std::max(value, 0.0f) +
-                                   std::log1p(std::exp(-std::abs(value)));
-            value = std::sqrt(softplus);
+        pto::TMAXS(positive, values, 0.0f);
+        pto::TABS(absolute, values);
+        pto::TNEG(negative, absolute);
+        pto::TEXP(exponential, negative);
+        pto::TADDS(denominator, exponential, 2.0f);
+        pto::TDIV(ratio, exponential, denominator);
+        pto::TMUL(ratio_squared, ratio, ratio);
+        pto::TADDS(power, ratio, 0.0f);
+        pto::TADDS(sum, ratio, 0.0f);
+        for (uint32_t degree = 3; degree <= 15; degree += 2) {
+            pto::TMUL(power, power, ratio_squared);
+            pto::TDIVS(term, power, static_cast<float>(degree));
+            pto::TADD(sum, sum, term);
         }
-        load(result, private_view, 0);
+        pto::TMULS(sum, sum, 2.0f);
+        pto::TADD(result, positive, sum);
+        pto::TSQRT(result, result);
         store(probabilities, 0, result, column);
     }
 
@@ -1079,21 +1109,31 @@ inline RouterSelection router(const F32View &logits,
             }
             store(score_view, 0, values, column);
         }
-        std::vector<bool> used(logits.columns, false);
+        F32Row scores_tile(logits.columns);
+        U32Row argmax_scratch(logits.columns);
         for (uint32_t slot = 0; slot < top_k; ++slot) {
+            U32Scalar argmax;
+            load(scores_tile, score_view, 0);
+            pto::TROWARGMAX(argmax, scores_tile, argmax_scratch);
+            ++operator_counts.router_argmax;
             uint32_t best_expert = logits.columns;
-            float best_score = -std::numeric_limits<float>::infinity();
-            for (uint32_t expert = 0; expert < logits.columns; ++expert) {
-                if (!used[expert] && scores[expert] > best_score) {
-                    best_expert = expert;
-                    best_score = scores[expert];
-                }
-            }
-            if (best_expert == logits.columns) {
+            auto index_output = global_row<uint32_t>(
+                reinterpret_cast<uintptr_t>(&best_expert), 1);
+            pto::TSTORE(index_output, argmax);
+            ++operator_counts.tstore;
+            if (best_expert >= logits.columns) {
                 throw std::runtime_error("deepseek_pto_router_selection");
             }
-            used[best_expert] = true;
             selection.expert_indices.push_back(best_expert);
+            if (slot + 1 < top_k) {
+                F32Scalar masked;
+                pto::TEXPANDS(masked,
+                              -std::numeric_limits<float>::infinity());
+                auto masked_score = global_row<float>(
+                    score_view.at(0, best_expert), 1);
+                pto::TSTORE(masked_score, masked);
+                ++operator_counts.tstore;
+            }
         }
     }
 
@@ -1220,7 +1260,8 @@ inline void decode_f16_vector(const WeightTensor &weight,
 }
 
 inline void q8_0_linear(const F32View &input, const WeightTensor &weight,
-                        const F32View &output);
+                        const F32View &output,
+                        const F32View *trace_output = nullptr);
 
 inline void grouped_q8_0_linear(const F32View &input,
                                 const WeightTensor &weight, uint32_t groups,
@@ -1263,40 +1304,45 @@ inline void grouped_q8_0_linear(const F32View &input,
     }
 }
 
-inline float e4m3fn_roundtrip(float value) {
-    const auto positive_value = [](uint32_t index) {
-        constexpr std::array<float, 16> exponent_scale {
-            0.0f, 0.015625f, 0.03125f, 0.0625f, 0.125f, 0.25f, 0.5f,
-            1.0f, 2.0f, 4.0f, 8.0f, 16.0f, 32.0f, 64.0f, 128.0f,
-            256.0f};
-        const uint32_t exponent = (index >> 3) & 0x0f;
-        const uint32_t mantissa = index & 0x07;
-        return exponent == 0
-                   ? float(mantissa) * 0.001953125f
-                   : (1.0f + float(mantissa) * 0.125f) *
-                         exponent_scale[exponent];
-    };
-    const float sign = value < 0.0f ? -1.0f : 1.0f;
-    const float magnitude = std::min(std::abs(value), 448.0f);
-    uint32_t low = 0;
-    uint32_t high = 126;
-    while (low < high) {
-        const uint32_t middle = (low + high + 1) >> 1;
-        if (positive_value(middle) <= magnitude) low = middle;
-        else high = middle - 1;
+inline void e4m3fn_roundtrip(F32Row &block, float scale) {
+    if (block.GetValidCol() != 64 || !std::isfinite(scale) || scale <= 0.0f) {
+        throw std::invalid_argument("deepseek_pto_fp8_roundtrip_geometry");
     }
-    uint32_t best = low;
-    if (best < 126) {
-        const float difference = std::abs(magnitude - positive_value(best));
-        const float next_difference =
-            std::abs(magnitude - positive_value(best + 1));
-        if (next_difference < difference ||
-            (next_difference == difference && (best + 1) % 2 == 0 &&
-             best % 2 != 0)) {
-            ++best;
-        }
+    F32Row magnitude(64), base_a(64), base_b(64), step_a(64), step_b(64);
+    F32Row scaled(64), rounded(64), quantized(64), negative(64);
+    F32Row signed_values(64), scratch(64);
+    I32Row code(64);
+    U8Block mask(8);
+    pto::TABS(magnitude, block);
+    pto::TDIVS(magnitude, magnitude, scale);
+    pto::TMINS(magnitude, magnitude, 448.0f);
+    pto::TEXPANDS(base_a, 0.0f);
+    pto::TEXPANDS(step_a, 0.001953125f);
+    F32Row *base = &base_a;
+    F32Row *next_base = &base_b;
+    F32Row *step = &step_a;
+    F32Row *next_step = &step_b;
+    for (uint32_t exponent = 1; exponent <= 15; ++exponent) {
+        const float exponent_base = std::ldexp(1.0f, int(exponent) - 7);
+        const float cutoff = exponent_base *
+                             (exponent == 1 ? 0.9375f : 0.96875f);
+        pto::TCMPS(mask, magnitude, cutoff, pto::CmpMode::LT);
+        pto::TSELS(*next_base, mask, *base, scratch, exponent_base);
+        pto::TSELS(*next_step, mask, *step, scratch,
+                   exponent_base * 0.125f);
+        std::swap(base, next_base);
+        std::swap(step, next_step);
     }
-    return sign * positive_value(best);
+    pto::TSUB(scaled, magnitude, *base);
+    pto::TDIV(scaled, scaled, *step);
+    pto::TCVT(code, scaled, pto::RoundMode::CAST_RINT);
+    pto::TCVT(rounded, code, pto::RoundMode::CAST_NONE);
+    pto::TMUL(rounded, rounded, *step);
+    pto::TADD(quantized, *base, rounded);
+    pto::TCMPS(mask, block, 0.0f, pto::CmpMode::LT);
+    pto::TNEG(negative, quantized);
+    pto::TSEL(signed_values, mask, negative, quantized, scratch);
+    pto::TMULS(block, signed_values, scale);
 }
 
 inline void fp8_kv_roundtrip(const F32View &values, uint32_t rope_dim) {
@@ -1308,25 +1354,19 @@ inline void fp8_kv_roundtrip(const F32View &values, uint32_t rope_dim) {
     const uint32_t nope_dim = values.columns - rope_dim;
     for (uint32_t row = 0; row < values.rows; ++row) {
         for (uint32_t column = 0; column < nope_dim; column += 64) {
-            F32Row block(64);
+            F32Row block(64), absolute(64), scratch_tile(64);
+            F32Scalar maximum;
             load(block, values, row, column);
-            std::array<float, 64> private_values {};
-            const F32View private_view {
-                reinterpret_cast<uintptr_t>(private_values.data()), 1, 64, 64,
-                1};
-            store(private_view, 0, block);
-            float maximum = 1.0e-4f;
-            for (float value : private_values) {
-                maximum = std::max(maximum, std::abs(value));
-            }
+            pto::TABS(absolute, block);
+            pto::TROWMAX(maximum, absolute, scratch_tile);
+            float absolute_maximum = 0.0f;
+            const F32View maximum_view {
+                reinterpret_cast<uintptr_t>(&absolute_maximum), 1, 1, 1, 1};
+            store_scalar(maximum_view, 0, 0, maximum);
             const float scale =
-                std::exp2(std::ceil(std::log2(maximum / 448.0f)));
-            for (float &value : private_values) {
-                value = e4m3fn_roundtrip(
-                            std::clamp(value / scale, -448.0f, 448.0f)) *
-                        scale;
-            }
-            load(block, private_view, 0);
+                std::exp2(std::ceil(std::log2(
+                    std::max(absolute_maximum, 1.0e-4f) / 448.0f)));
+            e4m3fn_roundtrip(block, scale);
             store(values, row, block, column);
         }
     }
@@ -1397,10 +1437,18 @@ inline void validate_q8_matrix(const WeightTensor &weight, uint32_t input_column
 }
 
 inline void q8_0_linear(const F32View &input, const WeightTensor &weight,
-                        const F32View &output) {
+                        const F32View &output,
+                        const F32View *trace_output) {
     ++operator_counts.q8_linear;
     input.validate();
     output.validate();
+    if (trace_output) {
+        trace_output->validate();
+        if (trace_output->rows != output.rows ||
+            trace_output->columns != output.columns) {
+            throw std::invalid_argument("deepseek_pto_trace_output_geometry");
+        }
+    }
     if (input.rows != output.rows) {
         throw std::invalid_argument("deepseek_pto_q8_rows");
     }
@@ -1448,6 +1496,12 @@ inline void q8_0_linear(const F32View &input, const WeightTensor &weight,
             auto destination = global_row<float>(output.at(input_row, output_row), 1);
             pto::TSTORE(destination, accumulator);
             ++operator_counts.tstore;
+            if (trace_output) {
+                auto trace_destination = global_row<float>(
+                    trace_output->at(input_row, output_row), 1);
+                pto::TSTORE(trace_destination, accumulator);
+                ++operator_counts.tstore;
+            }
         }
     }
 }
@@ -1464,25 +1518,47 @@ inline QuantizedQ8KBlock quantize_q8_k(const F32View &input, uint32_t row,
         kQ8KBlockElements > input.columns - column) {
         throw std::invalid_argument("deepseek_pto_q8_k_geometry");
     }
-    F32Row values(kQ8KBlockElements);
+    F32Row values(kQ8KBlockElements), absolute(kQ8KBlockElements);
     load(values, input, row, column);
-    std::array<float, kQ8KBlockElements> private_values {};
-    const F32View private_view {
-        reinterpret_cast<uintptr_t>(private_values.data()), 1,
-        kQ8KBlockElements, kQ8KBlockElements, 1};
-    store(private_view, 0, values);
-
-    float signed_maximum = 0.0f;
-    float absolute_maximum = 0.0f;
-    for (float value : private_values) {
-        if (!std::isfinite(value)) {
-            throw std::invalid_argument("deepseek_pto_q8_k_non_finite");
-        }
-        if (std::abs(value) > absolute_maximum) {
-            absolute_maximum = std::abs(value);
-            signed_maximum = value;
-        }
+    U8Block above_min(kQ8KBlockElements / 8), below_max(kQ8KBlockElements / 8);
+    U8Block finite_mask(kQ8KBlockElements / 8), finite_scratch(kQ8KBlockElements / 8);
+    U8Scalar finite_result;
+    const float finite_bound = std::numeric_limits<float>::max();
+    pto::TCMPS(above_min, values, -finite_bound, pto::CmpMode::GE);
+    pto::TCMPS(below_max, values, finite_bound, pto::CmpMode::LE);
+    pto::TAND(finite_mask, above_min, below_max);
+    pto::TROWMIN(finite_result, finite_mask, finite_scratch);
+    uint8_t finite = 0;
+    auto finite_output = global_row<uint8_t>(reinterpret_cast<uintptr_t>(&finite), 1);
+    pto::TSTORE(finite_output, finite_result);
+    ++operator_counts.tstore;
+    if (finite != 0xff) {
+        throw std::invalid_argument("deepseek_pto_q8_k_non_finite");
     }
+
+    pto::TABS(absolute, values);
+    F32Scalar maximum;
+    F32Row maximum_scratch(kQ8KBlockElements);
+    U32Scalar maximum_index;
+    pto::TROWARGMAX(maximum, maximum_index, absolute, maximum_scratch);
+    float absolute_maximum = 0.0f;
+    uint32_t index = kQ8KBlockElements;
+    auto maximum_output = global_row<float>(
+        reinterpret_cast<uintptr_t>(&absolute_maximum), 1);
+    auto index_output = global_row<uint32_t>(reinterpret_cast<uintptr_t>(&index), 1);
+    pto::TSTORE(maximum_output, maximum);
+    pto::TSTORE(index_output, maximum_index);
+    operator_counts.tstore += 2;
+    if (index >= kQ8KBlockElements) {
+        throw std::runtime_error("deepseek_pto_q8_k_argmax");
+    }
+    float signed_maximum = 0.0f;
+    F32Scalar signed_tile;
+    load_scalar(signed_tile, input, row, column + index);
+    auto signed_output = global_row<float>(
+        reinterpret_cast<uintptr_t>(&signed_maximum), 1);
+    pto::TSTORE(signed_output, signed_tile);
+    ++operator_counts.tstore;
 
     QuantizedQ8KBlock output;
     if (absolute_maximum != 0.0f) {
@@ -1498,11 +1574,19 @@ inline QuantizedQ8KBlock quantize_q8_k(const F32View &input, uint32_t row,
         ++operator_counts.tstore;
     }
     for (uint32_t group = 0; group < 16; ++group) {
-        int32_t sum = 0;
-        for (uint32_t lane = 0; lane < 16; ++lane) {
-            sum += output.values[group * 16 + lane];
-        }
-        output.sums[group] = static_cast<int16_t>(sum);
+        I8Block codes(16);
+        I16Block widened(16), scratch(16);
+        I16Scalar sum;
+        auto source = global_row<int8_t>(
+            reinterpret_cast<uintptr_t>(output.values.data() + group * 16), 16);
+        pto::TLOAD(codes, source);
+        ++operator_counts.tload;
+        pto::TCVT(widened, codes, pto::RoundMode::CAST_NONE);
+        pto::TROWSUM(sum, widened, scratch);
+        auto destination = global_row<int16_t>(
+            reinterpret_cast<uintptr_t>(&output.sums[group]), 1);
+        pto::TSTORE(destination, sum);
+        ++operator_counts.tstore;
     }
     return output;
 }
