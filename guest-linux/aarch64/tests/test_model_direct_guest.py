@@ -44,7 +44,7 @@ class ModelDirectGuestTest(unittest.TestCase):
 
         self.assertEqual(
             result.stdout.strip(),
-            "model_direct_guest=pass cases=5 staging_bytes=0",
+            "model_direct_guest=pass cases=7 staging_bytes=0",
         )
         self.assertIn("model_tensor_address_space=UB_GM", result.stderr)
         self.assertIn("pto_instruction_io=1", result.stderr)

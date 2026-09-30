@@ -415,8 +415,12 @@ int main(int argc, char **argv) {
             "\n}", 1)[0] + "\n}\n"
         assignments = [line.strip() for line in guest.splitlines()
                        if '="$(cmdline_value mem_service.object_share_' in line]
-        self.assertEqual(len(assignments), 11)
-        for assignment in assignments:
+        restart = 'guest_restart="$(cmdline_value mem_service.object_share_guest_restart 0)"'
+        self.assertIn(restart, assignments)
+        legacy_assignments = [assignment for assignment in assignments
+                              if assignment != restart]
+        self.assertEqual(len(legacy_assignments), 11)
+        for assignment in legacy_assignments:
             variable = assignment.split("=", 1)[0]
             key = assignment.split("cmdline_value ", 1)[1].split(" ", 1)[0]
             old_key = key.replace("mem_service.", "mem_service_")

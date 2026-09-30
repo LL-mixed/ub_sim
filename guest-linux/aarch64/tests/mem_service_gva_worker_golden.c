@@ -679,7 +679,11 @@ int main(void)
                                   .allocation_granularity_bytes = 2097152,
                                   .kernel_instance = {1}};
     struct mem_service_client client = {0};
-    struct obmm_cmd_gsva_aperture aperture = {.base = 0x700000000000ULL, .size = 0x10000000};
+    struct obmm_cmd_gsva_aperture aperture = {
+        .base = 0x700000000000ULL,
+        .size = 0x10000000,
+        .node_count = 1,
+    };
     struct mem_service_client_allocation work = {
         .key = "object", .state = "allocating", .home_node = "nodeA",
         .generation = 1, .size_bytes = 65536, .alignment_bytes = 65536,
@@ -828,6 +832,7 @@ int main(void)
 
         work.size_bytes = 65536;
         mode = GOOD;
+        aperture.node_count = 2;
         aperture.node_id = 1;
         memset(&reservation, 0, sizeof(reservation));
         assert(!allocate_work(42, fileno(journal), &config, &client,

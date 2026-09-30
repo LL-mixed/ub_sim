@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #define _GNU_SOURCE
 #include "lingqu_shmem_pto_endpoint.h"
+#include "../../../kernel_ub/include/uapi/ub/sim_pto_queue.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
@@ -44,8 +46,10 @@ struct lingqu_shmem_pto_queued_request {
 
 struct lingqu_shmem_pto_endpoint {
     int resource_fd;
+    int queue_fd;
     volatile uint8_t *root_mmio;
     volatile uint8_t *endpoint_mmio;
+    uint8_t *queue_mapping;
     uint8_t *cmdq;
     uint8_t *cq;
     uint64_t cmdq_phys;
@@ -122,34 +126,18 @@ static int monotonic_ms(uint64_t *value)
     return 0;
 }
 
-static int phys_for_virt(void *address, uint64_t *physical_out)
+static int queue_info(struct lingqu_shmem_pto_endpoint *endpoint,
+                      struct ub_sim_pto_queue_info *info)
 {
-    uint64_t virtual_address = (uint64_t)(uintptr_t)address;
-    uint64_t page_index = virtual_address / LINGQU_SHMEM_PTO_PAGE_BYTES;
-    uint64_t page_offset = virtual_address % LINGQU_SHMEM_PTO_PAGE_BYTES;
-    uint64_t entry = 0;
-    int fd;
-    ssize_t bytes;
-
-    if (!address || !physical_out) {
+    if (!endpoint || endpoint->queue_fd < 0 || !info)
         return -EINVAL;
-    }
-    fd = open("/proc/self/pagemap", O_RDONLY);
-    if (fd < 0) {
+    if (ioctl(endpoint->queue_fd, UB_SIM_PTO_QUEUE_GET_INFO, info) < 0)
         return -errno;
-    }
-    bytes = pread(fd, &entry, sizeof(entry),
-                  (off_t)(page_index * sizeof(entry)));
-    close(fd);
-    if (bytes != (ssize_t)sizeof(entry) ||
-        (entry & (UINT64_C(1) << 63)) == 0) {
-        return -EFAULT;
-    }
-    entry &= (UINT64_C(1) << 55) - 1;
-    if (entry == 0) {
-        return -EFAULT;
-    }
-    *physical_out = entry * LINGQU_SHMEM_PTO_PAGE_BYTES + page_offset;
+    if (info->version != UB_SIM_PTO_QUEUE_ABI_VERSION ||
+        info->page_bytes != LINGQU_SHMEM_PTO_PAGE_BYTES ||
+        !info->cmdq_pa ||
+        info->cq_pa != info->cmdq_pa + LINGQU_SHMEM_PTO_PAGE_BYTES)
+        return -EPROTO;
     return 0;
 }
 
@@ -201,6 +189,7 @@ static int map_resource(struct lingqu_shmem_pto_endpoint *endpoint,
 
 static int map_queues(struct lingqu_shmem_pto_endpoint *endpoint)
 {
+    struct ub_sim_pto_queue_info info = { 0 };
     uint64_t cmdq_head;
     uint64_t cmdq_tail;
     uint64_t cq_head;
@@ -229,29 +218,23 @@ static int map_queues(struct lingqu_shmem_pto_endpoint *endpoint)
     if (cmdq_head != cmdq_tail || cq_head != cq_tail) {
         return -EBUSY;
     }
-    endpoint->cmdq = mmap(NULL, LINGQU_SHMEM_PTO_PAGE_BYTES,
-                          PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    endpoint->cq = mmap(NULL, LINGQU_SHMEM_PTO_PAGE_BYTES,
-                        PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (endpoint->cmdq == MAP_FAILED || endpoint->cq == MAP_FAILED) {
+    endpoint->queue_fd = open(UB_SIM_PTO_QUEUE_DEVICE,
+                              O_RDWR | O_CLOEXEC);
+    if (endpoint->queue_fd < 0)
         return -errno;
-    }
+    rc = queue_info(endpoint, &info);
+    if (rc) return rc;
+    endpoint->queue_mapping = mmap(NULL, 2 * LINGQU_SHMEM_PTO_PAGE_BYTES,
+                                   PROT_READ | PROT_WRITE, MAP_SHARED,
+                                   endpoint->queue_fd, 0);
+    if (endpoint->queue_mapping == MAP_FAILED)
+        return -errno;
+    endpoint->cmdq = endpoint->queue_mapping;
+    endpoint->cq = endpoint->queue_mapping + LINGQU_SHMEM_PTO_PAGE_BYTES;
     memset(endpoint->cmdq, 0, LINGQU_SHMEM_PTO_PAGE_BYTES);
     memset(endpoint->cq, 0, LINGQU_SHMEM_PTO_PAGE_BYTES);
-    if (mlock(endpoint->cmdq, LINGQU_SHMEM_PTO_PAGE_BYTES) != 0 ||
-        mlock(endpoint->cq, LINGQU_SHMEM_PTO_PAGE_BYTES) != 0) {
-        return -errno;
-    }
-    rc = phys_for_virt(endpoint->cmdq, &endpoint->cmdq_phys);
-    if (rc != 0) {
-        return rc;
-    }
-    rc = phys_for_virt(endpoint->cq, &endpoint->cq_phys);
-    if (rc != 0) {
-        return rc;
-    }
+    endpoint->cmdq_phys = info.cmdq_pa;
+    endpoint->cq_phys = info.cq_pa;
     mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_BASE,
                  endpoint->cmdq_phys);
     mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CQ_BASE,
@@ -321,8 +304,10 @@ int lingqu_shmem_pto_endpoint_open(
         return -ENOMEM;
     }
     endpoint->resource_fd = -1;
+    endpoint->queue_fd = -1;
     endpoint->cmdq = MAP_FAILED;
     endpoint->cq = MAP_FAILED;
+    endpoint->queue_mapping = MAP_FAILED;
     for (index = 0;
          index < sizeof(lingqu_resource_candidates) /
                      sizeof(lingqu_resource_candidates[0]);
@@ -361,8 +346,7 @@ static struct lingqu_shmem_pto_queued_request *queued_request(
 
 static int queue_mapping_valid(struct lingqu_shmem_pto_endpoint *endpoint)
 {
-    uint64_t cmdq_phys;
-    uint64_t cq_phys;
+    struct ub_sim_pto_queue_info info = { 0 };
     uint64_t cmdq_base;
     uint64_t cq_base;
     int rc;
@@ -384,24 +368,16 @@ static int queue_mapping_valid(struct lingqu_shmem_pto_endpoint *endpoint)
                 endpoint->cq_phys, cq_base);
         return -ESTALE;
     }
-    rc = phys_for_virt(endpoint->cmdq, &cmdq_phys);
-    if (rc) {
-        fprintf(stderr, "lingqu-shmem-pto cmdq pagemap failed rc=%d\n", rc);
-        return rc;
-    }
-    rc = phys_for_virt(endpoint->cq, &cq_phys);
-    if (rc) {
-        fprintf(stderr, "lingqu-shmem-pto cq pagemap failed rc=%d\n", rc);
-        return rc;
-    }
-    if (cmdq_phys == endpoint->cmdq_phys &&
-        cq_phys == endpoint->cq_phys)
+    rc = queue_info(endpoint, &info);
+    if (rc) return rc;
+    if (info.cmdq_pa == endpoint->cmdq_phys &&
+        info.cq_pa == endpoint->cq_phys)
         return 0;
     fprintf(stderr, "lingqu-shmem-pto queue page stale"
             " cmdq_expected=%#" PRIx64 " cmdq_current=%#" PRIx64
             " cq_expected=%#" PRIx64 " cq_current=%#" PRIx64 "\n",
-            endpoint->cmdq_phys, cmdq_phys,
-            endpoint->cq_phys, cq_phys);
+            endpoint->cmdq_phys, (uint64_t)info.cmdq_pa,
+            endpoint->cq_phys, (uint64_t)info.cq_pa);
     return -ESTALE;
 }
 
@@ -692,12 +668,16 @@ int lingqu_shmem_pto_endpoint_close_checked(
         mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CMDQ_BASE, 0);
         mmio_write64(endpoint->endpoint_mmio, LINGQU_REG_CQ_BASE, 0);
     }
-    if (endpoint->cmdq && endpoint->cmdq != MAP_FAILED) {
-        munmap(endpoint->cmdq, LINGQU_SHMEM_PTO_PAGE_BYTES);
+    if (endpoint->queue_mapping && endpoint->queue_mapping != MAP_FAILED) {
+        munmap(endpoint->queue_mapping, 2 * LINGQU_SHMEM_PTO_PAGE_BYTES);
+    } else {
+        if (endpoint->cmdq && endpoint->cmdq != MAP_FAILED)
+            munmap(endpoint->cmdq, LINGQU_SHMEM_PTO_PAGE_BYTES);
+        if (endpoint->cq && endpoint->cq != MAP_FAILED)
+            munmap(endpoint->cq, LINGQU_SHMEM_PTO_PAGE_BYTES);
     }
-    if (endpoint->cq && endpoint->cq != MAP_FAILED) {
-        munmap(endpoint->cq, LINGQU_SHMEM_PTO_PAGE_BYTES);
-    }
+    if (endpoint->queue_fd >= 0)
+        close(endpoint->queue_fd);
     if (endpoint->endpoint_mmio) {
         munmap((void *)endpoint->endpoint_mmio,
                LINGQU_SHMEM_PTO_PAGE_BYTES);

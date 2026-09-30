@@ -173,8 +173,15 @@ int lingqu_model_direct_release(
     int result = 0;
     if (!operation_ptr || !*operation_ptr) return -EINVAL;
     operation = *operation_ptr;
-    if (operation->pending || operation->begun != operation->completed)
+    if (operation->pending ||
+        (operation->submitted && operation->begun != operation->completed))
         return -EBUSY;
+    while (!operation->submitted && operation->completed < operation->begun) {
+        int rc = lingqu_shmem_mem_service_lease_complete(
+            operation->leases[operation->completed], operation->op_id);
+        if (rc) return rc;
+        ++operation->completed;
+    }
     operation->prepared = false;
     if (operation->inflight) {
         lingqu_shmem_pto_dispatch_finish(operation->inflight);

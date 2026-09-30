@@ -1,7 +1,9 @@
 """Exercise production VM-stop entry points after migration teardown."""
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -22,7 +24,9 @@ class VmShutdownLifetimeTests(unittest.TestCase):
         self.assertIn('\n    tests/unit/test-gsva-retire\n', builder)
 
     def test_shutdown_and_normal_stop_lifetimes(self):
-        compiler = shutil.which("cc")
+        compiler = (os.environ.get("CC") or
+                    (shutil.which("gcc-15") if sys.platform.startswith("linux") else None) or
+                    shutil.which("cc"))
         if not compiler:
             self.skipTest("requires C compiler with address/undefined sanitizers")
         source = (ROOT / "vendor/qemu_8.2.0_ub/system/cpus.c").read_text()
@@ -121,12 +125,13 @@ int main(int argc, char **argv)
             path = pathlib.Path(directory)
             (path / "test.c").write_text(program)
             binary = path / "test"
-            subprocess.run(
+            build = subprocess.run(
                 [compiler, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
                  "-fsanitize=address,undefined", "-fno-sanitize-recover=all",
                  str(path / "test.c"), "-o", str(binary)],
-                check=True, capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30,
             )
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             for mode in range(5):
                 with self.subTest(mode=mode):
                     result = subprocess.run([str(binary), str(mode)],

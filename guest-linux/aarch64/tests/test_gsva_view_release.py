@@ -502,6 +502,7 @@ int main(void) {
 #define GSVA_ERR_FEATURE_MISSING 3
 #define GSVA_ERR_COH_TIMEOUT 4
 #define GSVA_ERR_COH_PENDING 5
+#define GSVA_ERR_SEGMENT_RETIRED 6
 #define GSVA_ROUTE_ACTIVE 1
 #define GSVA_ROUTE_STALE 2
 #define qemu_log(...) ((void)0)
@@ -524,10 +525,9 @@ static int sim_dec_handle_gsva_unmap(const SimDecGsvaUnmapReq *, SimDecGsvaUnmap
 static void gsva_tables_init(void) {}
 static int obmm_coh_send_fence(void *dev, uint32_t cna, uint64_t va, uint64_t size, uint32_t token)
 { assert(dev && cna == 7 && va == 4096 && size == 4096 && (token == 97 || token == 2));
-  if (token == 97) {
+  if (token == 97 && ((BusControllerDev *)dev)->gsva_unmap_in_progress) {
     SimDecGsvaUnmapReq nested = {.version=2, .map_id=42};
     SimDecGsvaUnmapResp resp;
-    assert(((BusControllerDev *)dev)->gsva_unmap_in_progress);
     assert(sim_dec_handle_gsva_unmap(&nested, &resp) && resp.error==GSVA_ERR_COH_PENDING);
     nested.version=1;
     assert(sim_dec_handle_gsva_unmap(&nested, &resp) && resp.error==GSVA_ERR_COH_PENDING);

@@ -3,6 +3,24 @@
 #include "../libs/lingqu_shmem_pto/lingqu_shmem_pto_endpoint.c"
 #include <assert.h>
 #include <pthread.h>
+#include <stdarg.h>
+
+static struct ub_sim_pto_queue_info mock_queue_info;
+static unsigned mock_queue_info_calls;
+
+int ioctl(int fd, unsigned long request, ...)
+{
+    va_list args;
+    struct ub_sim_pto_queue_info *info;
+
+    assert(fd == 123 && request == UB_SIM_PTO_QUEUE_GET_INFO);
+    va_start(args, request);
+    info = va_arg(args, struct ub_sim_pto_queue_info *);
+    va_end(args);
+    *info = mock_queue_info;
+    ++mock_queue_info_calls;
+    return 0;
+}
 
 static void encode_u64(uint8_t *bytes, uint64_t value)
 {
@@ -22,6 +40,7 @@ static struct lingqu_shmem_pto_endpoint *create(unsigned cmd_depth, unsigned cq_
     struct lingqu_shmem_pto_endpoint *ep = calloc(1, sizeof(*ep));
     assert(ep);
     ep->resource_fd = -1;
+    ep->queue_fd = -1;
     ep->endpoint_mmio = page(); ep->cmdq = page(); ep->cq = page();
     ep->cmdq_depth = cmd_depth; ep->cq_depth = cq_depth;
     mmio_write64(ep->endpoint_mmio, LINGQU_REG_CMDQ_BASE, 0x1000);
@@ -123,6 +142,34 @@ static void check_queue_base_mismatch(void)
     assert(ep->protocol_error);
     assert(ep->queued_count == 0);
     assert(mmio_read64(ep->endpoint_mmio, LINGQU_REG_CMDQ_TAIL) == 0);
+    discard_fixture(ep);
+}
+
+static void check_queue_page_identity(void)
+{
+    struct lingqu_shmem_pto_endpoint *ep = create(4, 4);
+    uint64_t tail;
+
+    ep->queue_fd = 123;
+    ep->cmdq_phys = 0x1000;
+    ep->cq_phys = 0x2000;
+    mock_queue_info = (struct ub_sim_pto_queue_info) {
+        .version = UB_SIM_PTO_QUEUE_ABI_VERSION,
+        .page_bytes = 4096,
+        .cmdq_pa = 0x1000,
+        .cq_pa = 0x2000,
+    };
+    mock_queue_info_calls = 0;
+    assert(enqueue(ep, 71) == 0);
+    assert(mock_queue_info_calls == 2);
+    tail = mmio_read64(ep->endpoint_mmio, LINGQU_REG_CMDQ_TAIL);
+
+    mock_queue_info.cmdq_pa = 0x3000;
+    mock_queue_info.cq_pa = 0x4000;
+    assert(enqueue(ep, 72) == -ESTALE);
+    assert(ep->protocol_error);
+    assert(ep->queued_count == 1);
+    assert(mmio_read64(ep->endpoint_mmio, LINGQU_REG_CMDQ_TAIL) == tail);
     discard_fixture(ep);
 }
 
@@ -305,6 +352,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[2], "arguments")) check_arguments();
     else if (!strcmp(argv[2], "threads")) check_threads();
     else if (!strcmp(argv[2], "queue-base-mismatch")) check_queue_base_mismatch();
+    else if (!strcmp(argv[2], "queue-page-identity")) check_queue_page_identity();
     else return 2;
     printf("lingqu_shmem_pto_endpoint_queue=pass case=%s\n", argv[2]);
     return 0;

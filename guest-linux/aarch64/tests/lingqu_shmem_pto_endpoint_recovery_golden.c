@@ -40,6 +40,7 @@ static struct lingqu_shmem_pto_endpoint *fixture_endpoint(void)
     struct lingqu_shmem_pto_endpoint *endpoint = calloc(1, sizeof(*endpoint));
     assert(endpoint);
     endpoint->resource_fd = -1;
+    endpoint->queue_fd = -1;
     endpoint->endpoint_mmio = page();
     endpoint->cmdq = page();
     endpoint->cq = page();

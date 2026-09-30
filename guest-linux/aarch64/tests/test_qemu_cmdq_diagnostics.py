@@ -1,7 +1,9 @@
 """Run the production CMDQ diagnostic block with its real descriptor layout."""
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -10,7 +12,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 class CmdqDiagnosticTests(unittest.TestCase):
     def test_single_descriptor_logging_stays_inside_payload(self):
-        compiler = shutil.which("cc")
+        compiler = (os.environ.get("CC") or
+                    (shutil.which("gcc-15") if sys.platform.startswith("linux") else None) or
+                    shutil.which("cc"))
         if not compiler:
             self.skipTest("requires C compiler with undefined behavior sanitizer")
         source = (ROOT / "vendor/qemu_8.2.0_ub/hw/ub/ub_ubc.c").read_text()
@@ -47,12 +51,13 @@ int main(int argc, char **argv) {
             path = pathlib.Path(directory)
             (path / "test.c").write_text(program)
             binary = path / "test"
-            subprocess.run(
+            build = subprocess.run(
                 [compiler, "-std=c11", "-O1", "-Wall", "-Wextra",
                  "-fsanitize=undefined", "-fno-sanitize-recover=all",
                  str(path / "test.c"), "-o", str(binary)],
-                check=True, capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, timeout=30,
             )
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             for status in (0, 1):
                 with self.subTest(read_result=status):
                     result = subprocess.run([str(binary), str(status)],

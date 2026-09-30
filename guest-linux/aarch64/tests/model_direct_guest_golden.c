@@ -129,7 +129,7 @@ int lingqu_shmem_pto_endpoint_enqueue(
     struct lingqu_shmem_pto_endpoint *endpoint,
     const LingquPtoDispatchSlotV2 *slot)
 {
-    CHECK(endpoint && slot && begun == acquired);
+    CHECK(endpoint && slot && begun - completed == acquired);
     return enqueue_error;
 }
 
@@ -258,6 +258,17 @@ int main(void)
     reset();
     value = request(memrefs, scalars, metadata);
     CHECK(!lingqu_model_direct_prepare(&value, &operation));
+    begin_error_at = 1;
+    CHECK(lingqu_model_direct_submit(operation) == -EAGAIN);
+    complete_error_at = 0;
+    CHECK(lingqu_model_direct_release(&operation) == -EAGAIN);
+    CHECK(operation && !released);
+    CHECK(!lingqu_model_direct_release(&operation));
+    CHECK(!operation && completed == 1 && released == 3 && !guards);
+
+    reset();
+    value = request(memrefs, scalars, metadata);
+    CHECK(!lingqu_model_direct_prepare(&value, &operation));
     enqueue_error = -EAGAIN;
     CHECK(lingqu_model_direct_submit(operation) == -EAGAIN);
     enqueue_error = 0;
@@ -268,6 +279,14 @@ int main(void)
     CHECK(completion.status == 3);
     CHECK(!lingqu_model_direct_release(&operation));
 
-    puts("model_direct_guest=pass cases=5 staging_bytes=0");
+    reset();
+    value = request(memrefs, scalars, metadata);
+    CHECK(!lingqu_model_direct_prepare(&value, &operation));
+    enqueue_error = -EAGAIN;
+    CHECK(lingqu_model_direct_submit(operation) == -EAGAIN);
+    CHECK(!lingqu_model_direct_release(&operation));
+    CHECK(!operation && completed == 3 && released == 3 && !guards);
+
+    puts("model_direct_guest=pass cases=7 staging_bytes=0");
     return 0;
 }

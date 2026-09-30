@@ -113,7 +113,7 @@ class MappingResourceValidationTests(unittest.TestCase):
         runner = (SCRIPT.parents[1] / "initramfs/run_app").read_text()
         helper = "mem_service_object_share_failure_snapshot() (" + runner.split(
             "mem_service_object_share_failure_snapshot() (", 1)[1].split(
-            "\nmem_service_object_share_managed() (", 1)[0]
+            "\n)\n", 1)[0] + "\n)\n"
         self.assertNotIn("inspect-allocation", helper)
         self.assertNotIn("reclaim", helper)
         for code in (0, 7, 124):
