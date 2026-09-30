@@ -91,12 +91,22 @@ Run one-shot W5 stream inference:
 ./guest-linux/aarch64/scripts/run_w5_cluster_config.sh /path/to/w5.env
 ```
 
-The stable entrypoint defaults to Memory Service managed serving. Qwen and
-DeepSeek model ranges consume and publish OBMM-backed shared objects through
-authorized UB_GM provider callbacks. The current callable 4 materializes model
-inputs and outputs at the Rust model boundary; W6 owns direct model-kernel PTO
-`TLOAD/TSTORE`. Startup fails when the managed callable, backend, or fingerprint
-cannot be prepared.
+The stable entrypoint defaults to Memory Service managed serving. Qwen3-0.6B
+and DeepSeek V4 Flash select direct model I/O: callable 3 and callable 5 use
+PTO `TLOAD/TSTORE` on managed `UB_GM` hidden, KV and logits objects. The
+`--model-io bulk` option explicitly selects callable 4, which materializes
+shared payloads at the Rust model boundary. Startup fails when the selected
+callable, backend, or fingerprint cannot be prepared. The recorded two-host
+2/3/8-node, 4/8-step functional matrix passes; DeepSeek independent-reference
+precision alignment remains deferred. See the
+[W6 plan](plans/2026-09-22-w6-managed-model-direct-plan.md) for the acceptance
+scope and remaining long-history validation.
+
+Use `--numerical-trace` with a single direct request to retain diagnostic
+snapshots under a separate `out/w6-pto-numerical-trace/` directory per run.
+The entry prints its location. Tracing adds I/O and must be disabled for
+performance measurements. Passing `--open-euler-disk-image PATH` selects
+the openEuler guest engine as well as the disk image.
 
 Run the same model profile on two or three simulated nodes:
 

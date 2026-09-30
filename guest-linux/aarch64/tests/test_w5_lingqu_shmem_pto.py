@@ -160,7 +160,7 @@ class W5LingquShmemPtoTest(unittest.TestCase):
         self.assertIn("w5_pto_ub_gm_hidden_publish", source)
         self.assertIn("SIM_W5_PTO_UB_GM_ARTIFACT_FINGERPRINT", source)
         self.assertIn("lingqu_shmem_pto_requester_cna", source)
-        self.assertIn("fail W5 PTO UB_GM probe configuration", source)
+        self.assertIn("fail W5 PTO UB_GM dispatch configuration", source)
         self.assertIn('probe_stage = "acquire_input"', source)
         self.assertIn('" stage=%s rc=%d completion=%s', source)
         self.assertIn("stage w5_pto_ub_gm_queue_handoff", source)

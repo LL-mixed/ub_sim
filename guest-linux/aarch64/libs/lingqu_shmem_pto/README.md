@@ -76,8 +76,11 @@ dispatches whose tensor payload remains in `lingqu_shmem`.
 - `lingqu_shmem_pto_guest.c` materializes the frozen tag-10 ABI v2 wire
   objects and computes their metadata CRC.
 - `lingqu_shmem_pto_endpoint.h` exposes one opaque UBC CMDQ/CQ endpoint.
-- `lingqu_shmem_pto_endpoint.c` owns queue pages, submits one tag-10 slot at a
-  time, and decodes the existing completion prefix.
+- `ub-sim-decoder` allocates a nonmovable CMDQ/CQ page pair per open through
+  `/dev/ub_sim_pto_queue`. `lingqu_shmem_pto_endpoint.c` maps that pair,
+  programs the returned guest physical addresses, submits one tag-10 slot at
+  a time, and decodes the existing completion prefix. The endpoint rejects a
+  missing queue device and never substitutes anonymous userspace pages.
 - `lingqu_shmem.h` is the public opaque region/memref programming model.
 - `lingqu_shmem_sim.h` is the simulator-only region attachment seam.
 - `lingqu_shmem_pto.h` converts public memrefs into one in-flight dispatch and
@@ -287,21 +290,46 @@ A count record requires a matching successful dispatch completion before it
 can establish coverage. The audit rejects missing records or count/geometry
 mismatches; these counters measure operator invocations, not PTO instructions.
 
-Optional numerical evidence uses `SIM_QWEN3_PTO_TRACE_DIR`, set by
+Optional numerical evidence uses `SIM_W5_TEST_PTO_TRACE_DIR`, set by
 `run_w5_qwen3_pto.py --numerical-trace` to a new campaign-local directory.
+For managed-direct W6 Qwen and DeepSeek runs, the stable
+`scripts/run_w5_cluster_config.sh --numerical-trace` entry creates a separate
+run-scoped directory under `out/w6-pto-numerical-trace/` and prints its path.
+It accepts only a single-request direct decode profile. For a 2-, 3-, or
+8-node Qwen run, `sim-cli qwen3-pto-trace-check --trace-dir DIR --weights MODEL --tokens IDS
+--nodes N --steps 8` checks the snapshots against the independent model
+reference. The checker also accepts 1 or 4 steps; `--nodes` defaults to 2 for
+older traces. The trace is test evidence, not a serving data path or a
+performance measurement.
 `qwen3_pto_trace.hpp` writes one exclusive, little-endian binary file per
 range/past position. It snapshots layer hidden and K/V through PTO loads;
 logits are observed from the tile after the ordinary TSTORE, without reading
 a write-only binding or changing the destination. These extra diagnostic
 reads are excluded from performance claims. Default runs produce no snapshots.
-The file has magic `QPTOTR1\0`, seven u32 geometry words (first, end, past,
+New files have magic `QPTOTR2\0`, seven u32 geometry words (first, end, past,
 tokens, hidden, KV width, vocab), followed by records: six u32 words
 (kind, layer, row, col, rows, cols), then rows*cols F32 bits. Kinds are 1 hidden,
-2 key, 3 value, 4 logits; kind 0 with all other words zero terminates a
+2 key, 3 value, 4 logits, and 5 range input. The input record appears first;
+the checker also reads older `QPTOTR1\0` files without it. Kind 0 with all
+other words zero terminates a
 successfully written kernel snapshot. Logits use consecutive 64-column
 records. An end record alone cannot prove dispatch completion: the separate
-guest/QEMU audit must also pass. Missing, repeated, truncated or unexpected
-records must fail numerical validation. Artifacts stay under `out/`.
+guest/QEMU audit must also pass. The checker models PTO `CAST_RINT` for
+inter-node FP16 handoff, including ties-to-even; the older W5 reference
+conversion has different tie behavior. Missing, repeated, truncated or
+unexpected records must fail numerical validation. Artifacts stay under `out/`.
+
+For DeepSeek, the terminal output head writes each logit through its ordinary
+PTO `TSTORE` and, only when tracing is enabled, mirrors that scalar through
+another `TSTORE` into a private diagnostic buffer. The trace writer then
+writes one exclusive raw FP32 file named
+`deepseek-range-FIRST-END-past-PAST-tokens-TOKENS-logits.f32`. It never reads
+the managed write-only logits binding.
+Each file contains exactly 129,280 little-endian FP32 values. Intermediate
+ranges write no logits file. The trace is diagnostic output only and never
+feeds model execution; it adds stores and file I/O, so it cannot support
+performance claims. Compare the raw file with the independent same-GGUF
+DS4 logits, and verify the guest run completed before treating it as evidence.
 
 RMSNorm uses FP32 `TSQRT` followed by `TDIV(1, root)` to reproduce the W5
 reference's two rounding steps. The CPU `TRSQRT` implementation computes a

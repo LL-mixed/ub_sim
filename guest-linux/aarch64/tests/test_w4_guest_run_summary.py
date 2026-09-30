@@ -98,6 +98,29 @@ def idle_engram_timing(node_id, node_index, step, terminal_wait_ms):
 
 
 class W4GuestRunSummaryTest(unittest.TestCase):
+    def test_progress_counts_pass_with_interleaved_serial_output(self):
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "w4_guest_run_summary.py"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "nodeA_guest.log").write_text(
+                "[w4_guest] passobmm-worker generation=11 state=retired\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [sys.executable, str(script), "--progress", str(run_dir),
+                 "1", "1", "nodeA"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertIn("cluster_decode=1/1", result.stdout)
+        self.assertIn("node_passes A=1/1", result.stdout)
+
     def test_counts_managed_direct_terminal_reference_as_decode_token(self):
         script = (
             Path(__file__).resolve().parents[1]

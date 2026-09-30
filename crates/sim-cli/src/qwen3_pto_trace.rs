@@ -8,6 +8,7 @@ use std::path::Path;
 
 struct Trace {
     geometry: [u32; 7],
+    input: Option<Vec<f32>>,
     layers: BTreeMap<(u32, u32), Vec<f32>>,
     logits: Vec<f32>,
 }
@@ -34,12 +35,24 @@ impl Cursor<'_> {
 
 impl Trace {
     fn parse(bytes: &[u8], geometry: [u32; 7], terminal: bool) -> Result<Self> {
-        ensure!(bytes.starts_with(b"QPTOTR1\0"), "invalid trace magic");
+        let has_input = bytes.starts_with(b"QPTOTR2\0");
+        ensure!(
+            has_input || bytes.starts_with(b"QPTOTR1\0"),
+            "invalid trace magic"
+        );
         let mut cursor = Cursor(&bytes[8..]);
         for value in geometry {
             ensure!(cursor.word()? == value, "trace geometry mismatch");
         }
         let [first, end, past, tokens, hidden, kv, vocab] = geometry;
+        let input = if has_input {
+            for value in [5, first, 0, 0, tokens, hidden] {
+                ensure!(cursor.word()? == value, "missing/reordered range input");
+            }
+            Some(cursor.values(tokens as usize * hidden as usize)?)
+        } else {
+            None
+        };
         let mut layers = BTreeMap::new();
         // Enforce exact layer/kind order, including all history KV rows.
         for layer in first..end {
@@ -69,6 +82,7 @@ impl Trace {
         ensure!(cursor.0.is_empty(), "extra trace records");
         Ok(Self {
             geometry,
+            input,
             layers,
             logits,
         })
@@ -132,30 +146,42 @@ struct LayerReport {
     value: ErrorMetric,
 }
 
-// Diagnostic only: both inputs use the reference wire conversion here. This
-// isolates quantization-boundary crossings from any difference in TCVT's
-// tie-breaking rule. These values never feed the independent reference.
+// Diagnostic only: both inputs use the PTO wire conversion here. These values
+// expose quantization-boundary crossings without feeding the reference.
 fn handoff_differences(actual: &[f32], expected: &[f32]) -> Result<Vec<serde_json::Value>> {
     ensure!(actual.len() == expected.len(), "handoff length mismatch");
     let mut differences = Vec::new();
     for (index, (&a, &b)) in actual.iter().zip(expected).enumerate() {
         ensure!(a.is_finite() && b.is_finite(), "non-finite handoff input");
-        let ca = sim_uapi::qwen3_reference_f16_handoff(a);
-        let cb = sim_uapi::qwen3_reference_f16_handoff(b);
+        let ca = sim_uapi::qwen3_pto_rint_f16_handoff(a);
+        let cb = sim_uapi::qwen3_pto_rint_f16_handoff(b);
         if ca.to_bits() != cb.to_bits() {
             differences.push(serde_json::json!({
                 "index":index, "candidate_pre_f16":a, "reference_pre_f16":b,
-                "candidate_using_reference_rounding":ca, "reference_wire":cb,
+                "candidate_using_pto_rint":ca, "expected_wire":cb,
             }));
         }
     }
     Ok(differences)
 }
 
+fn layer_range(layers: u32, nodes: u32, node: u32) -> Result<(u32, u32)> {
+    ensure!(
+        nodes > 0 && nodes <= layers && node < nodes,
+        "invalid layer partition"
+    );
+    let base = layers / nodes;
+    let extra = layers % nodes;
+    let first = node * base + node.min(extra);
+    let end = first + base + u32::from(node < extra);
+    Ok((first, end))
+}
+
 fn verify(
     directory: &Path,
     weights: &Path,
     prompt: &[u64],
+    nodes: u32,
     steps: usize,
 ) -> Result<serde_json::Value> {
     let config = std::fs::read_to_string(weights.join("config.json"))?;
@@ -163,11 +189,12 @@ fn verify(
     p.tp_nodes = 2;
     ensure!(
         p.num_hidden_layers == 28 && p.hidden_size == 1024 && p.vocab_size == 151936,
-        "requires W5 Qwen3-0.6B two-node geometry"
+        "requires W5 Qwen3-0.6B geometry"
     );
+    ensure!(matches!(nodes, 2 | 3 | 8), "--nodes must be 2, 3, or 8");
     ensure!(
-        steps == 8 && !prompt.is_empty() && prompt.len() <= 1024,
-        "requires 8 steps and bounded prompt"
+        matches!(steps, 1 | 4 | 8) && !prompt.is_empty() && prompt.len() <= 1024,
+        "requires 1, 4, or 8 steps and bounded prompt"
     );
     ensure!(
         prompt.iter().all(|t| *t < p.vocab_size),
@@ -181,6 +208,7 @@ fn verify(
     let mut used_files = Vec::new();
     let mut failures = Vec::new();
     let mut handoffs = Vec::new();
+    let mut inputs = Vec::new();
     for step in 0..steps {
         let ids = if step == 0 {
             prompt.to_vec()
@@ -195,9 +223,8 @@ fn verify(
         let mut sequence =
             reference::embedding_reference_hidden_sequence_for_profile(p, &loaded.tensors, &ids)
                 .map_err(anyhow::Error::msg)?;
-        for node in 0..2 {
-            let first = node * 14;
-            let end = first + 14;
+        for node in 0..nodes {
+            let (first, end) = layer_range(p.num_hidden_layers as u32, nodes, node)?;
             let name = format!("range-{first}-{end}-past-{past}.bin");
             let path = directory.join(&name);
             let bytes = std::fs::read(&path).with_context(|| name.clone())?;
@@ -212,10 +239,29 @@ fn verify(
                     (p.num_key_value_heads * p.head_dim) as u32,
                     p.vocab_size as u32,
                 ],
-                node == 1,
+                node == nodes - 1,
             )
             .with_context(|| name.clone())?;
             used_files.push(name);
+            if let Some(actual) = &trace.input {
+                let expected = sequence.iter().flatten().copied().collect::<Vec<_>>();
+                let exact_mismatches = actual
+                    .iter()
+                    .zip(&expected)
+                    .filter(|(a, b)| a.to_bits() != b.to_bits())
+                    .count();
+                let mut error = ErrorMetric::default();
+                if let Err(error) = error
+                    .check(actual, &expected, 0.002, true)
+                    .with_context(|| format!("step={step} node={} input", node + 1))
+                {
+                    failures.push(format!("{error:#}"));
+                }
+                inputs.push(serde_json::json!({
+                    "step":step,"node":node + 1,
+                    "exact_mismatches":exact_mismatches,"error":error,
+                }));
+            }
             for layer in u64::from(first)..u64::from(end) {
                 let (forward, next) = if step == 0 {
                     reference::forward_reference_from_hidden_sequence_range_with_kv_cache_for_profile(
@@ -295,19 +341,20 @@ fn verify(
                 sequence = next;
                 layers.push(report);
             }
-            if node == 0 {
+            if node + 1 < nodes {
                 handoffs.push(serde_json::json!({
                     "step":step,
-                    "scope":"nodeA pre-F16 snapshots; candidate is converted with reference rounding for diagnosis, not observed wire bytes",
+                    "node":node + 1,
+                    "scope":"pre-F16 snapshots; candidate is converted with PTO RINT for diagnosis, not observed wire bytes",
                     "differences":handoff_differences(
                         &trace.layers[&(1, end - 1)],
                         &sequence.iter().flatten().copied().collect::<Vec<_>>(),
                     )?,
                 }));
-                // Match the independent reference W5 inter-node wire conversion.
+                // Model the direct PTO TCVT handoff at each PP boundary.
                 for row in &mut sequence {
                     for v in row {
-                        *v = sim_uapi::qwen3_reference_f16_handoff(*v);
+                        *v = sim_uapi::qwen3_pto_rint_f16_handoff(*v);
                     }
                 }
             } else {
@@ -353,12 +400,17 @@ fn verify(
     used_files.sort();
     found.sort();
     ensure!(found == used_files, "unexpected or missing snapshot files");
+    ensure!(
+        inputs.is_empty() || inputs.len() == steps * nodes as usize,
+        "mixed trace versions"
+    );
     Ok(
         serde_json::json!({"status":if failures.is_empty() {"pass"} else {"fail"}, "failures":failures,
-        "scope":"actual PTO snapshots vs independent two-node reference; requires separate successful W5 execution audit",
-        "steps":steps, "nodes":2, "prompt":prompt, "trace_files":used_files,
+        "scope":"actual PTO snapshots vs independent balanced PP reference; requires separate successful W5 execution audit",
+        "steps":steps, "nodes":nodes, "prompt":prompt, "trace_files":used_files,
         "limits":{"hidden_scaled":0.002,"kv_scaled":0.0002,"logits_abs":0.02},
-        "layers":layers,"logits":logits_reports,"handoff_diagnostics":handoffs}),
+        "layers":layers,"logits":logits_reports,"inputs":inputs,
+        "handoff_diagnostics":handoffs}),
     )
 }
 
@@ -371,7 +423,7 @@ pub fn run_if_requested() -> Result<bool> {
     while let Some(key) = args.next() {
         let key = key.to_str().context("invalid option")?.to_string();
         ensure!(
-            ["--trace-dir", "--weights", "--tokens", "--steps"].contains(&key.as_str()),
+            ["--trace-dir", "--weights", "--tokens", "--nodes", "--steps"].contains(&key.as_str()),
             "unknown option {key}"
         );
         let value = args.next().context("missing option value")?;
@@ -385,10 +437,22 @@ pub fn run_if_requested() -> Result<bool> {
         .map(str::parse)
         .collect::<std::result::Result<_, _>>()?;
     let steps = get("--steps")?.to_str().context("invalid steps")?.parse()?;
+    let nodes = values
+        .get("--nodes")
+        .map(|value| {
+            value
+                .to_str()
+                .context("invalid nodes")?
+                .parse::<u32>()
+                .context("invalid nodes")
+        })
+        .transpose()?
+        .unwrap_or(2);
     let report = verify(
         Path::new(get("--trace-dir")?),
         Path::new(get("--weights")?),
         &tokens,
+        nodes,
         steps,
     )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -403,15 +467,47 @@ pub fn run_if_requested() -> Result<bool> {
 mod tests {
     use super::*;
     #[test]
+    fn layer_ranges_follow_balanced_pipeline_partition() {
+        assert_eq!(
+            (0..2)
+                .map(|node| layer_range(28, 2, node).unwrap())
+                .collect::<Vec<_>>(),
+            vec![(0, 14), (14, 28)]
+        );
+        assert_eq!(
+            (0..3)
+                .map(|node| layer_range(28, 3, node).unwrap())
+                .collect::<Vec<_>>(),
+            vec![(0, 10), (10, 19), (19, 28)]
+        );
+        assert_eq!(
+            (0..8)
+                .map(|node| layer_range(28, 8, node).unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 4),
+                (4, 8),
+                (8, 12),
+                (12, 16),
+                (16, 19),
+                (19, 22),
+                (22, 25),
+                (25, 28)
+            ]
+        );
+        assert!(layer_range(28, 3, 3).is_err());
+        assert!(layer_range(28, 0, 0).is_err());
+    }
+    #[test]
     fn handoff_diagnostic_exposes_quantization_crossings_without_changing_inputs() {
         let midpoint = 1.0 + 1.0 / 2048.0;
         let actual = [midpoint + f32::EPSILON];
         let expected = [midpoint - f32::EPSILON];
         let differences = handoff_differences(&actual, &expected).unwrap();
         assert_eq!(differences.len(), 1);
-        assert_eq!(differences[0]["reference_wire"], 1.0);
+        assert_eq!(differences[0]["expected_wire"], 1.0);
         assert_eq!(
-            differences[0]["candidate_using_reference_rounding"],
+            differences[0]["candidate_using_pto_rint"],
             1.0 + 1.0 / 1024.0
         );
         assert_eq!(actual[0], midpoint + f32::EPSILON);
@@ -455,6 +551,19 @@ mod tests {
             Trace::parse(&bytes, g, true).unwrap().logits,
             vec![1.0, 2.0, 3.0]
         );
+        let mut with_input = bytes.clone();
+        with_input[6] = b'2';
+        let mut input_record = Vec::new();
+        append(
+            &mut input_record,
+            &[5, 0, 0, 0, 1, 2, 4f32.to_bits(), 5f32.to_bits()],
+        );
+        with_input.splice(36..36, input_record);
+        assert_eq!(
+            Trace::parse(&with_input, g, true).unwrap().input,
+            Some(vec![4.0, 5.0])
+        );
+        assert!(Trace::parse(&with_input[..44], g, true).is_err());
         for size in 0..bytes.len() {
             assert!(Trace::parse(&bytes[..size], g, true).is_err());
         }
@@ -476,10 +585,10 @@ mod tests {
         assert!(error.check(&[1.1], &[1.0], 0.002, true).is_err());
         assert!(error.check(&[1.0], &[f32::INFINITY], 0.02, false).is_err());
         assert!(error.check(&[1.0], &[], 0.02, false).is_err());
-        assert_eq!(sim_uapi::qwen3_reference_f16_handoff(1.0001), 1.0);
+        assert_eq!(sim_uapi::qwen3_pto_rint_f16_handoff(1.0001), 1.0);
         assert_eq!(
-            sim_uapi::qwen3_reference_f16_handoff(1.0 + 1.0 / 2048.0),
-            1.0 + 1.0 / 1024.0
+            sim_uapi::qwen3_pto_rint_f16_handoff(1.0 + 1.0 / 2048.0),
+            1.0
         );
     }
 }

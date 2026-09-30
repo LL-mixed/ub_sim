@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/w5_model_timeout_common.sh"
 
 usage() {
   cat >&2 <<'USAGE'
-usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--managed-serving|--legacy-serving] [--model-io bulk|direct] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
+usage: run_w5_cluster_config.sh [--print-env] [--readiness-only] [--validate-only] [--managed-serving|--legacy-serving] [--model-io bulk|direct] [--numerical-trace] [--serve-queue] [--serve-requests FILE] [--nodea-ingress] [--gsva-kv] [--require-prefix-cache] [--no-memory-reuse] [--post-run-prune] [--post-run-health] [--keep-latest N] [--nodes 2|3|4|8] [--steps N] [--model PATH] [--open-euler-disk-image PATH] [--requests FILE] [--flash-payload-dir DIR] config.env
 
 Loads a W5 inference cluster env file and then runs the stable W5 cluster
 entrypoint. This keeps approval prefixes stable: callers execute this script,
@@ -21,6 +21,11 @@ Managed serving is the default. Qwen3-0.6B and DeepSeek V4 Flash decode use
 W6 direct model-kernel PTO TLOAD/TSTORE by default. --model-io bulk selects the
 W5 callable 4 comparison path. Use --legacy-serving only for an explicit
 legacy regression.
+
+--numerical-trace records full terminal logits for Qwen and DeepSeek under a
+run-scoped out/ directory for oracle comparison. Qwen also records per-layer
+tensors. It is limited to a single managed-direct request and is excluded
+from performance measurements.
 
 RUN_ID in config files is rejected by default to avoid logappend pollution from
 accidental run reuse. Set SIM_W5_ALLOW_FIXED_RUN_ID=1 only for intentional
@@ -35,6 +40,7 @@ SERVE_QUEUE=0
 MANAGED_SERVING_OVERRIDE=0
 LEGACY_SERVING_OVERRIDE=0
 MODEL_IO_OVERRIDE=""
+NUMERICAL_TRACE_OVERRIDE=0
 CONFIG_PATH=""
 STEPS_OVERRIDE=""
 NODES_OVERRIDE=""
@@ -66,6 +72,10 @@ while (( $# > 0 )); do
       ;;
     --serve-queue)
       SERVE_QUEUE=1
+      shift
+      ;;
+    --numerical-trace)
+      NUMERICAL_TRACE_OVERRIDE=1
       shift
       ;;
     --managed-serving)
@@ -286,6 +296,7 @@ if [[ -n "$OPEN_EULER_DISK_IMAGE_OVERRIDE" ]]; then
     OPEN_EULER_DISK_IMAGE_OVERRIDE="$PWD/$OPEN_EULER_DISK_IMAGE_OVERRIDE"
   fi
   export SIM_W5_OE_DISK_IMAGE="$OPEN_EULER_DISK_IMAGE_OVERRIDE"
+  export SIM_W5_GUEST_ENGINE=openEuler
 fi
 
 if [[ -n "$MODEL_OVERRIDE" ]]; then
@@ -333,6 +344,8 @@ reject_deprecated_w5_env() {
   reject_deprecated_w5_env_var SIM_W5_MEMORY_PREFETCH_PLAN_ID SIM_W5_TEST_MEMORY_PREFETCH_PLAN_ID || deprecated_status=2
   reject_deprecated_w5_env_var SIM_W5_MEMORY_GSVA_KV SIM_W5_TEST_MEMORY_GSVA_KV || deprecated_status=2
   reject_deprecated_w5_env_var SIM_W5_MEMORY_GSVA_EXPECTED_EPOCH SIM_W5_TEST_MEMORY_GSVA_EXPECTED_EPOCH || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_QWEN3_PTO_TRACE_DIR SIM_W5_TEST_PTO_TRACE_DIR || deprecated_status=2
+  reject_deprecated_w5_env_var SIM_W5_TEST_QWEN3_PTO_TRACE_DIR SIM_W5_TEST_PTO_TRACE_DIR || deprecated_status=2
 
   return "$deprecated_status"
 }
@@ -488,6 +501,29 @@ fi
 if (( NODEA_INGRESS_OVERRIDE )); then
   export SIM_W5_SERVING_INGRESS=nodeA
 fi
+if (( NUMERICAL_TRACE_OVERRIDE )); then
+  export SIM_W5_TEST_NUMERICAL_TRACE=1
+else
+  export SIM_W5_TEST_NUMERICAL_TRACE="${SIM_W5_TEST_NUMERICAL_TRACE:-0}"
+fi
+case "$SIM_W5_TEST_NUMERICAL_TRACE" in
+  0) ;;
+  1)
+    if [[ -n "${SIM_W5_TEST_PTO_TRACE_DIR:-}" ]]; then
+      echo "--numerical-trace creates its own run-scoped directory; remove SIM_W5_TEST_PTO_TRACE_DIR" >&2
+      exit 2
+    fi
+    case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
+      qwen3_0_6b_decode|qwen3_14b_decode|deepseek_v4_flash_decode) ;;
+      *) echo "--numerical-trace requires a supported decode profile" >&2; exit 2 ;;
+    esac
+    if [[ "$SIM_W5_MODEL_IO" != "direct" ]] || bool_enabled "${SIM_W5_SERVING_QUEUE:-0}"; then
+      echo "--numerical-trace requires single-request managed-direct inference" >&2
+      exit 2
+    fi
+    ;;
+  *) echo "SIM_W5_TEST_NUMERICAL_TRACE must be 0 or 1" >&2; exit 2 ;;
+esac
 
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
   qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
@@ -551,7 +587,7 @@ resolve_w5_managed_fingerprint() {
 }
 
 prepare_w6_direct_artifacts() {
-  local artifact_profile output_dir manifest fingerprint_json fingerprint sim_cli
+  local artifact_profile artifact_prefix output_dir manifest fingerprint_json fingerprint sim_cli
 
   if [[ "${SIM_W5_MODEL_IO:-bulk}" != "direct" ]]; then
     return 0
@@ -559,17 +595,19 @@ prepare_w6_direct_artifacts() {
   case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
     qwen3_0_6b_decode|qwen3_14b_decode)
       artifact_profile="host_qwen3_range"
-      output_dir="$ROOT_DIR/out/w6-qwen-direct-artifacts"
+      artifact_prefix="w6-qwen-direct-artifacts"
       ;;
     deepseek_v4_flash_decode)
       artifact_profile="host_deepseek_v4_flash_range"
-      output_dir="$ROOT_DIR/out/w6-deepseek-v4-flash-direct-artifacts"
+      artifact_prefix="w6-deepseek-v4-flash-direct-artifacts"
       ;;
     *)
       echo "direct artifact preparation does not support profile: ${SIM_UAPI_W5_PROFILE:-}" >&2
       return 2
       ;;
   esac
+  mkdir -p "$ROOT_DIR/out" || return 2
+  output_dir="$(mktemp -d "$ROOT_DIR/out/${artifact_prefix}.XXXXXXXX")" || return 2
   manifest="$(python3 "$SCRIPT_DIR/prepare_simpler_host_artifacts.py" \
     --profile "$artifact_profile" \
     --output-dir "$output_dir")" || return 2
@@ -665,6 +703,7 @@ print_w5_effective_env() {
   print_env_value RUN_ID "${RUN_ID:-}"
   print_env_value SIM_UAPI_W5_PROFILE "${SIM_UAPI_W5_PROFILE:-}"
   print_env_value SIM_W5_CLUSTER_NODE_COUNT "${SIM_W5_CLUSTER_NODE_COUNT:-8}"
+  print_env_value SIM_W5_GUEST_ENGINE "${SIM_W5_GUEST_ENGINE:-initramfs}"
   print_env_value SIM_W5_OE_DISK_IMAGE "${SIM_W5_OE_DISK_IMAGE:-}"
   print_env_value SIM_QWEN3_GUEST_DECODE_STEPS "${SIM_QWEN3_GUEST_DECODE_STEPS:-}"
   print_env_value SIM_QWEN3_DENSE_WEIGHTS_PATH "${SIM_QWEN3_DENSE_WEIGHTS_PATH:-}"
@@ -732,6 +771,10 @@ print_w5_effective_env() {
   print_env_value SIM_W5_TEST_ARTIFACT_KEEP_LATEST "${SIM_W5_TEST_ARTIFACT_KEEP_LATEST:-3}"
   print_env_value SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES "${SIM_W5_TEST_HEALTH_MAX_PRUNE_CANDIDATES:-0}"
   print_env_value SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES "${SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES:-0}"
+
+  print_env_section "test-numerical"
+  print_env_value SIM_W5_TEST_NUMERICAL_TRACE "${SIM_W5_TEST_NUMERICAL_TRACE:-0}"
+  print_env_value SIM_W5_TEST_PTO_TRACE_DIR "${SIM_W5_TEST_PTO_TRACE_DIR:-}"
 
   print_env_section "vendor-context-test"
   print_env_value SIM_ENGRAM_SIMT_ARTIFACT_DIR "${SIM_ENGRAM_SIMT_ARTIFACT_DIR:-}"

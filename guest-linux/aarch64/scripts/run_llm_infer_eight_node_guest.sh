@@ -103,6 +103,27 @@ else
   TRACE_FILE="${TRACE_FILE:-$OUT_DIR/eight_node_w4_guest.trace.latest.txt}"
   RUN_ID_BASE="${RUN_ID:-$(date +%Y-%m-%d_%H-%M-%S)_w4guest8_${RANDOM}}"
 fi
+if [[ "${SIM_W5_TEST_NUMERICAL_TRACE:-0}" == "1" ]]; then
+  case "$SIM_UAPI_W5_PROFILE" in
+    qwen3_0_6b_decode|qwen3_14b_decode|deepseek_v4_flash_decode) ;;
+    *) echo "numerical trace requires a supported decode profile" >&2; exit 2 ;;
+  esac
+  if [[ "${SIM_W5_MODEL_IO:-bulk}" != "direct" ]] ||
+     [[ "${SIM_W5_SERVING_QUEUE:-0}" == "1" ]] ||
+     [[ "${SIM_W5_SERVING_QUEUE:-0}" == "true" ]] ||
+     [[ "${SIM_W5_SERVING_QUEUE:-0}" == "TRUE" ]] ||
+     [[ "${SIM_W5_SERVING_QUEUE:-0}" == "yes" ]] ||
+     [[ "${SIM_W5_SERVING_QUEUE:-0}" == "YES" ]] ||
+     [[ -n "${SIM_W5_TEST_PTO_TRACE_DIR:-}" ]]; then
+    echo "numerical trace requires single-request direct I/O and no preset trace directory" >&2
+    exit 2
+  fi
+  trace_parent="$OUT_DIR/w6-pto-numerical-trace"
+  mkdir -p "$trace_parent"
+  export SIM_W5_TEST_PTO_TRACE_DIR="$trace_parent/$RUN_ID_BASE"
+  mkdir -m 0700 "$SIM_W5_TEST_PTO_TRACE_DIR"
+  echo "[w6_trace] output=$SIM_W5_TEST_PTO_TRACE_DIR" >&2
+fi
 RUN_DIR="$LOG_DIR/${RUN_ID_BASE}_headless8"
 if [[ -n "$SIM_UAPI_W5_PROFILE" ]]; then
   RUN_SUMMARY_FILE="${RUN_SUMMARY_FILE:-$OUT_DIR/eight_node_w5_inference_cluster_summary.${RUN_ID_BASE}.txt}"
@@ -2454,7 +2475,7 @@ run_w4_app() {
   done
 
   rc=0
-  wait_for_all_logs_pass_or_fail_since "^\\[w4_guest\\] pass\\r?$" "$FATAL_GUEST_PATTERN" \
+  wait_for_all_logs_pass_or_fail_since "^\\[w4_guest\\] pass" "$FATAL_GUEST_PATTERN" \
     "$((APP_WAIT_SECS * expected_passes))" \
     "$expected_passes" || rc=$?
   if [[ "$rc" != "0" ]]; then

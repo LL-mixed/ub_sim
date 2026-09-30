@@ -101,6 +101,7 @@ inline void decoder_range(const RangeGeometry &g, const View (&args)[7]) {
         embedding(table, selected, a.view());
         current = a.view();
     }
+    trace.matrix(5, g.first, current);
     for (uint32_t i = 0; i < count; ++i) {
         View destination = current.address == a.view().address ? b.view() : a.view();
         decoder_layer(d, weights[i], current, factors,

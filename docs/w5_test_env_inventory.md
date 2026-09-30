@@ -31,7 +31,20 @@ W5 入口的环境面审计命令。入口必须显式传入 config 文件，不
 - `test-memory-reuse`: Memory Service reuse、prefix/cache、GSVA、shortpath
   验证变量
 - `test-maintenance`: post-run prune/health gate 变量
+- `test-numerical`: PTO 模型数值快照变量
 - `vendor-context-test`: fused-SIMT/vendor context 校验变量
+
+## Numerical Trace
+
+| 变量 | 作用 |
+| --- | --- |
+| `SIM_W5_TEST_NUMERICAL_TRACE` | `--numerical-trace` 设置为 1，启用单请求 direct 模型快照，默认 0 |
+| `SIM_W5_TEST_PTO_TRACE_DIR` | runner 创建的本轮快照目录；使用配置入口时禁止预设该值 |
+
+Qwen 记录 range 输入、逐层 hidden/KV 和终端 logits；DeepSeek 记录终端
+logits。文件保存在 `out/w6-pto-numerical-trace/` 的独立运行目录。
+快照用于精度诊断，开启后不能用于性能结论。旧名称
+`SIM_QWEN3_PTO_TRACE_DIR` 和 `SIM_W5_TEST_QWEN3_PTO_TRACE_DIR` 已被入口拒绝。
 
 ## Runner / Health
 

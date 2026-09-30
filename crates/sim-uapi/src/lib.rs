@@ -16367,6 +16367,33 @@ fn pto_ub_gm_task(request_id: u64) -> TaskKey {
     }
 }
 
+fn emit_pto_ub_gm_log_line(fd: libc::c_int, line: &str) -> isize {
+    debug_assert!(line.ends_with('\n') && line.len() <= 4096);
+    unsafe { libc::write(fd, line.as_ptr().cast(), line.len()) }
+}
+
+#[cfg(test)]
+mod pto_ub_gm_log_tests {
+    use super::emit_pto_ub_gm_log_line;
+
+    #[test]
+    fn emits_a_complete_marker_in_one_write() {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let line =
+            "deepseek-v4-flash-pto-range: request=7 shared_payload_staging_bytes=0 status=pass\n";
+        assert_eq!(emit_pto_ub_gm_log_line(fds[1], line), line.len() as isize);
+        let mut actual = vec![0_u8; line.len()];
+        assert_eq!(
+            unsafe { libc::read(fds[0], actual.as_mut_ptr().cast(), actual.len()) },
+            line.len() as isize
+        );
+        assert_eq!(actual, line.as_bytes());
+        assert_eq!(unsafe { libc::close(fds[0]) }, 0);
+        assert_eq!(unsafe { libc::close(fds[1]) }, 0);
+    }
+}
+
 fn pto_ub_gm_dispatch_event(
     topology: &SimTopology,
     req: PtoUbGmDispatchV2Req,
@@ -16586,23 +16613,25 @@ fn run_pto_ub_gm_chipbackend(
         run_result
     };
     if model_range {
-        eprintln!(
-            "pto-ub-gm-model-access: request={} callable={} reads={} writes={} shared_payload_staging_bytes={} status={}",
+        let _ = emit_pto_ub_gm_log_line(libc::STDERR_FILENO, &format!(
+            "pto-ub-gm-model-access: request={} callable={} reads={} writes={} shared_payload_staging_bytes={} status={}\n",
             req.request_id,
             req.callable_id,
             read_count,
             write_count,
             staged_bytes,
             if run_result.is_ok() { "pass" } else { "fail" }
-        );
+        ));
     }
     if req.callable_id == PTO_UB_GM_QWEN3_RANGE_CALLABLE_ID {
-        eprintln!("qwen3-pto-range: request={} private_constants_bytes={} shared_payload_staging_bytes={} status={}",
-            req.request_id, private_payload_bytes, staged_bytes, if run_result.is_ok() { "pass" } else { "fail" });
+        let _ = emit_pto_ub_gm_log_line(libc::STDERR_FILENO, &format!(
+            "qwen3-pto-range: request={} private_constants_bytes={} shared_payload_staging_bytes={} status={}\n",
+            req.request_id, private_payload_bytes, staged_bytes, if run_result.is_ok() { "pass" } else { "fail" }));
     }
     if req.callable_id == PTO_UB_GM_DEEPSEEK_V4_FLASH_RANGE_CALLABLE_ID {
-        eprintln!("deepseek-v4-flash-pto-range: request={} private_weight_index_bytes={} shared_payload_staging_bytes={} status={}",
-            req.request_id, private_payload_bytes, staged_bytes, if run_result.is_ok() { "pass" } else { "fail" });
+        let _ = emit_pto_ub_gm_log_line(libc::STDERR_FILENO, &format!(
+            "deepseek-v4-flash-pto-range: request={} private_weight_index_bytes={} shared_payload_staging_bytes={} status={}\n",
+            req.request_id, private_payload_bytes, staged_bytes, if run_result.is_ok() { "pass" } else { "fail" }));
     }
     run_result
 }
@@ -30059,6 +30088,63 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
 /// PTO's independent TCVT path remains unchanged.
 pub fn qwen3_reference_f16_handoff(value: f32) -> f32 {
     f16_bits_to_f32(f32_to_f16_bits(value))
+}
+
+/// PTO `TCVT(..., CAST_RINT)` handoff, used by numerical audits of direct
+/// model ranges. The older W5 reference conversion above rounds ties away.
+pub fn qwen3_pto_rint_f16_handoff(value: f32) -> f32 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let fraction = bits & 0x007f_ffff;
+    let half_exp = exponent - 127 + 15;
+    let half = if exponent == 0xff {
+        sign | if fraction == 0 { 0x7c00 } else { 0x7e00 }
+    } else if half_exp >= 0x1f {
+        sign | 0x7c00
+    } else if half_exp < -10 {
+        sign
+    } else if half_exp <= 0 {
+        let mantissa = fraction | 0x0080_0000;
+        let shift = (14 - half_exp) as u32;
+        let mut half_fraction = (mantissa >> shift) as u16;
+        let round_bit = (mantissa >> (shift - 1)) & 1;
+        let sticky = mantissa & ((1 << (shift - 1)) - 1);
+        if round_bit != 0 && (sticky != 0 || half_fraction & 1 != 0) {
+            half_fraction = half_fraction.wrapping_add(1);
+        }
+        sign | half_fraction
+    } else {
+        let mut half = sign | ((half_exp as u16) << 10) | ((fraction >> 13) as u16);
+        let discarded = fraction & 0x1fff;
+        if discarded > 0x1000 || (discarded == 0x1000 && half & 1 != 0) {
+            half = half.wrapping_add(1);
+        }
+        half
+    };
+    f16_bits_to_f32(half)
+}
+
+#[cfg(test)]
+mod qwen3_pto_handoff_tests {
+    use super::*;
+
+    #[test]
+    fn rint_handoff_rounds_midpoints_to_even() {
+        assert_eq!(qwen3_pto_rint_f16_handoff(2.7080078125), 2.70703125);
+        assert_eq!(qwen3_reference_f16_handoff(2.7080078125), 2.708984375);
+        assert_eq!(qwen3_pto_rint_f16_handoff(1.0 + 1.0 / 2048.0), 1.0);
+        assert_eq!(
+            qwen3_pto_rint_f16_handoff(1.0 + 3.0 / 2048.0),
+            1.0 + 2.0 / 1024.0
+        );
+        assert_eq!(qwen3_pto_rint_f16_handoff(-2.7080078125), -2.70703125);
+        assert_eq!(qwen3_pto_rint_f16_handoff(2f32.powi(-25)), 0.0);
+        assert_eq!(
+            qwen3_pto_rint_f16_handoff(3.0 * 2f32.powi(-25)),
+            2f32.powi(-23)
+        );
+    }
 }
 
 fn f32_to_f16_bits(value: f32) -> u16 {

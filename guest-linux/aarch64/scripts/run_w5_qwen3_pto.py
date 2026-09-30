@@ -67,9 +67,9 @@ def main():
     if args.numerical_trace:
         trace = evidence / "numerical-trace"
         trace.mkdir(exist_ok=False)
-        values["SIM_QWEN3_PTO_TRACE_DIR"] = str(trace)
+        values["SIM_W5_TEST_PTO_TRACE_DIR"] = str(trace)
     else:
-        values["SIM_QWEN3_PTO_TRACE_DIR"] = ""
+        values["SIM_W5_TEST_PTO_TRACE_DIR"] = ""
     (evidence / "runtime.env").write_text("".join(f"{key}={json.dumps(value)}\n" for key, value in sorted(values.items())))
     environment = os.environ.copy()
     environment.update(values)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -104,6 +105,26 @@ class W5ClusterTopologyTest(unittest.TestCase):
         )
         self.assertIn("SIM_W5_TEST_MEMORY_GSVA_KV=0\n", result.stdout)
 
+    def test_direct_artifacts_remain_immutable_across_preparations(self):
+        manifests = []
+        for _ in range(2):
+            result = self.run_config("--print-env")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            manifest = next(
+                Path(line.split("=", 1)[1])
+                for line in result.stdout.splitlines()
+                if line.startswith("SIMPLER_DEEPSEEK_V4_FLASH_PTO_RANGE_MANIFEST=")
+            )
+            self.addCleanup(shutil.rmtree, manifest.parent, ignore_errors=True)
+            self.assertEqual(
+                manifest.parent.parent,
+                self.repo / "guest-linux" / "aarch64" / "out",
+            )
+            self.assertTrue(manifest.is_file())
+            manifests.append(manifest)
+        self.assertNotEqual(manifests[0].parent, manifests[1].parent)
+        self.assertTrue(manifests[0].is_file())
+
     def test_cli_model_io_defaults_only_for_validated_profiles(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config = Path(temp_dir) / "w5.env"
@@ -130,6 +151,68 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     self.assertIn(
                         f"SIM_W5_MODEL_IO={expected}\n", result.stdout
                     )
+
+    def test_numerical_trace_requires_single_request_direct_model(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "w5.env"
+            config.write_text(
+                "SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode\n"
+                f"SIM_QWEN3_DENSE_WEIGHTS_PATH={self.repo}\n",
+                encoding="utf-8",
+            )
+
+            def run(*options, env=None):
+                return subprocess.run(
+                    [str(self.config_runner), "--print-env", "--numerical-trace",
+                     *options, str(config)],
+                    cwd=self.repo,
+                    text=True,
+                    capture_output=True,
+                    env=env or self.managed_env(),
+                    check=False,
+                )
+
+            accepted = run()
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertIn("SIM_W5_MODEL_IO=direct\n", accepted.stdout)
+            self.assertIn("SIM_W5_TEST_NUMERICAL_TRACE=1\n", accepted.stdout)
+
+            disabled_queue_env = self.managed_env()
+            disabled_queue_env["SIM_W5_SERVING_QUEUE"] = "false"
+            accepted = run(env=disabled_queue_env)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            for options in (("--model-io", "bulk"), ("--serve-queue",)):
+                with self.subTest(options=options):
+                    rejected = run(*options)
+                    self.assertEqual(rejected.returncode, 2)
+                    self.assertIn("single-request managed-direct inference", rejected.stderr)
+
+            preset_env = self.managed_env()
+            preset_env["SIM_W5_TEST_PTO_TRACE_DIR"] = temp_dir
+            rejected = run(env=preset_env)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("creates its own run-scoped directory", rejected.stderr)
+
+            config = self.deepseek_config
+            accepted = run()
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertIn("SIM_W5_MODEL_IO=direct\n", accepted.stdout)
+            self.assertIn("SIM_W5_TEST_NUMERICAL_TRACE=1\n", accepted.stdout)
+
+            old_env = self.managed_env()
+            old_env["SIM_QWEN3_PTO_TRACE_DIR"] = temp_dir
+            rejected = run(env=old_env)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("was renamed to SIM_W5_TEST_PTO_TRACE_DIR",
+                          rejected.stderr)
+
+            old_env = self.managed_env()
+            old_env["SIM_W5_TEST_QWEN3_PTO_TRACE_DIR"] = temp_dir
+            rejected = run(env=old_env)
+            self.assertEqual(rejected.returncode, 2)
+            self.assertIn("was renamed to SIM_W5_TEST_PTO_TRACE_DIR",
+                          rejected.stderr)
 
     def test_cli_keeps_bulk_available_for_comparison(self):
         result = self.run_config("--print-env", "--model-io", "bulk")
@@ -691,6 +774,36 @@ class W5ClusterTopologyTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"SIM_W5_OE_DISK_IMAGE={disk_image}\n", result.stdout)
+        self.assertIn("SIM_W5_GUEST_ENGINE=openEuler\n", result.stdout)
+
+    def test_qwen_cli_disk_image_selects_open_euler(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            model = Path(temp_dir) / "Qwen3-0.6B"
+            disk_image = Path(temp_dir) / "rootfs.qcow2"
+            model.mkdir()
+            disk_image.write_bytes(b"QFItest")
+            result = subprocess.run(
+                [
+                    str(self.config_runner),
+                    "--print-env",
+                    "--model",
+                    str(model),
+                    "--open-euler-disk-image",
+                    str(disk_image),
+                    str(self.repo / "w5.macos.env"),
+                ],
+                cwd=self.repo,
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=self.managed_env(),
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SIM_W5_GUEST_ENGINE=openEuler\n", result.stdout)
+        self.assertIn(f"SIM_W5_OE_DISK_IMAGE={disk_image}\n", result.stdout)
+        self.assertIn(f"SIM_QWEN3_DENSE_WEIGHTS_PATH={model}\n", result.stdout)
 
     def test_deepseek_env_uses_format_neutral_model_source(self):
         config = self.deepseek_config.read_text(encoding="utf-8")
@@ -925,6 +1038,7 @@ class W5ClusterTopologyTest(unittest.TestCase):
             log_file = Path(temp_dir) / "guest.log"
             log_file.write_bytes(
                 b"booting\r\n[w4_guest] pass\r\n"
+                b"[w4_guest] passobmm-worker generation=11 state=retired\r\n"
                 + b"serial log padding\r\n" * 32768
             )
             result = subprocess.run(
@@ -932,8 +1046,8 @@ class W5ClusterTopologyTest(unittest.TestCase):
                     "/bin/zsh",
                     "-c",
                     helpers
-                    + "\nlog_matches '^\\\\[w4_guest\\\\] pass\\\\r?$' \"$1\"\n"
-                    + "[[ $(log_match_count 'pass' \"$1\") == 1 ]]\n"
+                    + "\nlog_matches '^\\\\[w4_guest\\\\] pass' \"$1\"\n"
+                    + "[[ $(log_match_count '^\\\\[w4_guest\\\\] pass' \"$1\") == 2 ]]\n"
                     + "wait_for_log_pattern \"$1\" 'pass' 1\n",
                     "log-matcher-test",
                     str(log_file),

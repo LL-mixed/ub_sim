@@ -26,7 +26,7 @@ pub use obmm_remote_model::{
 pub use types::{
     decode_completion, DeviceErrorCode, DeviceInterruptStatus, DeviceQueueStatus, DoorbellWrite,
     EndpointId, GuestDescriptor, GuestEndpointLayout, GuestEndpointSession, GuestIoDescriptor,
-    GuestServiceDescriptor, GuestModelRangeDispatchDescriptor, MachineProfile, MmioRegisterMap,
+    GuestModelRangeDispatchDescriptor, GuestServiceDescriptor, MachineProfile, MmioRegisterMap,
 };
 pub use ub_gm_abi::{
     authorized_metadata_crc32, LingquPtoDispatchControlV2, LingquPtoMemrefRole, LingquPtoScalarV1,

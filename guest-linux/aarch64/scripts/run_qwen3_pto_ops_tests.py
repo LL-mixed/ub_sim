@@ -58,7 +58,7 @@ def main():
         trace = output / f"{mode}-trace"
         trace.mkdir(exist_ok=False)
         environment = os.environ.copy()
-        environment["SIM_QWEN3_PTO_TRACE_DIR"] = str(trace)
+        environment["SIM_W5_TEST_PTO_TRACE_DIR"] = str(trace)
         traced = subprocess.run([str(binary), mode], env=environment, text=True,
                                 capture_output=True, timeout=120)
         (output / f"{mode}-trace.log").write_text(traced.stdout + traced.stderr)
@@ -69,7 +69,7 @@ def main():
             raise SystemExit("missing range snapshots")
         for path in files:
             data = path.read_bytes()
-            if data[:8] != b"QPTOTR1\0":
+            if data[:8] != b"QPTOTR2\0":
                 raise SystemExit("invalid trace magic")
             first, end, past, tokens, hidden, kv_width, vocab = struct.unpack_from("<7I", data, 8)
             cursor, kinds, logit_cols = 36, [], 0
@@ -80,20 +80,26 @@ def main():
                     if any((layer, row, col, rows, cols)) or cursor != len(data):
                         raise SystemExit("invalid trace terminator")
                     break
-                if kind == 4:
+                if kind == 5:
+                    if (layer, row, col, rows, cols) != (first, 0, 0, tokens, hidden):
+                        raise SystemExit("invalid range input trace geometry")
+                    kinds.append((kind, layer))
+                elif kind == 4:
                     if layer != end or row != 0 or rows != 1 or col != logit_cols:
                         raise SystemExit("invalid logits trace geometry")
                     logit_cols += cols
-                else:
+                elif kind in (1, 2, 3):
                     want_rows = tokens if kind == 1 else past + tokens
                     want_cols = hidden if kind == 1 else kv_width
                     if (rows, cols, row, col) != (want_rows, want_cols, 0, 0):
                         raise SystemExit("invalid layer trace geometry")
                     kinds.append((kind, layer))
+                else:
+                    raise SystemExit("invalid trace kind")
                 cursor += rows * cols * 4
                 if cursor > len(data):
                     raise SystemExit("truncated trace")
-            if kinds != [(kind, layer) for layer in range(first, end) for kind in (1, 2, 3)] or logit_cols != vocab:
+            if kinds != [(5, first)] + [(kind, layer) for layer in range(first, end) for kind in (1, 2, 3)] or logit_cols != vocab:
                 raise SystemExit("incomplete numerical trace")
         # Evidence must never silently replace an earlier run.
         repeated = subprocess.run([str(binary), mode], env=environment, text=True,

@@ -1,13 +1,24 @@
 # W6 Managed UB_GM Model-Direct Plan
 
-Date: 2026-09-22. Last verified: 2026-09-25.
+Date: 2026-09-22. Status reconciled: 2026-09-30.
 
-Status: Qwen callable 3 and DeepSeek callable 5 are integrated with managed
-`UB_GM` serving, and the stable W5 config entry selects `direct` by default
-for these two profiles. The sim-console two-host functional matrices have
-passed across recorded source revisions. Full-logits and official-checkpoint
-oracle acceptance remain open; the configured default is not a claim of
-full W6 acceptance.
+Status: Qwen callable 3 and DeepSeek callable 5 execute complete model
+ranges with managed `UB_GM` tensors. The stable W5 config entry selects
+`direct` for the validated Qwen3-0.6B and DeepSeek V4 Flash profiles.
+Both test-farm hosts passed the 2/3/8-node by 4/8-step functional matrix
+for both models, 24 combinations in total, with the current model source.
+The final guest regression passed 709/709 on 2026-09-29; the Rust workspace
+suite also passed. Individual run records below identify logging-only
+source differences. DeepSeek full-logits precision alignment is deferred
+by user decision. Managed history beyond 512 compressed rows and a clean
+checkout reproduction remain open.
+
+The 2026-09-30 checkpoint is local-only by user instruction. It pins
+`mem_service` at `546985e26bce60798fa3f88329c3fbed8350c798` and
+`kernel_ub` at `c2def7c931e6451d89727dec0c6f892abe28ba00`, matching the
+validated checkouts. Before publishing a root commit that contains these
+gitlinks, publish those commits to each submodule's `origin/ub_sim` and
+verify fetchability. This checkpoint does not claim remote reproducibility.
 
 ## 1. Goal
 
@@ -113,6 +124,42 @@ DeepSeek callable ID. The test matrix covers partial acquire, begin retry,
 enqueue retry, poll retry, completion failure, release retry and exact owner
 retention. The Qwen matrix covers first, middle and terminal range geometry.
 
+On 2026-09-26, the generic direct release path gained pre-enqueue lease
+rollback. A failed lease begin or endpoint enqueue can now release already
+begun leases without leaving the operation permanently busy; the golden
+fixture covers both cases and a transient rollback failure. The updated
+fixture reports `model_direct_guest=pass cases=7 staging_bytes=0`.
+The current guest-source patch passed all 701 Python guest tests on
+`n4-910c` in 316.057 seconds. Validation used a temporary patch on the
+dedicated detached `8be893ca` checkout; the checkout was restored clean
+afterward. This is a guest test-suite result, not a DeepSeek full-logits or
+official-checkpoint oracle result.
+
+On 2026-09-27, an isolated checkout with root HEAD `0577b38bd` and the
+validation patch (SHA-256
+`0dcca11d1e259506e7c2a26724afb60460b4c12692b76694b6dafd6b4fc07b61`)
+passed all 703 guest Python tests on `n4-910c` in 345.693 seconds when
+`mem_service` was at the root gitlink and lock revision `002343d`.
+An initial run with local `mem_service` HEAD `546985e` reported 11
+failures/errors because the bootstrap source check requires `002343d`;
+the affected Qwen config and bootstrap modules then passed 60/60 and
+11/11 after the isolated checkout returned to the pinned revision.
+The 703-test result covers the pinned root configuration. The local
+`mem_service` branch is one commit ahead of the root gitlink and two
+commits ahead of `origin/ub_sim`. Its new commit must be published and
+pinned with the lock before that combination can pass the normal W6
+bootstrap check.
+The same isolated source snapshot passed `cargo test --workspace
+--offline --quiet` on `n4-910c` with exit code 0; at least one Rust test
+was reported as ignored. This validates the Rust workspace without a model
+oracle or a new multi-node guest run.
+The unpinned `mem_service` commit `546985e` passed its 13 focused OBMM
+provider tests locally on 2026-09-27. A full `mem_service` unittest
+discovery in an isolated `n4-910c` checkout reached its 600-second
+limit without a result; it is not a passing full-suite gate. The
+isolated checkout was restored to the root-pinned `002343d`, and no
+matching unittest process remained.
+
 ## 4. Current Implementation and Remaining Work
 
 ### 4.1 Qwen managed serving integration
@@ -169,7 +216,95 @@ left another QEMU process. Qwen's two-host sim-console functional matrix is
 covered across source revisions. A same-revision rerun of all 12 cases and
 independent logits-reference acceptance remain open.
 
-### 4.2 DeepSeek complete direct callable
+The earlier Qwen callable-3 R9 numerical audit retained raw full-vocabulary
+logits snapshots for prompt token IDs `81378,37585,374` and eight output
+steps. Parsing its `QPTOTR1` records and applying the guest's indexed
+64-bit payload checksum gave a direct comparison with the W6 managed-direct
+terminal logs. Both hosts' 2-node/8-step runs matched the R9 full-vocabulary
+checksum at all eight steps; each also matched the reference top four IDs
+and FP32 logit bits. The reference snapshots, not merely the R9 report's
+pass flag, were used for this check. Their source revision and callable
+artifact differ from the W6 runs, so this is a cross-version numerical
+comparison, not a same-binary identity test.
+
+| W6 topology | Hosts | R9 full-vocab checksum matches | R9 top-four ranks | Largest top-four absolute error |
+| --- | --- | ---: | ---: | ---: |
+| 2 nodes, 8 steps | both | 8/8 each | 8/8 each | 0 |
+| 3 nodes, 8 steps | both | 0/8 each | 8/8 each | `0.00238609314` |
+| 8 nodes, 8 steps | both | 0/8 each | 8/8 each | `0.00306034088` |
+
+At each topology and step, the two hosts reported the same full-vocabulary
+checksum. The 3/8-node checksum differences are compatible with their
+different layer handoff boundaries but do not establish that boundary
+rounding is the sole cause. A matching non-cryptographic 64-bit checksum
+is strong evidence, not a mathematical proof of bytewise identity. The
+3/8-node logs expose top-four values and whole-vocabulary checksums, not
+the raw logits arrays, so their full-vocabulary numerical error versus R9
+remains unmeasured. These observations strengthen Qwen direct numerical
+evidence without closing the entire reference acceptance condition.
+
+The stable cluster entry now accepts `--numerical-trace` for a single-request
+managed-direct Qwen run. It creates a run-scoped, test-only `QPTOTR1` trace
+directory under `guest-linux/aarch64/out/`; the default remains trace-off.
+On `n4-910c`, the two-node, one-step run
+`2026-09-26_15-30-35_w5_qwen3_0_6b_decode_30885` passed and produced both
+range traces. Its terminal range trace was byte-identical to the earlier R9
+trace for prompt tokens `81378,37585,374`. The two-node, eight-step run
+`2026-09-26_15-34-56_w5_qwen3_0_6b_decode_31077` passed with tokens
+`[264, 3644, 7653, 304, 279, 2070, 315, 1995]`. Both nodes recorded
+eight callable-3 host accesses with positive reads/writes and
+`shared_payload_staging_bytes=0`. The independent
+`sim-cli qwen3-pto-trace-check` consumed all 16 new traces and reported
+`status=pass`, zero violations and no missing records across eight steps.
+Its full-vocabulary logits maximum absolute error per step ranged from
+`2.8610e-5` to `5.1737e-5`, below the checker's existing `0.02` limit;
+hidden and KV checks also passed their existing scaled limits. This closes
+the same-asset Qwen two-node, eight-step independent numerical gate for the
+tested worktree. The run used temporary guest-source changes on a dedicated
+test-farm checkout and has not been committed. Tracing adds diagnostic PTO
+reads and filesystem writes, so these runs are excluded from performance
+claims.
+
+The checker now follows the PP layer partitions for 2/3/8 nodes and accepts
+`QPTOTR2` range-input snapshots while retaining `QPTOTR1` read compatibility.
+On `n4-910c`, the 3-node, 8-step run
+`2026-09-26_16-18-34_w5_qwen3_0_6b_decode_18699` passed 3/3 nodes and
+8/8 steps. Its 24 range traces and all eight full-vocabulary logits vectors
+matched the independent reference exactly after the checker modeled PTO's
+`TCVT(CAST_RINT)` FP16 handoff. The first checker attempt had reported 12 KV
+threshold failures at steps 6-7. A captured nodeB pre-handoff value was the
+exact FP16 midpoint `2.7080078125`; nodeC read `2.70703125`, while the old
+checker expected `2.708984375`. The old helper rounded ties away from zero;
+`CAST_RINT` rounds them to even. The corrected independent wire conversion
+removed all 12 failures, with zero input, hidden, KV, or logits differences.
+Only the audit oracle changed; the PTO model kernel did not.
+
+The 8-node, 8-step run
+`2026-09-26_16-31-19_w5_qwen3_0_6b_decode_28986` passed 8/8 nodes,
+8/8 steps and produced the same eight token IDs. All eight QEMU nodes logged
+eight `QWEN3_PTO_OPERATOR_COUNTS ... kernel_complete=1` records. Its 64
+range traces and 64 input snapshots passed the same independent checker with
+zero elementwise differences in inputs, layer hidden/KV and full-vocabulary
+logits. Host access logs contain 62 intact callable-3 records with positive
+reads/writes and `shared_payload_staging_bytes=0`; two records were split by
+concurrent QEMU logging, so their full counter lines are not claimed. The
+earlier 2-node, 8-step `QPTOTR1` trace was rechecked under the corrected
+oracle and also passed with zero elementwise differences. These runs close the
+same-asset, one-host Qwen 2/3/8-node eight-step numerical matrix for the
+tested worktree. They do not establish second-host repeatability or
+performance. The isolated checkout used temporary source patches and remains
+uncommitted. QEMU was relinked during the 8-node startup because its binary
+predated the refreshed `sim-qemu` static library; build time is excluded from
+all inference measurements. The structured 2/3/8-node checker reports remain
+in the test farm's ignored `out/w6-qwen-{2,3,8}node-rint-trace-check.json`;
+the corresponding `QPTOTR1`/`QPTOTR2` snapshots remain under
+`guest-linux/aarch64/out/w6-pto-numerical-trace/` by run ID.
+The earlier R9 checksum table compares 3/8-node outputs with a two-node
+partition's snapshots across source revisions. Each new audit instead uses
+the matching PP partition and PTO FP16 boundary for its independent oracle;
+the two comparisons answer different numerical questions.
+
+### 4.2 DeepSeek direct callable and remaining PTO arithmetic
 
 DeepSeek has a model-specific tensor/scalar ABI, callable 5 range
 orchestrator and PTO kernels for attention, MLA/indexer, MoE, shared expert,
@@ -179,8 +314,453 @@ matrix passed on `n4-910c`. A later 2-node/1-step gate logged callable 5
 provider reads/writes of `308693/4446` and `339479/133858`, with a terminal
 token and no reported staging.
 
-DeepSeek still needs the sim-console openEuler gate, the second-host matrix,
-and explicit range/logits oracle comparison evidence before full acceptance.
+On 2026-09-27, the DeepSeek token control path stopped copying the complete
+managed token tensor through PTO `TSTORE` into a host `std::vector`. Each
+token now enters through PTO `TLOAD`, and the tile yields only the scalar
+embedding/router control index. The focused fixture checks two valid token
+positions, invalid IDs, bounds, two loads and zero token-side stores.
+The updated source passed all 703 guest Python tests and the Rust workspace
+tests on `n4-910c` with the root-pinned `mem_service`. A one-step, all-43-layer
+PTO probe for raw token `42` produced token `201`; its complete 129,280-value
+FP32 logits were byte-identical to the saved pre-change step-0 PTO output
+(`cmp` exit 0). The 2/3/8-node, 4/8-step matrix has not been rerun with
+this change.
+The changed source then passed a 2-node, 1-step openEuler guest run on
+`n4-910c`, run ID
+`2026-09-27_18-02-03_w5_deepseek_v4_flash_decode_9549`.
+Both nodes completed their callable-5 ranges, and nodeB published token
+`201`. Their QEMU model-access records reported `reads/writes=23/3164`
+and `26/132487`, each with `shared_payload_staging_bytes=0` and
+`status=pass`. The run reused a QEMU binary, Image, and modules from the
+test farm's matching QEMU/kernel gitlinks, then rebuilt guest content in
+an isolated checkout. It exited 0 with no remaining QEMU process.
+The same source passed a 2-node, 4-step openEuler guest run on `n4-910c`,
+run ID `2026-09-27_18-10-57_w5_deepseek_v4_flash_decode_5693`.
+Both nodes completed 4/4 ranges, and the streamed token IDs were
+`[201, 41, 201, 35]`, matching the saved DS4 CPU greedy reference.
+All eight QEMU callable-5 model-access records reported positive reads
+and writes, `shared_payload_staging_bytes=0`, and `status=pass`. The
+runner exited 0. This confirms four-step cross-node functionality of the
+new token path. The same isolated source then passed a 2-node, 8-step
+openEuler guest run on `n4-910c`, run ID
+`2026-09-27_18-32-43_w5_deepseek_v4_flash_decode_4535`. The summary
+reported `decode_steps_observed=8`, `passed_nodes=2/2`, and token IDs
+`[201, 41, 201, 35, 201, 35, 201, 35]`, matching the saved DS4 CPU
+greedy sequence. NodeA and nodeB each recorded eight callable-5 accesses
+with positive reads/writes, `shared_payload_staging_bytes=0`, and
+`status=pass`; no QEMU process remained. This run passed the second
+ratio-4 compressed-row boundary at step 7. The same source also passed
+a 3-node, 4-step openEuler guest run on `n4-910c`, run ID
+`2026-09-27_19-12-46_w5_deepseek_v4_flash_decode_635`. Its summary
+reported `decode_steps_observed=4`, `passed_nodes=3/3`, and token IDs
+`[201, 41, 201, 35]`. Nodes A, B, and C each recorded four callable-5
+accesses with positive reads/writes, `shared_payload_staging_bytes=0`,
+and `status=pass`; no QEMU process remained. The same source passed an
+8-node, 4-step openEuler guest run on `n4-910c`, run ID
+`2026-09-27_19-34-40_w5_deepseek_v4_flash_decode_18728`.
+Its summary reported `decode_steps_observed=4`, `passed_nodes=8/8`,
+32 worker and handoff records, and token IDs `[201, 41, 201, 35]`.
+Each of the eight QEMU logs recorded four callable-5 accesses with
+`shared_payload_staging_bytes=0` and `status=pass`; no QEMU process
+remained. At that point, the current-source 3-node eight-step gate and
+complete-logits acceptance remained open.
+
+The current-source 8-node, 8-step openEuler attempt on `n4-910c`, run ID
+`2026-09-27_20-11-13_w5_deepseek_v4_flash_decode_9912`, failed at
+nodeA's step-4 range before producing that range's hidden output:
+`rc=-116` (`-ESTALE`). NodeA had loaded the previous terminal token
+`35` and published its new OBMM allocation. Immediately before enqueue,
+`lingqu_shmem_pto_endpoint` reported a changed CMDQ page physical address
+(`0x1bfe1f000` to `0x10d122000`) and a changed CQ page physical address
+(`0x1bfe20000` to `0x10ca8b000`). The endpoint correctly failed closed;
+that 8-step attempt failed, regardless of the earlier 4-step PASS.
+The exact mechanism of the page move (for example migration or copy-on-write)
+has not been established. That queue setup used anonymous mappings,
+`mlock`, and `/proc/self/pagemap`; it had no device-lifetime DMA pin.
+The kernel's `Documentation/core-api/pin_user_pages.rst` specifies
+`pin_user_pages*()` for DMA-pinned user pages. A durable repair must give
+CMDQ/CQ stable device-visible backing for the entire queue lifetime,
+release it only after device quiescence, and retain the stale-page guard.
+Rebinding an unpinned PFN or removing that guard would leave an in-flight
+move unsafe. This is a queue-memory lifetime failure; the run does not
+measure a DeepSeek logits or compressor defect at step 4.
+
+The selected simulator repair is a dedicated queue allocation in
+`ub-sim-decoder`: one kernel-owned, nonmovable two-page allocation per
+endpoint open. Its device exposes a shared CMDQ/CQ mapping and the two
+guest-physical page addresses through a versioned UAPI. The guest PTO
+endpoint must use that allocation exclusively, retain MMIO-base and
+queue-identity checks, clear the device queue bases before unmapping, and
+free the pages only after the last file mapping is gone. Missing queue
+device support is an explicit error, not an anonymous-page fallback.
+Acceptance requires a kernel build, endpoint contract tests, and a fresh
+8-node 8-step run that passes without a stale-page event.
+
+The repair passed those gates on `n4-910c`. The new
+`/dev/ub_sim_pto_queue` miscdevice allocates the page pair with
+`alloc_pages(GFP_KERNEL | __GFP_ZERO, 1)` per open, maps it shared with
+`remap_pfn_range`, and returns the guest physical addresses through
+`UB_SIM_PTO_QUEUE_GET_INFO`. The endpoint has no anonymous-page fallback.
+The isolated kernel `Image` compiled successfully; its SHA-256 matched the
+image copied into the guest-artifact output (`c5deaa1e7baf8b3a0...`).
+Run ID `2026-09-27_20-58-55_w5_deepseek_v4_flash_decode_14746` completed
+8/8 steps on all eight nodes with `PASS`, exit code 0, and terminal IDs
+`[201, 41, 201, 35, 201, 35, 201, 35]`. NodeA's previously failing
+step-4 range reported `status=ok`; no guest log contained `queue page stale`
+and no QEMU process remained. The target ran 703 guest contract tests
+(`OK`) and `cargo test --workspace --offline --quiet` (exit 0).
+This closes the observed queue-lifetime failure for that run. It does not
+close complete-logits numerical acceptance or cross-host repeatability.
+The same fixed kernel also passed a Qwen 2-node, 1-step openEuler run on
+`n4-910c`, run ID
+`2026-09-27_22-00-56_w5_qwen3_0_6b_decode_13978`. Both node ranges
+reported `callable=3`, `model_io=direct`, and `status=ok`; nodeB
+published terminal token `264` from managed callable-3 logits. No guest
+log contained `queue page stale`, no QEMU process remained, and the
+runner exited 0 with `PASS`. This is a shared-endpoint smoke gate for
+the queue change, not a new Qwen numerical matrix.
+
+On 2026-09-28, the fixed-kernel isolated checkout on `n4-910c` passed
+the current-source DeepSeek 3-node/8-step openEuler gate, run ID
+`2026-09-28_09-43-30_w5_deepseek_v4_flash_decode_17771`. Its summary
+reported 8/8 steps, 3/3 passed nodes, 24 worker and handoff records,
+and terminal IDs `[201, 41, 201, 35, 201, 35, 201, 35]`. Each node's
+QEMU log contained eight `callable=5` completions with positive reads
+and writes, `shared_payload_staging_bytes=0`, and `status=pass`.
+The guest and QEMU logs contained no queue-page or queue-base stale
+marker. The `Image` SHA-256 was
+`c5deaa1e7baf8b3a03fd41ed474d7ccc62102f38c827446e6a3a9125c73f36be`,
+matching the earlier fixed-kernel 8-node run. The runner exited 0, and
+no QEMU process remained. An earlier attempt used an insufficient
+25-minute outer timeout and was stopped after two tokens; it is not a
+model failure or an acceptance result. The passing rerun used a
+60-minute bound and reused the prepared guest and QEMU artifacts.
+This closes the 3-node/8-step functional gate on this host and source.
+Full-logits parity and a same-revision second-host matrix remain open.
+The kernel queue repair is committed locally as `c2def7c931e6`; its
+root gitlink still points to `ac09d36aa221` until the kernel commit is
+published and fetchable.
+
+The direct callable still performs some private model arithmetic in C++.
+The router softplus and top-k selection now execute on PTO tiles; only the
+selected expert indices reach CPU control state. Q8_K activation quantization
+now uses PTO finite-mask, absolute argmax, conversion and 16 group reductions
+without copying its 256 FP32 inputs to a CPU array. Its focused golden passed
+under both `-O2` and the deployed `-O3 -ffast-math
+-fno-finite-math-only` options, including NaN/Inf rejection at the first
+and last block positions. On `n4-910c1`, the same changed source passed all
+704 guest Python tests and `cargo test --workspace --offline --quiet` with
+exit code 0. The default-direct DeepSeek IQ2XXS GGUF completed 2-node
+1-step and 4-step openEuler runs with terminal IDs `201` and
+`[201, 41, 201, 35]`; all 10 callable-5 host access records reported
+positive reads/writes, zero shared staging and `status=pass`. Both runs
+cleaned up with zero live/quarantined objects and no run-owned QEMU process.
+These results cover the tested path, not the full topology matrix after the
+Q8_K change.
+
+The indexer FP4 roundtrip now performs its 32-element magnitude, eight-level
+tie-to-even selection, sign and rescale on PTO tiles. The FP8 KV roundtrip
+likewise performs the 64-element maximum reduction and E4M3FN bucket and
+mantissa selection on PTO tiles. Both paths retain a CPU-visible scalar
+maximum and compute a power-of-two scale on the CPU; complete PTO-only model
+arithmetic is therefore still open. Independent scalar-reference goldens
+cover all seven FP4 boundaries and all 126 E4M3FN boundaries at three scales
+under both regular and production compiler options. Direct PTO FP32-to-E4M3
+`TCVT` cannot replace the latter path in this CPU simulator: a minimal
+probe loaded nonzero FP32 values but encoded all four sample lanes as zero.
+`vendor/pto-isa` was left unchanged.
+
+FP4 and FP8 each store one reduced maximum before deriving a block scale.
+Q8_0 and Q8_K also store quantized activation blocks into local host arrays
+for their dot-product paths; Q8_K additionally stores a finite flag, argmax
+index, selected scalar and group sums. These local operator temporaries do
+not replace the managed hidden/KV/logits views. The tested model ranges
+report zero shared tensor staging, which establishes their managed-direct
+tensor boundary. It does not establish PTO-only model arithmetic.
+Before the indexer-capacity correction, retained compressed history and
+sparse-indexer `top_k` were both capped at 512. `sparse_indexer()` therefore
+returned all retained rows before its score-and-select branch. The
+correction separates these quantities: the guest C descriptor and PTO state
+retain the actual compressed row count, Rust's attention plan reports the
+same count, and `top_k=512` controls only per-query selection. At 2052
+positions the ratio-4 state has 513 compressed rows; C and C++ layout
+goldens check its size and shape, and the operator golden selects rows
+512 through 1 from a 513-row input. The 4/8-step cluster runs still cannot
+exercise this larger-history branch. A managed model run that enters it
+remains necessary. 1M-context runtime validation remains excluded by the
+earlier user decision.
+
+An intermediate real-weight range check on `n4-910c` used the existing
+DeepSeek GGUF index and the tracked PTO probe at `past=2051`, seeding the
+previous state in the production binary layout. It executed layers 0-2
+for token `42` and exited 0 with
+`seeded_indexer=pass past=2051 candidates=513 topk_calls=1` and
+`direct_range=pass ... state_bytes=2181792`. All 16,384 resulting FP32
+hidden values were finite. The new counter increments only after the
+`selection_count == compressed_kv.rows` early return, so this run reached
+the actual score-and-select branch with real weights. The previous state
+was synthetic, and this standalone probe did not use mem_service; the
+managed long-history runtime gate remains open.
+
+After the seeded probe and top-k execution counter changes, the complete
+guest Python suite passed 707/707 on `n4-910c1`. The first offline Rust
+workspace run had one unrelated Engram SIMT unit-test failure while
+executing a just-written stub (`Text file busy`); the failed test passed
+alone and the complete workspace rerun exited 0 without a source change.
+The retained test logs are `out/w6-seeded-indexer-guest-tests.log` and
+`out/w6-seeded-indexer-cargo-tests-rerun.log` in the isolated target
+checkout. The synthetic-state probe log is
+`out/w6-indexer-seeded-run.log` on `n4-910c`.
+
+The changed source passed all 706 guest Python tests on `n4-910c1` in
+414.199 seconds. The first concurrent model run reached the guests but node B
+rejected callable 5 before execution because its expected artifact fingerprint
+did not match the guest request. A serial rerun, after the guest suite had
+finished, passed DeepSeek 2-node/4-step at run ID
+`2026-09-28_17-56-53_w5_deepseek_v4_flash_decode_3250` with token IDs
+`[201, 41, 201, 35]`. All eight callable-5 host access records had positive
+reads and writes, zero shared staging and `status=pass`. Both guests reported
+zero live and quarantined objects after cleanup; no run-owned QEMU process
+remained. The local SSH client lost contact after the remote run had already
+passed, so the local wrapper returned 255; the retained remote completion and
+guest/QEMU logs establish the result. Concurrent artifact mutation is a
+plausible cause of the first fingerprint mismatch, but has not been proven.
+The stable cluster entry now builds each Qwen or DeepSeek direct artifact in
+a distinct `guest-linux/aarch64/out/w6-...` directory. A focused test on
+`n4-910c` prepared two manifests and confirmed that the first persisted
+after the second preparation. The updated entry passed all 707
+guest Python tests on `n4-910c1` in 440.315 seconds and the offline Rust
+workspace suite with exit code 0. A Qwen 2-node/1-step smoke run
+`2026-09-28_20-21-35_w5_qwen3_0_6b_decode_16676` passed with token ID
+`264`, two callable-3 host records with positive I/O and zero shared staging,
+and zero live/quarantined objects after cleanup. During the DeepSeek
+3-node/4-step run below, a separate `--print-env` preparation completed in
+its own `w6-deepseek-v4-flash-direct-artifacts.VSgtIsZ5` directory. This is
+one controlled overlap, not an exhaustive concurrency or retention test.
+The fixed output-directory mutation mechanism has been removed.
+
+The same FP8/FP4 source passed a DeepSeek 8-node/8-step run on `n4-910c1`:
+`2026-09-28_19-15-02_w5_deepseek_v4_flash_decode_30115` emitted
+`[201, 41, 201, 35, 201, 35, 201, 35]`. All 64 callable-5 records had
+positive reads and writes, zero shared staging and `status=pass`; all eight
+guests cleaned up with zero live/quarantined objects and no run-owned QEMU
+process. On `n4-910c`, the source-matched 2-node/4-step run
+`2026-09-28_20-13-16_w5_deepseek_v4_flash_decode_15858` passed with
+`[201, 41, 201, 35]`, eight equivalent callable-5 records, clean guest
+resources and no run-owned QEMU process. Its kernel queue-fix file hashes
+matched the local `c2def7c` commit, although that isolated checkout still
+held the patch as uncommitted files. These runs do not replace the complete
+same-source 2/3/8-node by 4/8-step, two-host matrix.
+
+The changed source also passed DeepSeek 3-node/4-step on `n4-910c1` in run
+`2026-09-28_20-39-11_w5_deepseek_v4_flash_decode_18197`, concurrent with
+the separate artifact preparation above. All three guests completed four
+ranges and emitted `[201, 41, 201, 35]`. The 12 callable-5 host access
+records had positive reads and writes, `shared_payload_staging_bytes=0`,
+and `status=pass`. All three guest cleanup records reported zero live and
+quarantined objects. The QEMU logs contained zero callable fingerprint
+rejections, and no QEMU process remained from the isolated checkout. This
+verifies the observed overlap; it does not cover arbitrary concurrent builds.
+
+The same isolated checkout passed Qwen 8-node/8-step on `n4-910c1` in run
+`2026-09-28_21-25-30_w5_qwen3_0_6b_decode_28893`. All eight guests
+completed eight ranges, with terminal IDs
+`[264, 3644, 7653, 304, 279, 2070, 315, 1995]`. QEMU logs contain 64
+callable-3 access markers; 60 intact records have positive reads/writes,
+zero shared staging and `status=pass`. The other four marker lines were
+interleaved with CQ logging, so their complete counters are not claimed.
+All eight guest cleanup records report zero live and quarantined objects,
+and no QEMU process remained from the isolated checkout. This is a
+current-source eight-node regression gate, not a same-source two-host matrix.
+
+On 2026-09-29, the same current Qwen production source passed all six
+2/3/8-node by 4/8-step cases in the isolated `n4-910c` checkout:
+
+| Nodes | Steps | Run ID | Callable-3 access records |
+| ---: | ---: | --- | ---: |
+| 2 | 4 | `2026-09-29_11-53-04_w5_qwen3_0_6b_decode_17974` | 8/8 |
+| 2 | 8 | `2026-09-29_11-42-36_w5_qwen3_0_6b_decode_25262` | 16/16 |
+| 3 | 4 | `2026-09-29_11-47-56_w5_qwen3_0_6b_decode_21372` | 12/12 |
+| 3 | 8 | `2026-09-29_11-15-32_w5_qwen3_0_6b_decode_13291` | 24/24 |
+| 8 | 4 | `2026-09-29_11-21-29_w5_qwen3_0_6b_decode_9400` | 32/32 |
+| 8 | 8 | `2026-09-29_11-28-35_w5_qwen3_0_6b_decode_13429` | 64/64 |
+
+Each run reported all expected worker/handoff records and the matching
+prefix of `[264, 3644, 7653, 304, 279, 2070, 315, 1995]`. All access
+records have positive reads/writes, zero shared staging and `status=pass`;
+one 8-node/4-step node-C record had its fields split by concurrent CQ log
+output and was reconstructed from adjacent fragments. Every guest cleanup
+reported zero live and quarantined objects. No run-owned QEMU process
+remained between cases. This closes the current-source Qwen matrix on
+`n4-910c`; the separate `n4-910c1` matrix above predates these source
+changes.
+
+After the compressed-history correction, `n4-910c1` passed all 707 guest
+Python tests with the established test-farm environment and the offline
+Rust workspace suite with exit code 0. An earlier guest-suite invocation
+omitted that environment; it ended with 17 compiler/toolchain-related test
+failures and is not counted as a code regression. The corrected source then
+passed DeepSeek 2-node/4-step in run
+`2026-09-29_08-53-14_w5_deepseek_v4_flash_decode_1840`, emitting
+`[201, 41, 201, 35]`. All eight callable-5 host access records reported
+positive reads and writes, zero shared staging and `status=pass`. Both
+guests reported zero live and quarantined objects after cleanup, with no
+QEMU process left from the isolated checkout. This validates the current
+short-sequence path after the state-layout change; it does not validate a
+managed range with more than 512 compressed history rows.
+
+The same current DeepSeek source completed 8-node/8-step on `n4-910c` in
+run `2026-09-29_10-10-07_w5_deepseek_v4_flash_decode_25886`. The runner
+reported `decode_steps_observed=8`, `passed_nodes=8/8`, 64 worker/handoff
+records, and terminal IDs `[201, 41, 201, 35, 201, 35, 201, 35]`. Each
+QEMU node logged eight callable-5 access records. Sixty-three intact
+records show positive reads/writes, zero shared staging and `status=pass`;
+node H's remaining record is interleaved with CQ messages, but its adjacent
+fragments identify request `11654077420883633702`, `reads=682`,
+`writes=129972`, zero staging and `status=pass`. All eight guests reported
+`live_objects=0` and `quarantined_objects=0` after 64 allocations each;
+`pgrep` found no remaining QEMU process. The initiating SSH client exited
+255 after step 6, while the remote launcher continued to the recorded
+`PASS`. The retained log is `out/w6-indexer-capacity-deepseek-8node8-n4-run.log`
+in the isolated target checkout. This run covers eight-step managed-direct
+functionality on the second host, not the 513-row managed-history branch.
+
+The user accepted deferring DeepSeek full-logits precision alignment on
+2026-09-28. This is a temporary scope decision for functional validation;
+the independent oracle criterion in Section 5 remains recorded as unmet.
+
+The current-source DeepSeek 3-node/8-step attempt on `n4-910c1`, run
+`2026-09-29_11-12-16_w5_deepseek_v4_flash_decode_8725`, reached all eight
+steps in all three guests, including the terminal token at step 7. Every
+guest reported zero live/quarantined objects after cleanup. The runner
+returned 1 because one node-B `deepseek-v4-flash-pto-range` line was split
+by concurrent CQ text; its exact fields continue across adjacent lines,
+while all eight callable-5 access lines were intact and passed. The
+sim-uapi logger now emits each model-access and range-completion marker in
+one `write` call. Its focused unit test, offline Rust workspace suite and
+707/707 guest tests passed on `n4-910c1`. The repaired run
+`2026-09-29_12-21-15_w5_deepseek_v4_flash_decode_6772` then passed
+3-node/8-step: 24/24 worker/handoff records and token IDs
+`[201, 41, 201, 35, 201, 35, 201, 35]`. Every node logged eight intact
+callable-5 access lines and eight intact range-completion lines, all with
+positive reads/writes where applicable, zero shared staging and
+`status=pass`. Three guest cleanup records reported zero live/quarantined
+objects, and no run-owned QEMU process remained. The failed attempt remains
+recorded as evidence of the log-interleaving defect; the repaired rerun
+closes that runner gate.
+
+With the same atomic logger, `n4-910c` passed DeepSeek 2-node/8-step in
+run `2026-09-29_12-23-44_w5_deepseek_v4_flash_decode_19045`, emitting the
+same eight token IDs. Both nodes logged eight intact callable-5 access
+lines and eight intact range-completion lines with positive reads/writes,
+zero shared staging and `status=pass`. Both guests cleaned up with zero
+live/quarantined objects; no run-owned QEMU process remained. Two further
+same-source eight-step cases passed with the same token IDs and validation
+conditions:
+
+| Host | Nodes | Run ID | Complete access/range records |
+| --- | ---: | --- | ---: |
+| `n4-910c` | 3 | `2026-09-29_13-10-43_w5_deepseek_v4_flash_decode_23447` | 24/24 each |
+| `n4-910c1` | 8 | `2026-09-29_13-10-04_w5_deepseek_v4_flash_decode_16594` | 64/64 each |
+
+Both reported all expected worker/handoff records, zero shared staging,
+positive provider reads/writes and `status=pass`. Every guest cleaned up
+with zero live/quarantined objects, and neither host retained a run-owned
+QEMU process. The full same-source DeepSeek matrix and the managed 513-row
+history gate remain open.
+
+The atomic-logger source also passed two 4-step cases on 2026-09-29:
+
+| Host | Nodes | Run ID | Complete access/range records |
+| --- | ---: | --- | ---: |
+| `n4-910c1` | 2 | `2026-09-29_14-04-38_w5_deepseek_v4_flash_decode_305` | 8/8 each |
+| `n4-910c` | 8 | `2026-09-29_14-05-21_w5_deepseek_v4_flash_decode_11662` | 32/32 each |
+
+Both emitted `[201, 41, 201, 35]`, completed every expected worker and
+handoff record, and had positive provider reads/writes with zero shared
+staging and `status=pass`. The 2-node and 8-node runs reported 2/2 and 8/8
+clean guest resources, respectively; neither left a run-owned QEMU process.
+These observations do not exercise the 513-row managed-history branch.
+
+Two more same-source 4-step cases passed after explicitly selecting the
+existing test-farm GGUF and openEuler disk paths:
+
+| Host | Nodes | Run ID | Complete access/range records |
+| --- | ---: | --- | ---: |
+| `n4-910c` | 2 | `2026-09-29_14-53-48_w5_deepseek_v4_flash_decode_28542` | 8/8 each |
+| `n4-910c1` | 3 | `2026-09-29_14-53-21_w5_deepseek_v4_flash_decode_3378` | 12/12 each |
+
+Both emitted `[201, 41, 201, 35]`, had positive provider reads/writes,
+zero shared staging and `status=pass`, and completed all expected worker
+and handoff records. All five guest cleanup records reported zero live and
+quarantined objects; neither run left a QEMU process. Two preliminary
+launches on each host exited before guest startup because the container
+defaults `/models/...` were absent in these bare-metal test checkouts.
+The successful runs used the entrypoint's `--model` and
+`--open-euler-disk-image` options to select the already present files.
+
+The atomic-logger source then passed two additional cells:
+
+| Host | Nodes | Steps | Run ID | Complete access/range records |
+| --- | ---: | ---: | --- | ---: |
+| `n4-910c` | 3 | 4 | `2026-09-29_20-14-21_w5_deepseek_v4_flash_decode_2187` | 12/12 each |
+| `n4-910c1` | 2 | 8 | `2026-09-29_20-14-38_w5_deepseek_v4_flash_decode_7833` | 16/16 each |
+
+The 4-step and 8-step terminal sequences matched the respective prefixes
+of `[201, 41, 201, 35, 201, 35, 201, 35]`. All records show positive
+reads/writes, zero shared staging and `status=pass`; all five guests
+reported zero live/quarantined objects, and no run-owned QEMU remained.
+
+The remaining `n4-910c1` 8-node/4-step cell passed in run
+`2026-09-29_20-59-17_w5_deepseek_v4_flash_decode_1961` with
+`[201, 41, 201, 35]`, 32/32 worker/handoff records, 32/32 intact
+callable-5 access markers and 32/32 intact range markers. Every access
+had positive reads/writes, zero shared staging and `status=pass`.
+All eight guest cleanups reported zero live/quarantined objects, and no
+run-owned QEMU process remained. Thus the 2/3/8-node by 4/8-step
+DeepSeek functional matrix passed on both test-farm hosts with the same
+model production source. The `n4-910c` 8-node/8-step run predates only
+the atomic log-emission change, so it does not prove byte-identical
+logging-source repeatability. None of the short runs reaches 513
+compressed history rows.
+
+After the W5 entry made `--open-euler-disk-image` select the openEuler
+guest engine, the complete guest Python suite passed 708/708 on
+`n4-910c` using the PATH-only test-farm environment. The first suite
+attempt loaded the DeepSeek workload environment into the test process
+and failed six unrelated Qwen expectations; one golden fixture in that
+checkout also lagged the current header. The fixture and entry test
+expectations were synced before the clean passing rerun. The retained
+passing log is `out/w6-openeuler-cli-guest-tests-clean.log` in the
+isolated checkout.
+
+The current Qwen production source also passed the 2/3/8-node by
+4/8-step matrix on `n4-910c1`. The five 2/3/8-node cases through
+8-node/4-step had run IDs `2026-09-29_21-28-05_w5_qwen3_0_6b_decode_6145`,
+`2026-09-29_21-33-31_w5_qwen3_0_6b_decode_26249`,
+`2026-09-29_21-36-40_w5_qwen3_0_6b_decode_19671`,
+`2026-09-29_21-43-32_w5_qwen3_0_6b_decode_27765`, and
+`2026-09-29_21-50-41_w5_qwen3_0_6b_decode_4939`. Their QEMU logs contain
+the expected 8, 16, 12, 24, and 32 callable-3 access records, all with
+positive reads/writes, zero shared staging, and `status=pass`. The first
+8-node/8-step attempt produced all eight expected tokens and 64/64
+successful access records, but the launcher could not count one pass marker
+concatenated with OBMM serial output; it is not counted as a passing run.
+After the log matcher and progress parser accepted this observed serial
+interleaving, run `2026-09-29_22-59-28_w5_qwen3_0_6b_decode_8535` passed:
+8/8 steps, 8/8 nodes, token IDs
+`[264, 3644, 7653, 304, 279, 2070, 315, 1995]`, and eight intact
+callable-3 access records per QEMU node with positive reads/writes, zero
+shared staging, and `status=pass`. The runner checked each node's managed
+cleanup and found no run-owned QEMU process after completion. The complete
+guest Python suite after this change passed 709/709 on `n4-910c`; its log is
+`out/w6-pass-log-fix-guest-tests.log` in the isolated checkout. The offline
+Rust workspace suite had already passed after the preceding Rust source
+change; this follow-up changed only shell, Python tests, and documentation.
+
+The sim-console openEuler and second-host functional gates are recorded
+below. Independent range/logits oracle comparison and repeat-run numerical
+stability remain open before full acceptance.
 No callable 4 execution counts as DeepSeek W6 evidence.
 
 The first sim-console openEuler attempt, `sim-console-1790164420881-0`,
@@ -481,6 +1061,133 @@ layer-2 raw KV error was `0.013264`; position-1 layer-2 raw KV became
 bitwise identical. This diagnostic measurement preceded the production
 artifact change and did not establish numerical parity.
 
+A later current-source audit on `n4-910c` rechecked the position-1
+layer-1 result. A four-layer trace built against the deployed PTO headers
+and an independent one-layer `decoder_range` probe produced the same
+16,384-value layer-1 hidden SHA-256
+`572ba6aa9f14dc749f94993b03ce62658a94c56c6c7155da5783c39857b20164`.
+Against the existing DS4 trace, its relative L2 was `0.004623975`;
+layers 2 through 4 rose to `0.008498810`, `0.009735931`, and
+`0.012326177`. The older fast-math binary still reproduces its saved
+layer-1 output exactly and its `1.018e-6` DS4-relative error, but
+rebuilding the old diagnostic source against current headers reproduced
+the current hash. Rebuilding with only the pre-`a8cde067` pool header,
+under GCC 15.3 and separately under GCC 15.2, also reproduced that
+current hash. The old binary's exact source/header/flag provenance is
+unavailable. Its favorable layer-1 measurement is therefore not a
+current-source acceptance result or evidence that the pool-order change
+caused a layer-1 regression. No production code was changed by this audit.
+
+A second-token (`[42, 201]`) stage trace then narrowed the current-source
+error on `n4-910c`. The new DS4 trace was compiled with the reference's
+GCC 10.3 CPU flags; its complete logits and layer-1 hidden are byte-identical
+to the saved independent DS4 oracle. PTO used the deployed headers with
+`-O3 -ffast-math -fno-finite-math-only` under `__CPU_SIM`. Relative L2
+errors against the GCC 10.3 DS4 trace were:
+
+| Position-1 layer-1 boundary | PTO/DS4 relative L2 |
+| --- | ---: |
+| Query after RoPE | `2.4251e-7` |
+| Attention heads after inverse RoPE | `1.5510e-7` |
+| Grouped Q8 output-A | `1.1638e-4` |
+| HC state after attention | `3.4500e-4` |
+| HC state after FFN | `4.62398e-3` |
+
+Replaying the exact DS4 heads through the current PTO grouped projection
+gave output-A relative L2 `1.6925e-7`. Feeding the exact DS4 post-attention
+HC state into the current PTO FFN gave complete layer-1 relative L2
+`7.7139e-7`. Thus the first measured amplification is at grouped Q8 input;
+FFN magnifies the incoming state error but agrees closely on common input.
+The diagnostic outputs are in
+the target's ignored `out/w6-range-parity/` directory under
+`ds4-step1-stageq.*`, `pto-step1-stageq.*`,
+`pto-output-a-from-ds4-step1.f32`, and
+`pto-ffn-from-ds4-step1.layer01.f32`.
+
+The position-1 grouped-Q8 boundary now has a causal one-lane test. Applying
+the current PTO `quantize_q8_0` to both native heads tensors changed only
+one of 32,768 codes: block 851, lane 13 was `42` for DS4 heads and `41`
+for PTO heads. The lane-13 input itself was byte-identical
+(`0.3107659221`). Block 851's max-absolute-value lane 31 was
+`-0.9510185719` for DS4 and `-0.9510186315` for PTO, producing scales
+`0.007488335017` and `0.007488335483`. The lane-13 quotient crossed the
+`41.5` rounding boundary. Across all 1,024 blocks, 561 scales had small
+differences; the maximum relative difference was `7.59e-7`. Replacing
+only PTO's block-851 lane-31 input with the DS4 value made every packed
+code agree and reduced complete grouped output-A relative L2 error from
+`1.1638e-4` to `2.7201e-7`. This verifies that this single scale/code
+flip causes almost all of the measured position-1 output-A difference.
+
+The replay path was checked against the original PTO heads byte-for-byte.
+Replaying the exact DS4 query with the same two raw KV rows through PTO
+attention made the critical max lane, its scale and every Q8 code agree
+with DS4. Feeding DS4's exact attention-norm tensor to the current PTO
+query projection also made every resulting heads code agree, while its
+query relative L2 error decreased from `2.4251e-7` to `1.6216e-7`.
+The token-201 HC-mixed tensor differed from DS4 by relative L2
+`2.2190e-8`, rising to `5.5146e-7` after attention RMSNorm. These
+interventions establish the causal chain for this one activation boundary:
+HC/normalization arithmetic changes Q, which changes one heads block
+scale and code, then grouped projection amplifies that change. They do
+not establish that a global RMSNorm rewrite improves full-model logits;
+the earlier global and attention-only reduction experiments did not.
+
+A saved token-201, layer-1 Q-stage replay on `n4-910c` compared the native
+PTO path and a PTO path fed the exact DS4 attention-norm tensor against
+the same DS4 stage outputs. All vectors had the expected dimensions and
+finite values. The same-input errors start at `attn_q_a`, before Q LoRA
+normalization, the second Q8 projection, head normalization or RoPE:
+
+| Stage | Values | Native PTO relative L2 | Same-input PTO relative L2 |
+| --- | ---: | ---: | ---: |
+| `attn_q_a` output | 1,024 | `5.9575e-7` | `1.1149e-7` |
+| Q LoRA RMSNorm output | 1,024 | `2.4135e-7` | `1.4569e-7` |
+| Final Q after RoPE | 32,768 | `2.4251e-7` | `1.6216e-7` |
+
+This separates upstream normalization error from residual same-input Q8
+projection arithmetic. DS4 uses integer Q8 dots with two fused FP32
+accumulators on the AArch64 path; PTO converts the Q8 operands to FP32
+tiles and accumulates their scaled dot results. The source difference is
+consistent with the measured residual but is not yet a causal proof for
+full-model logits drift. The saved stage tensors and replay output are
+under ignored `out/w6-range-parity/` on the test bed; no production
+operator changed. A source diff verified that the test-bed production
+operator header and this worktree differ only in the optional logits
+trace output and its `TSTORE` count; the Q projection implementation is
+identical.
+
+A GCC 10.3 DS4 norm replay self-check reproduced the native DS4
+attention-norm tensor byte-for-byte. Applying that same DS4
+double-accumulation RMSNorm to the PTO token-201 HC-mixed tensor reduced
+attention-norm relative L2 from `5.5146e-7` to `2.5170e-8`; 3,700 of
+4,096 normalized values then matched DS4 exactly. The resulting PTO Q
+and two-row attention replay matched all 32,768 DS4 heads Q8 codes.
+This confirms the reduction as the trigger for this local code flip.
+The diagnostic tensors are `ds4-norm-from-pto-mixed-201.f32` and
+`pto-heads-from-ds4-reduction-201.*` in the ignored target output.
+
+A separate full-range diagnostic copied the committed PTO headers into an
+ignored directory and changed only `rms_norm` to accumulate squared inputs
+in C++ `double`; this is a CPU-simulator experiment, not a PTO-hardware
+implementation. The copied-source baseline reproduced both saved PTO
+step-0 and step-1 complete-logits files byte-for-byte. With the double-sum
+variant, the step-0 logits relative L2 against the fixed GCC 10.3 DS4
+reference moved from `0.003836918` to `0.003825395`, while maximum
+absolute error worsened from `0.081278` to `0.097858`. Both selected
+token `201`. The relative-L2 improvement is about 0.3%, with a larger
+worst-case error; this candidate did not meet the predeclared requirement
+to improve the complete logits and was stopped before the eight-step run.
+It was not promoted to production. The baseline and candidate outputs
+are under the target's ignored `out/w6-range-parity/exact-rms/` directory.
+
+The DS4 reference build is material: compiling the same DS4 diagnostic with
+GCC 15.3 selected token `361` rather than GCC 10.3's `41`; the complete
+step-1 logits differ by relative L2 `0.031354`. The saved PTO step-1
+logits differ from those GCC 10.3 and GCC 15.3 DS4 builds by `0.033570`
+and `0.045010`, respectively. Compiler variability does not establish PTO
+parity; all future differential gates must record and hold the reference
+compiler and flags fixed. No production source changed in this stage trace.
+
 An independent DS4 position-0 layer-1 stage trace then localized the
 amplification: the fast-math PTO query and attention heads had relative L2
 errors `2.56e-7` and `8.48e-8`, respectively. The grouped Q8 output-A error
@@ -491,6 +1198,41 @@ operator agrees closely for identical input; the preceding tiny heads
 differences cross Q8 activation-rounding boundaries. The remaining work is
 to trace and align the upstream query/attention arithmetic, then recheck
 full-vocabulary logits rather than relax the numerical gate.
+
+A saved-tensor Q8 differential check on `n4-910c` further bounds this
+amplification. The token-42 DS4 and production-flag PTO first-layer heads
+each contain 32,768 FP32 values; 18,987 match bitwise, their relative L2
+error is `8.483157e-8`, and their maximum absolute difference is
+`9.536743e-7`. Applying the existing PTO `quantize_q8_0` probe to both
+files yields 198 differing Q8 codes across 1,024 blocks and 429 differing
+block scales. The first code difference is block 19, lane 5 (`64` versus
+`63`). As a control, the same probe reproduces the documented token-201
+result: one differing code at block 851, lane 13 and 561 differing scales.
+These are diagnostic CPU-simulator results on saved heads, not a new guest
+run. They show that the token-201 single-lane correction cannot explain
+the token-42 output-A or complete-logits mismatch; a candidate upstream
+arithmetic change must be checked against both positions and the full
+eight-step logits sequence. The ignored input tensors are
+`out/w6-range-parity/ds4-first-stage-42.heads.f32` and
+`out/w6-range-parity/pto-fastmath-stage-attention.f32.raw.f32.heads.f32`.
+
+The tracked `deepseek_v4_flash_pto_range_probe.cpp` now has an
+`--attention-heads-from-qkv` mode that replays PTO first-layer attention
+from saved Q, KV and sink tensors without loading model weights. Its
+model-free fixture passed locally. On `n4-910c`, the probe was compiled
+with GCC 15.3 and the production DeepSeek arithmetic flags against
+production range/ops headers whose SHA-256 matched the local source.
+Using the DS4 token-42, position-0 Q/KV/sink tensors produced heads with
+SHA-256 `4e55ae34649288b0c7b1fe133c40a2adaf33352d97ea6d64688f32bb59224212`,
+identical to two earlier ignored same-input outputs. The current-source
+PTO Q8 probe found 74 differing codes and 295 differing block scales
+against DS4, compared with 198 codes and 429 scales for native PTO
+heads. DS4's saved pre- and post-inverse-RoPE heads are byte-identical
+at position 0. This establishes an attention-arithmetic residual under
+identical Q/KV/sink inputs and shows that upstream input differences also
+matter at this boundary. The net code-count reduction does not assign
+each individual code flip to one stage. No production kernel was changed,
+and full-range logits acceptance remains open.
 
 Revision `774ec91a` applies `-O3 -ffast-math -fno-finite-math-only` only to
 the simulated DeepSeek range kernel. An isolated artifact build on
@@ -640,6 +1382,22 @@ where error grows, without identifying the responsible operator. No
 compressed row can be emitted at position 0, so compressor pooling
 cannot explain the first-layer or step-0 logits discrepancy.
 
+A production-header, token-42 position-0 probe on `n4-910c` localized the
+layer-37 spike further. DS4 and PTO selected the same six routed experts
+`[104, 100, 198, 160, 214, 147]`. Their 16,384-value hidden tensors had
+relative L2 error `0.002421645` before layer 37, `0.002423162` after
+attention, and `0.006062818` after FFN. A DS4 FFN replay on its captured
+post-attention tensor reproduced its original post-layer tensor byte-for-byte.
+Feeding that identical DS4 post-attention tensor to the production PTO FFN
+reduced post-layer error to `6.740788e-7` relative L2 (maximum absolute
+error `0.00134277344`). Thus this layer's FFN amplifies incoming numerical
+drift; its expert IDs do not diverge, and same-input FFN arithmetic agrees
+closely. This identifies where the step-0 hidden error grows, not the first
+upstream operator responsible for it. The ignored diagnostic traces are in
+`out/w6-range-parity/` locally and on `n4-910c`; the PTO probe explicitly
+used the production header, since an older experimental header in the
+diagnostic directory otherwise changes the measured arithmetic.
+
 A focused comparison of the existing first-layer token-42 DS4 and PTO
 diagnostic dumps found Q8 activation sensitivity. Their query
 tensors have relative L2 error `2.45110827e-7`; their post-attention,
@@ -703,6 +1461,54 @@ block whose quantized code changes under otherwise common layer input,
 then trace the contributing pre-quantization values. Do not infer a full
 model fix from a reduction-order change alone.
 
+On `n4-910c`, a diagnostic-only router candidate replaced the private
+`std::log1p` softplus loop with PTO `TMAXS/TABS/TNEG/TEXP/TADDS/TLOG/TADD/TSQRT`
+on tiles. It retained the existing top-k selection and used the same IQ2
+GGUF, token sequence `[42, 201, 41, 201, 35, 201, 35, 201]`, GCC 15.3
+`-O3 -ffast-math -fno-finite-math-only`, and fixed GCC 10.3 DS4 reference.
+All 701 guest tests passed with the current guest-source patch. The direct
+probe completed eight steps and selected the same eight tokens as DS4.
+Complete-vocabulary relative L2 logits errors were:
+
+| Step | Existing PTO | PTO tile softplus |
+| ---: | ---: | ---: |
+| 0 | `0.003837` | `0.002665` |
+| 1 | `0.033570` | `0.014962` |
+| 2 | `0.072947` | `0.062466` |
+| 3 | `0.054313` | `0.066389` |
+| 4 | `0.109596` | `0.059164` |
+| 5 | `0.091544` | `0.060934` |
+| 6 | `0.095986` | `0.089205` |
+| 7 | `0.107647` | `0.170240` |
+
+The independent token-43 first-step holdout improved from `0.018360` to
+`0.011734`, but step 3 worsened and step 7 worsened by about 58%. The
+step-7 maximum absolute logits error also rose from about `2.189` to
+`2.428`. The candidate was therefore removed from production source; the
+isolated target checkout was restored clean. Its ignored diagnostic logits
+remain under `out/w6-range-parity/pto-router-tile-*.logits.f32` on
+`n4-910c`. This experiment neither validates a PTO-only router nor
+identifies router softplus as the cause of the DS4/PTO discrepancy. Any
+replacement must retain the `log1p` numerical behavior well enough to
+pass all eight steps and independent inputs, not only the first token.
+
+A second, diagnostic-only PTO router candidate compensated the rounding
+of `1+u` with `log(1+u) - (((1+u)-1)-u)/(1+u)`, where
+`u=exp(-abs(logit))`. The existing router golden covered logits from
+`-20` through `20`, and all 701 guest tests passed on `n4-910c` with
+GCC 15.3. The same-GGUF token-42 full-range probe selected token `201`,
+but its 129,280-value step-0 logits relative L2 error against the fixed
+DS4 reference rose from `0.003836918` to `0.005142310`; maximum absolute
+error rose from `0.081278` to `0.109780`. The predeclared first-step gate
+failed, so no multi-step run was attempted. This candidate was also
+removed from production source, and the isolated checkout was restored
+clean. Its diagnostic output is
+`out/w6-range-parity/pto-router-compensated-42.logits.f32` on `n4-910c`.
+PTO `TLOG` compositions have now failed model-level acceptance in both
+naive and compensated forms. Further router work needs an explicit
+`log1p`-equivalent operator contract and common-input numerical evidence
+before another full-model trial.
+
 These tests use an IQ2 GGUF. The official checkpoint plan explicitly
 prohibits treating DS4 GGUF logits as the FP8/FP4 official-checkpoint golden.
 W6 must keep two numerical claims separate: same-GGUF direct-path parity for
@@ -764,6 +1570,92 @@ explain the earlier numerical drift or the managed-reference TCP failures.
 Matching selected tokens does not establish full-logits parity. This probe
 exercises the standalone PTO range, not the multi-node guest path.
 
+FP64 softmax over the saved complete logits quantifies that gap: DS4 and
+PTO have the same top token in all eight steps, but their largest
+total-variation distance is `0.120286` (step 2) and largest
+`KL(DS4 || PTO)` is `0.030552` (step 7). At step 2 the selected token's
+probability is `0.582298` for DS4 versus `0.466182` for PTO; top-five
+overlap is 4/5 at steps 4 and 5 and 5/5 elsewhere. These values describe
+one seed and cannot be promoted into a post-hoc acceptance threshold.
+On 2026-09-26, an independent DS4 CPU eight-step reference for raw seed
+token `43` completed with outputs
+`[42498, 51, 18, 48, 18, 70, 58, 102447]`. The matching PTO CPU
+probe was stopped after step 0 because its prior eight-step token-42
+artifacts took about 29 minutes from first to last logits snapshot; the
+new run's 15-minute bound was insufficient. Its completed step selected
+`42498`, with top-five overlap 5/5, total variation `0.023523`,
+KL `0.001700`, and relative L2 logits error `0.018360`. Multi-step
+token-43 PTO or guest parity remains unverified.
+
+The DS4 reference itself has a measured compiler-arithmetic sensitivity.
+An existing eight-step DS4 CPU probe built with the reference
+`-O3 -ffast-math -march=native` options and a strict-FP variant built with
+`-O3 -fno-fast-math -ffp-contract=off` used the same GGUF and token `42`.
+The strict-FP versus fast-math complete-logits relative L2 error was
+`0.005978825` at step 0 and `0.090513015` at step 7. PTO versus the
+strict-FP DS4 step-7 logits had relative L2 error `0.105410341`; PTO
+versus fast-math DS4 had `0.107647`. All three eight-step outputs selected
+`[201, 41, 201, 35, 201, 35, 201, 35]`, though top-1 margins changed.
+This establishes substantial arithmetic sensitivity even within DS4.
+It does not establish an acceptable W6 tolerance or rule out an operator
+bug; acceptance still needs a threshold justified by independent
+operator/state checks and token-ranking behavior.
+
+A full eight-step, 129,280-logit comparison of those existing files
+quantifies where compiler variation stops being a sufficient explanation.
+All three sequences were greedy replays with the same eight input token
+IDs. The ratio below divides PTO-versus-fast-math DS4 relative L2 by
+strict-versus-fast-math DS4 relative L2:
+
+| Step | DS4 strict/fast relative L2 | PTO/fast relative L2 | Ratio | PTO values outside DS4 strict/fast interval |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | `0.005979` | `0.003837` | `0.642` | 68,348/129,280 |
+| 1 | `0.016608` | `0.033570` | `2.021` | 114,168/129,280 |
+| 2 | `0.052739` | `0.072947` | `1.383` | 98,932/129,280 |
+| 3 | `0.059339` | `0.054313` | `0.915` | 79,949/129,280 |
+| 4 | `0.082405` | `0.109596` | `1.330` | 88,101/129,280 |
+| 5 | `0.069086` | `0.091544` | `1.325` | 88,305/129,280 |
+| 6 | `0.065724` | `0.095986` | `1.460` | 101,730/129,280 |
+| 7 | `0.090513` | `0.107647` | `1.189` | 93,399/129,280 |
+
+The DS4 interval is a two-build diagnostic, not a correctness envelope.
+At step 1, PTO differs by about twice the DS4 compiler-variant distance,
+and most vocabulary values fall outside the two DS4 outputs. The top
+one and runner-up IDs remain the same in all three replays, but that
+ranking agreement cannot dismiss the broader discrepancy. The state
+substitution below narrows the next investigation to the step-1 compute
+path; do not assign a numerical acceptance threshold yet.
+
+A two-step causal probe on `n4-910c` then replaced only the 43 serialized
+step-0 raw-KV rows in PTO's next-state buffer with DS4's corresponding
+rows before token `201`. It used the production PTO header and the same
+GGUF index. The diagnostic DS4 step-0 logits matched the earlier DS4
+reference byte-for-byte; the PTO step-0 logits matched the existing PTO
+baseline byte-for-byte (SHA-256
+`57f38f2c2e2d6c6743e3214666384f978c136611344333815306fb342e9bb4ec`).
+Against DS4, the full 129,280-logit step-1 relative L2 error rose from
+`0.033569570` to `0.035850543` (about 6.8%); the top token remained
+`41`. This intervention changes the result, but correcting raw KV alone
+does not remove the step-1 drift or identify the first responsible operator.
+The diagnostic source and outputs remain in ignored
+`out/w6-fma-candidate/` on the test farm; no production code changed.
+
+A follow-up DS4 one-step CPU probe exported every layer's step-0 raw KV
+and, for compressed layers, attention/indexer compressor KV and scores.
+Its full step-0 logits had the same SHA-256 as the earlier independent
+DS4 reference (`830522ba1ea5b561c9a35258f78b7b4f7fe6dd6999afa9470ed9d1b7081f1dc8`).
+The production-header PTO diagnostic then replaced all these nonempty
+serialized state fields before step 1; step-0 PTO logits again matched
+the deployed baseline byte-for-byte. The all-state-injected step-1
+129,280-value logits file had the same SHA-256 as the earlier raw-KV-only
+injection (`f477f177508919b3bb3b842f96d2a9c65803440f90586d2a7043cd56083abcb7`),
+with relative L2 `0.035850543` against DS4 and top token `41`. The
+compressor fields therefore have no observed effect at step 1, before
+their first emitted compressed row. Correcting the full saved state
+still does not reduce the step-1 drift; investigate current-token
+arithmetic and the attention/Q8 boundary before more state changes.
+Only ignored diagnostic files were modified on the test farm.
+
 A target-local DS4 CPU probe then exported layer-2 ratio-4 compressor
 state after steps 6 and 7, using the same eight-token greedy sequence.
 Its step-7 full logits matched the earlier DS4 reference byte-for-byte.
@@ -778,6 +1670,19 @@ differed by `0.020515` and `0.017863`, respectively. This establishes
 upstream state divergence before the second pool; it does not identify
 the first responsible operator or prove pool arithmetic is bitwise equal.
 The outputs remain in ignored `out/w6-range-parity/` on `n4-910c`.
+
+A small same-input ratio-4 probe reconstructed the layer-2 step-7 pool
+inputs from DS4's saved step-6 previous lane and step-7 current lane.
+With those identical raw KV and score values, the production-header PTO
+pool output versus a source-aligned DS4 pool formula differed by relative
+L2 `8.8312e-8` for the 512-value attention lane and `7.8929e-8` for
+the 128-value indexer lane; maximum absolute error was `2.98e-8` in
+each. The saved DS4 compressed rows also pass through RMSNorm, RoPE and
+FP8/QAT, so they are not raw-pool oracle outputs. This focused comparison
+supports the corrected accumulation order and makes raw pooling a weak
+candidate for the larger step-7 discrepancy. It does not establish
+bitwise equality or post-pool parity. The probe source and results are
+in ignored `out/w6-range-parity/` on `n4-910c`.
 
 A controlled layer-2 projection probe used the same DS4 GGUF and verified
 that both DS4 compressor KV/gate weight pairs are F16, as in the PTO
@@ -836,6 +1741,70 @@ to 157, 125 and 183. Lower score error alone is therefore an invalid
 selection rule for this quantized boundary; none of these three chunk
 variants is a validated production correction.
 
+On the AArch64 test bed, DS4's `dot_f32` uses two four-lane NEON fused
+multiply-add accumulators. A common-Q/KV diagnostic reproduced all 64
+DS4 sink-attention scores bitwise with that exact order. Keeping the
+same two-accumulator reduction but separating multiply and add matched
+39/64 scores; the deployed PTO `TMUL`/`TROWSUM` path matched 26/64.
+Both fusion and reduction order therefore contribute to the local score
+difference. An isolated, diagnostic-only full-model probe substituted
+the DS4 NEON dot in sink attention while leaving the remaining PTO
+operators unchanged. With token `42`, its first-layer hidden relative
+L2 error against DS4 fell from `0.004371485` to `0.004326369`; its
+complete 129,280-value step-0 logits error fell from `0.003836918` to
+`0.003591703`. The top token remained `201`. This is a modest local
+improvement, not full-model parity or a PTO-compatible production fix.
+The same probe's first-layer serialized raw KV row matched the DS4 KV
+row bitwise in all 512 values. The production-flag PTO query dump
+matched the DS4 query in only 3,247 of 32,768 values (relative L2
+`2.561124e-7`). For this token and layer, the divergent attention
+input is Q; the raw KV input is exact. Trace Q normalization,
+projections, head norm and RoPE before changing another dot operator.
+
+A same-input Q-stage replay reproduced DS4's original 32,768-value Q
+bitwise. Feeding its exact attention-normalized vector into the deployed
+PTO query path reduced Q relative L2 from `2.561124e-7` to
+`1.434267e-7`, but still matched only 6,012/32,768 values bitwise.
+The first difference was `attn_q_a`: 292/1,024 exact values. DS4 and
+PTO quantized that same input to identical 4,096 Q8 codes and 128
+scales (matching SHA-256 for each stream). The AArch64 test compiler
+did not define `__ARM_FEATURE_DOTPROD`, so DS4's Q8 matvec used its
+scalar-block accumulation branch. An isolated PTO `TAXPY` accumulator
+matched DS4 `attn_q_a` 1,024/1,024 bitwise. Its next LoRA RMSNorm
+matched only 264/1,024 values, and final Q matched 5,927/32,768.
+
+Global substitution of that `TAXPY` accumulator across Q8 matvecs is
+rejected by the full-model check. On the same four-token GGUF replay,
+the top IDs remained `[201, 41, 201, 35]`, but logits relative L2
+against DS4 changed as follows:
+
+| Step | Deployed PTO | Global `TAXPY` diagnostic |
+| ---: | ---: | ---: |
+| 0 | `0.003836918` | `0.003308125` |
+| 1 | `0.033569570` | `0.038141183` |
+| 2 | `0.072947333` | `0.078911147` |
+| 3 | `0.054312597` | `0.082762942` |
+
+The first-layer hidden error improved from `0.004371485` to
+`0.003921277`, but three of four complete-logits steps regressed.
+These are same-GGUF diagnostics in ignored `out/w6-fma-candidate/` on
+`n4-910c`; no production operator was changed.
+
+A second isolated build enabled `TAXPY` only for `attn_q_a` and kept the
+other Q8 matvecs on the deployed accumulator. With the same DS4-normalized
+input and production compiler flags, its `attn_q_a` output matched DS4 in
+362/1,024 values, with relative L2 error `8.872752e-8`. The earlier
+all-Q8 `TAXPY` build matched 1,024/1,024; the two diagnostic binaries also
+matched each other in only 362/1,024 values at this stage. Thus the earlier
+exact result depends on the compiled surrounding code, even at the first
+projection. The scoped build then completed one 43-layer step with token
+`42` and selected token `201`. Against the same DS4 GGUF reference, its
+complete 129,280-value logits relative L2 error was `0.009149992`, worse
+than the deployed PTO path's `0.003836918`. The scoped candidate is
+rejected without a four-step run or production change. The next candidate
+must make its arithmetic semantics explicit and improve complete logits
+before multi-step validation.
+
 A separate first-layer intervention replayed the same PTO projection
 and FFN with substituted attention heads. Re-injecting PTO's own heads
 reproduced its original final hidden byte-for-byte. Relative to DS4's
@@ -874,6 +1843,16 @@ contain no TCP connect timeout. No QEMU processes remained after either run.
 This is evidence that the earlier step-3 and step-5 liveness failures do not
 reproduce with the asynchronous bridge on this host. It does not establish
 full-logits parity, other topology gates, or repeat-run stability.
+On 2026-09-26, the isolated `8be893ca` checkout on `n4-910c` plus the
+uncommitted guest lease-release fix passed a separate 2-node/8-step
+DeepSeek run, `2026-09-26_11-15-22_w5_deepseek_v4_flash_decode_31268`.
+Both nodes completed 8/8 ranges, and the terminal IDs were
+`[201, 41, 201, 35, 201, 35, 201, 35]`. Each node had eight callable-5
+host records with positive reads and writes,
+`shared_payload_staging_bytes=0`, and `status=pass`. The process exited 0;
+no QEMU process remained. The temporary patch was reversed afterward and
+the validation checkout was clean. This is one regression pass for the
+lease fix; it does not establish full-logits parity or a repeat-run gate.
 The same committed source `10cd07c9` passed the DeepSeek 3-node/4-step
 sim-console gate on `n4-910c`: run `sim-console-1790270198285-0` exited 0,
 all three guest nodes passed, and the layer ranges were `[0,15)`,
@@ -1007,13 +1986,235 @@ positive reads and writes, `shared_payload_staging_bytes=0`, and
 or compressed-state parity, same-revision repeatability, or official
 checkpoint acceptance.
 
+Existing guest logs now show the same 129,280-value full-vocabulary
+logits checksum sequence for all six DeepSeek 2/3/8-node, eight-step
+runs on the two test-farm hosts:
+
+| Target | 2 nodes | 3 nodes | 8 nodes |
+| --- | --- | --- | --- |
+| `n4-910c` | `sim-console-1790265385881-0` | `sim-console-1790294940097-0` | `sim-console-1790297485314-0` |
+| `n4-910c1` | `sim-console-1790305607975-0` | `sim-console-1790312839485-0` | `sim-console-1790315528053-0` |
+
+The first `n4-910c` two-node run used committed source `10cd07c9`;
+the other five runs used the `8be893ca` validation checkout. The
+per-step guest checksums match across those recorded runs despite the
+different range partitions. Recomputing the guest's indexed FNV
+checksum over the independent PTO probe's complete
+`pto-neworder-42-8.step*.logits.f32` files matched all eight values:
+`f84d1dee3e293398`, `c0eb22f0d2a2534c`, `de41ab355e5d42ce`,
+`96cab884bc370e72`, `b5bbcdb5bef8a9f9`, `1a4d2c114aa3ec87`,
+`0d4e691272974df0`, and `a5c5ae4d07196bc4`. This establishes
+matching complete-vector guest and PTO probe checksums for the six
+eight-step runs, including the second ratio-4 pool at step 7. The
+probe's recorded step-7 relative L2 logits error against the independent
+DS4 same-GGUF reference is `0.107647`; DS4 full-logits parity remains
+open. Matching non-cryptographic checksums is strong output evidence,
+not a mathematical proof of bytewise identity. These runs do not
+establish repeated-run stability for every topology or compressed-state
+parity.
+
+An additional input-diversity gate used the clean `8be893ca` checkout
+on `n4-910c` with an ignored env-file copy setting the raw prompt token
+to `43` instead of `42`. The stable config entry validated with the
+target-local GGUF and openEuler disk paths. Run
+`2026-09-25_22-05-15_w5_deepseek_v4_flash_decode_6105` generated a
+summary of 1/1 step and 2/2 passed nodes, selecting terminal token
+`42498` with runner-up `6288`. Both guest logs report one prompt token
+seeded from the guest environment and zero live/quarantined objects at
+cleanup. Host access records are `callable=5`, reads/writes `23/3164`
+and `26/132487`, `shared_payload_staging_bytes=0`, `status=pass`.
+There were no QEMU or launcher processes left after the run. The guest
+logs do not print the raw prompt ID, so the env-file value is the
+available input identity evidence. The remote summary proves run
+completion; the local SSH client was interrupted after it stayed open
+with no remote launcher, so its exit code does not prove launcher
+success.
+
+The same clean `8be893ca` checkout on `n4-910c` repeated that raw-token-43
+2-node/1-step gate as
+`2026-09-26_09-35-57_w5_deepseek_v4_flash_decode_10759`. This run exited
+0 with 2/2 nodes and 1/1 step passed. It again selected token `42498`
+with runner-up `6288`, and the complete-vocabulary logits checksum was
+`0xd364ebb350229280`, matching the first run and the independent PTO
+probe. Both guest operations logged callable 5, `UB_GM` and zero shared
+staging; host access records were `23/3164` and `26/132487` reads/writes,
+also with zero staging. No QEMU process remained. This establishes a
+same-revision repeat for this single input and topology; it does not
+establish repeatability of the full topology/step matrix or DS4 logits
+parity.
+
+The existing DS4 CPU probe, whose binary metadata identifies GCC
+10.3.1, then evaluated the same GGUF and raw token `43` for one step.
+Its complete 129,280-value logits selected token `42498` at
+`16.3442612`. DS4's top four IDs were `[42498, 6288, 11060, 90998]`;
+the guest observation's top four were `[42498, 6288, 11060, 666]`.
+The guest's first three logits were `16.2899132`, `15.2698441` and
+`15.1032295`, versus DS4's `16.3442612`, `15.3210135` and
+`15.1273947`. Thus the selected token and top-three ordering agree
+for this additional input, while the fourth-ranked ID and values
+already differ. The existing PTO range probe then
+executed all 43 layers for raw token `43` using a weight index that
+embeds the same target-local GGUF path. Its 517,120-byte logits output
+has the guest's indexed FNV checksum `0xd364ebb350229280` exactly,
+and its top-four values match the guest observation. Compared with the
+GCC 10.3.1 DS4 complete logits, the PTO probe's relative L2 error is
+`0.018359898`, maximum absolute error `0.63835907`, and
+`124369/129280` values exceed the diagnostic
+`1e-4 + 1e-3 * abs(reference)` tolerance. This tolerance is not a
+W6 acceptance limit. The matching 64-bit checksum strongly links the
+probe vector to the guest output but is not a mathematical proof of
+bytewise identity; the guest did not persist its raw logits array.
+The derived DS4 and PTO logits remain in ignored `out/` on the test
+farm, with ignored local comparison copies. No model weights were
+transferred.
+
+On 2026-09-26, a 2-node/1-step managed-direct guest run on `n4-910c`
+(`2026-09-26_18-19-11_w5_deepseek_v4_flash_decode_19223`) persisted its
+terminal raw logits for prompt token IDs `42,5207,24063,344`. The file has
+517,120 bytes, all 129,280 FP32 values are finite, and its indexed FNV
+checksum `0x14ff6fa749ac4d37` exactly matches the guest's independent
+`model_terminal_logits_observation` checksum. Both select token `260`; the
+top four IDs are `260,270,13792,411`. Both nodes completed their ranges,
+and nodeB's host log reports `callable=5`, `status=pass`, and
+`shared_payload_staging_bytes=0`. An initial diagnostic attempt failed with
+`pto_ub_gm_access_denied` because it tried to `TLOAD` the write-only managed
+logits binding. The corrected diagnostic mirrors output-head scalars into a
+private buffer using PTO `TSTORE`, then writes that buffer after the range.
+The successful run verifies guest raw-logits capture and managed-direct
+completion; it does not compare these logits with a same-prompt DS4 vector.
+The matching DeepSeek range test passed 6/6 on `n4-910c`, and the local
+range/ops/state tests passed 8/8. A broader target `unittest discover` run
+reported 701 tests with 6 failures and 7 errors while only part of this
+working tree was staged there; it is not a clean full-suite gate. The target
+checkout was restored after validation, with no QEMU process left running.
+
+The same four token IDs were then evaluated sequentially by an independent
+DS4 CPU session against the same target-local IQ2XXS GGUF. The reference
+`ds4.c` SHA-256 was
+`6be99cdae47b9bdf241cde9619f5674545a21e10e32540f03c68442fae7912cd`,
+matching local DS4 revision `931b98e`. The DS4 reference and managed-direct
+guest both ranked tokens `[260,270,13792,411]` highest. Their complete
+129,280-value logits were not byte-identical: relative L2 error
+`0.03519603275`, maximum absolute error `1.33355999`, and
+`126581/129280` values outside the diagnostic
+`1e-4 + 1e-3 * abs(DS4)` threshold. The DS4 and guest SHA-256 values were
+`bd2c3fe40a1b3ec77a447fc63372c19a51e453117ed2c7c039b09f42ebe74076`
+and
+`310a85bae8a7c9a150dacccc4f2b1c799cf09ca4ecd35dcacd98c0ff7c2ca05b`,
+respectively. The DS4 reference vector and comparison copy of the guest
+vector remain in ignored `out/w6-range-parity/`; no model weights moved.
+The threshold is diagnostic only and has not been accepted as a W6 limit.
+The DS4 public-session diagnostic was cross-checked on raw token `42`:
+its complete logits matched the pre-existing
+`ds4-greedy-42-4.step0.logits.f32` reference byte-for-byte (`cmp` exit 0),
+and both selected token `201` with logit `19.0194111`.
+
+A controlled compiler comparison on `n4-910c` rebuilt the unchanged DS4
+public-session oracle from the same `ds4.c` and companion sources with
+identical `-O3 -ffast-math -fno-finite-math-only -march=native` flags. Only
+the compiler changed: system GCC 10 versus GCC 15. Both evaluated the
+same IQ2XXS GGUF and token IDs `42,5207,24063,344`. The new GCC 10
+logits matched the earlier DS4 reference byte-for-byte. GCC 15 still
+selected token `260`, but its top-four IDs were `[260,270,13792,834]`
+instead of GCC 10 and PTO's `[260,270,13792,411]`. Across all 129,280
+logits, relative L2 was `0.061274788` for GCC 10 versus GCC 15,
+`0.035196033` for GCC 10 versus the managed-direct guest, and
+`0.065981722` for GCC 15 versus that same guest. At token `260`, the
+three logits were `23.535549`, `23.786224`, and `23.589329`, respectively.
+The PTO value lay outside the interval formed by the two DS4 builds for
+81,410 of 129,280 entries. This compiler-controlled result makes a
+single-build, near-bitwise DS4 threshold unsuitable as an unqualified
+cross-compiler acceptance criterion. It also rules out compiler choice
+as a complete explanation for the PTO discrepancy. Preserve the exact
+reference build identity in future comparisons, continue tracing the
+model's first divergent operators, and justify any eventual tolerance
+against independent model behavior rather than this compiler range alone.
+The generated vectors remain in ignored `out/`; no weights were moved.
+An eight-step, same-sequence comparison then held the IQ2XXS GGUF and
+input IDs `[42,201,41,201,35,201,35,201]` fixed. The independent DS4
+core with `ds4.c` SHA-256 `6be99cdae47b9bdf241cde9619f5674545a21e10e32540f03c68442fae7912cd`
+was compiled with GCC 15.3 and
+`-O3 -ffast-math -fno-finite-math-only -march=native`; its existing
+non-model helper objects were reused. One CPU session saved all eight
+129,280-value logits arrays. The GCC 10.3 DS4 and deployed PTO arrays
+were the previously recorded fixed-sequence outputs. KL below is
+`KL(DS4 GCC 10.3 || other)` after whole-vocabulary softmax; TV is total
+variation distance between those distributions. All three runs selected
+the same top token at every step.
+
+| Step | DS4 GCC10/15 KL | DS4 GCC10/PTO KL | DS4 GCC10/15 TV | DS4 GCC10/PTO TV |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | `0.00005` | `0.00002` | `0.00365` | `0.00162` |
+| 1 | `0.00837` | `0.00400` | `0.05080` | `0.03504` |
+| 2 | `0.00352` | `0.03015` | `0.02086` | `0.12029` |
+| 3 | `0.01295` | `0.00687` | `0.06071` | `0.04638` |
+| 4 | `0.00014` | `0.00013` | `0.00030` | `0.00036` |
+| 5 | `0.01142` | `0.01511` | `0.05930` | `0.07202` |
+| 6 | `0.00093` | `0.00141` | `0.00192` | `0.00295` |
+| 7 | `0.02624` | `0.03055` | `0.08729` | `0.10106` |
+
+The step-2 PTO distribution error is several times the DS4 compiler
+variation on the same input and cannot be waived as compiler noise.
+Steps 5 and 7 also exceed that comparison, although by less. Raw-logits
+relative L2 alone exaggerates some confident-token steps: at step 4,
+PTO/GCC10 raw-logits relative L2 is `0.10960` while TV is `0.00036`.
+The next numerical investigation should use the actual position-2 Q/KV
+state and find the first operator or Q8 activation block whose output
+diverges from both DS4 builds. Preserve the eight-step top-token gate
+and whole-vocabulary distribution comparison; do not declare acceptance
+from top-token agreement or a global tolerance inferred from another step.
+The GCC 15 vectors and one-session diagnostic source are in ignored
+`out/w6-range-parity/`; no product or DS4 source was changed.
+
+On 2026-09-27, a syntax-only build of the current DeepSeek PTO kernel
+with the target's GCC 10.3.1 failed in the pinned PTO headers because
+that compiler does not recognize the required `_Float16` type. GCC 15.3
+is the supported PTO build on this test bed. A same-GCC-10 DS4/PTO
+comparison is therefore unavailable without changing the toolchain or
+PTO implementation; no numerical conclusion follows from the failed
+build.
+
+To isolate pipeline effects on the four-token prompt, the existing
+corrected-order standalone PTO range probe evaluated all 43 layers from
+the same GGUF index and token IDs. It selected token `260` with logit
+`23.5893`. Its complete raw logits file was byte-identical (`cmp` exit 0)
+to the 2-node managed-direct guest trace above. For this input, the
+cross-node handoff and managed tensor mapping introduce no additional
+logits difference; the measured DS4 discrepancy is reproducible in the
+standalone PTO model range. This does not prove every topology or later
+decode step is numerically identical to the standalone probe.
+
+An existing first-layer trace for raw token `43` compared the same
+DS4 GCC 10.3.1 and PTO inputs at successive model stages. Relative
+L2 errors were `1.7254e-7` for Q, `8.8677e-8` for attention heads,
+`0.00114175` for grouped Q8 output-A, `0.00262137` for the raw
+attention output, `0.00206771` after attention HC, and `0.00490121`
+at the end of layer 1. Quantizing the two heads tensors with the
+existing Q8 diff probe changed 216 of 32,768 codes and 449 of 1,024
+block scales; the first changed code was block 24, lane 10, from 64
+to 63. This reproduces the early attention-to-Q8 amplification seen
+with token `42` on an independent input. It does not assign all
+43-layer logits drift to this one boundary or validate a production
+arithmetic change.
+
+A common-input intervention then fed the exact DS4 token-`43`
+first-layer heads to the existing PTO grouped output-A operator.
+Relative to DS4 output-A, the original PTO heads produced `0.00114175`
+relative L2 and `0.00410748` maximum absolute error; the DS4-heads
+input produced `1.5717e-7` and `5.9605e-7`, respectively. The local
+relative error fell by about 7,260 times. This supports grouped Q8
+projection parity on a common input and places the large local
+amplification at its quantized input boundary. It does not by itself
+prove full-model parity or select a PTO-compatible attention correction.
+
 For every case, compare terminal tokens and logits with the corresponding
 same-format model reference, match guest request IDs to host access counts,
 and confirm zero publication copy bytes. Record the exact run ID and source
 revision. The deployed GGUF path has four- and eight-step references, but
-full-logits guest comparison remains open. The eight-step guest token
-comparison passes. The official Safetensors reference covers a different
-weight format.
+full-logits guest-to-DS4 parity remains open. The eight-step guest
+full-logits checksum comparison to the PTO probe passes for all 2/3/8-node
+topologies on both hosts. The official
+Safetensors reference covers a different weight format.
 
 ## 5. Acceptance Criteria
 
@@ -1039,36 +2240,136 @@ W6 model direct is complete only when all conditions hold:
 10. W6 becomes the default only after Qwen and DeepSeek both satisfy items
     1 through 9. W5 callable 4 remains explicitly selectable for comparison.
 
-## 6. Immediate Next Change
+The current functional validation scope temporarily defers item 8 by user
+decision. Passing items 1-7 and 9 under that exception can establish a
+functional W6 direct path; it cannot satisfy the full acceptance condition
+above or establish official-checkpoint numerical parity.
 
-The HC control divergence is measured. Global, control-only, and
-attention-only compensated reductions all failed either the complete
-layer or full-logits comparison. Stop varying RMSNorm arithmetic until
-per-layer traces locate where the error grows. Isolate the attention
-RMSNorm-to-query and post-attention-heads-to-grouped-Q8 boundaries with
-common DS4 inputs, then require any correction to improve full logits
-under production compiler flags. The first-layer DS4/PTO Q8 activation
-codes and scales already match bytewise on either heads dump; keep the
-quantizer unchanged.
-Locate the step-1 state difference that expands the standalone range's
-relative L2 logits error to 0.033570. The step-7 ratio-4 compressed
-row differs, and its rolling KV/score state already differs at step 6.
-The common-input layer-2 projection probe found only `1e-7`-scale
-operator differences; native-input errors are `1e-3`-scale. Focus the
-next numerical probe on a PTO-compatible Q/KV dot implementation with
-full-model validation. The one-row scalar trace identifies the dot score
-as the first difference, while the chunk sweep rejects simple reduction
-granularity tuning: it worsened Q8 code parity despite smaller FP32
-score error. Require a candidate to improve the heads/Q8 boundary,
-layer-1 hidden, multi-row attention and complete logits under production
-compiler flags before changing the production operator.
+## 6. Next Functional Gates
+
+1. The compressed-history and `top_k=512` limits are now separate. Validate
+   a managed model range with at least 513 ratio-4 compressed rows so the
+   score-and-select branch is exercised through the guest/service boundary;
+   check state/lease budget and zero shared tensor staging there. The C/C++
+   513-row goldens and the real-weight synthetic-state PTO range probe above
+   do not prove a serving-produced history or the managed service path.
+2. The two-host short-sequence functional matrix is complete. Preserve its
+   per-range direct I/O, zero staging, lease and process cleanup evidence.
+   The controlled 3-node DeepSeek/artifact-preparation overlap above passed;
+   broader concurrency and generated-artifact retention remain unverified.
+3. Publish tested `mem_service` and `kernel_ub` commits only when authorized,
+   then update their root gitlinks and the `mem_service` lock together.
+   Revalidate from a clean clone before claiming reproducibility.
+
+Private constants and scratch are permitted by Section 1. A requirement to
+execute CPU-visible quantization scales and private Q8_0/Q8_K activation
+blocks exclusively through PTO would extend that scope; it is not an
+additional prerequisite for the current managed shared-tensor goal.
+
+### Deferred Precision Investigation
+
+The position-1 first-layer Q8 flip is now measured and reproduced by a
+single heads max-lane intervention. DS4's exact attention norm fed through
+the current PTO query and attention path removes that flip. HC mixing is
+already within `2.2190e-8` relative L2, while its attention RMSNorm
+output differs by `5.5146e-7`. A verified DS4 double-accumulation
+replay on PTO's token-201 HC-mixed input removes this code flip. Evaluate
+any PTO-expressible numerical correction against complete step-0-through-7
+logits using the fixed GCC 10.3 DS4 reference. Do not change the
+production quantizer or grouped projection:
+both agree closely on common input. Earlier global and attention-only
+32-chunk compensated RMSNorm variants worsened full logits, so a local
+code flip alone cannot justify promotion. A global double-sum
+CPU-simulator variant was also insufficient at step 0: relative L2 moved
+only 0.3% while maximum absolute error worsened by about 20%. Do not
+repeat global reduction changes without a concrete multi-layer error
+prediction and a PTO-hardware-expressible implementation.
+
+PTO A5 `TADD` and `TMUL` reject FP64 tile operands in their type checks.
+DS4's RMSNorm uses a `double` squared-sum, so direct FP64 tile replay is
+not a device-executable correction. An FP32 compensated candidate must
+prove its complete-model effect; local RMSNorm agreement does not suffice.
+
+The position-0 heads comparison has 198 Q8 code differences, while the
+position-1 comparison has one. Measure whether a candidate reduces both
+counts and the corresponding output-A errors before paying for a full
+range run. This is a diagnostic filter, not a substitute for complete
+logits or the managed-direct guest gate.
+The source-controlled position-0 same-Q/KV/sink replay leaves 74 code
+differences, so a normalization-only candidate cannot be assumed to close
+the first-token boundary. Separate the remaining attention score,
+softmax-denominator and weighted-value arithmetic under that fixed input
+before selecting a PTO-expressible production change.
+
+The current PTO sink-attention score uses `TMUL` followed by `TROWSUM`.
+DS4's bitwise-matching diagnostic uses two four-lane NEON fused
+multiply-add accumulators. PTO `TAXPY` accepts a C++ scalar coefficient,
+so feeding it a key element from a managed tile would move model payload
+into host control state. PTO `TMULADDDST` can express an eight-lane
+tile-by-tile fused accumulation, although its CPU simulator did not
+guarantee FP32 fusion at this revision. `TGEMV` is not an
+equivalent shortcut: its CPU simulator accumulates floating products in
+`double`, while its device arithmetic is target-dependent. Do not promote
+a CPU-only DS4 dot or a `TGEMV` simulation result as evidence of device
+parity. A production numerical change must preserve direct `UB_GM` access
+and pass complete-logits gates on the selected PTO target.
+
+An isolated `n4-910c` candidate combined eight-lane `TMULADDDST`
+sink scoring with FP32 `std::fma` in the PTO CPU simulator. On saved
+same-input token-42 Q/KV data it matched all 64 DS4 raw scores bitwise.
+The candidate then ran all 43 layers from the existing IQ2XXS GGUF
+index with GCC 15.3 and `-O3 -ffast-math -fno-finite-math-only`, using
+the fixed token sequence `[42,201,41,201]`. Complete-vocabulary
+logits against the same GCC 10.3 DS4 reference were:
+
+| Step | Baseline relative L2 | Candidate relative L2 | DS4 / baseline / candidate top token |
+| ---: | ---: | ---: | --- |
+| 0 | 0.003836918 | 0.003591703 | 201 / 201 / 201 |
+| 1 | 0.033569570 | 0.035528108 | 41 / 41 / 41 |
+| 2 | 0.072947333 | 0.071527423 | 201 / 201 / 201 |
+| 3 | 0.054312597 | 0.047444571 | 35 / 35 / 18 |
+
+Maximum absolute error also worsened at steps 1 through 3. The
+step-3 token divergence rejects the candidate despite its step-0 score
+and logits improvement. The production sink code and vendor CPU-sim
+overlay were reverted; ignored diagnostic outputs remain in
+`out/w6-fma-probe/` on `n4-910c`. A correct local dot score is therefore
+insufficient to establish multi-step model parity. Continue from the
+earliest full-attention/Q8 boundary with complete-logits and token gates.
+
+A bounded multi-row check then parsed layer-0's four real raw-KV rows
+from the saved PTO four-step state. It combined those rows with saved
+DS4 token-42 or token-201 Q and the same learned sink values. The PTO
+path and a DS4-order downstream replay received identical PTO dot
+scores; the replay used sequential softmax-denominator accumulation
+and FP32 fused weighted-value accumulation. GCC 15.3 used the deployed
+DeepSeek arithmetic flags. Results were:
+
+| Saved Q | Different denominators | Heads relative L2 | Q8 code differences | Q8 scale differences |
+| --- | ---: | ---: | ---: | ---: |
+| token 42 | 14/64 | `6.7484e-8` | 0/32,768 | 285/1,024 |
+| token 201 | 9/64 | `5.9009e-8` | 0/32,768 | 262/1,024 |
+
+Holding PTO's denominator fixed while changing only the weighted sum
+to fused accumulation gave relative L2 `3.0558e-8` and `3.8873e-8`,
+respectively, with zero Q8 code differences in both cases. The Q and
+four-row KV came from saved but different positions, so this is an
+arithmetic sensitivity check, not an actual step-3 state oracle. It
+does not eliminate multi-row rounding effects in other states. It gives
+no measured Q8-code benefit for changing the downstream accumulation
+now. The ignored probe and tensors are in `out/w6-range-parity/` on
+`n4-910c`; no production source was changed.
+
+The all-state step-0 substitution did not improve step-1 logits; stop
+substituting compressor state for that question. The separate step-7
+compressed-row difference remains open. Keep model-functional and oracle
+gates distinct, and require same-revision repeatability before closing W6.
 The two-host 2-node/1-step and recorded 2/3/8-node, 4/8-step DeepSeek
 functional gates have passed. The 8-node/4-step run exercised sim-console
 SSH recovery against a real disconnect. Confirm same-revision repeatability
 without conflating it with the recorded cross-revision matrix.
-Set a justified tolerance for Q8
-activation-boundary
-effects only after the first model divergence is understood. Separately
+Set a justified tolerance for Q8 activation-boundary effects only after
+the first model divergence is understood. Separately
 compare the official-checkpoint path with the independent Safetensors CPU
 reference. Keep W6 acceptance open until every condition in Section 5 has
 direct evidence.

@@ -137,7 +137,7 @@ def parse_run_logs(run_dir, expected_steps, node_ids):
         with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
             for raw_line in log_file:
                 clean_line = raw_line.rstrip("\n").rstrip("\r")
-                if clean_line == "[w4_guest] pass":
+                if clean_line.startswith("[w4_guest] pass"):
                     passes[node_id] += 1
                 if clean_line.startswith("[w4_guest] stage ") or clean_line.startswith(
                     "[w4_guest] step="

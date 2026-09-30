@@ -31,7 +31,7 @@ class RangeTrace {
 public:
     RangeTrace(uint32_t first, uint32_t end, uint32_t past, uint32_t tokens,
                uint32_t hidden, uint32_t kv_width, uint32_t vocab) : end_(end) {
-        const char *directory = std::getenv("SIM_QWEN3_PTO_TRACE_DIR");
+        const char *directory = std::getenv("SIM_W5_TEST_PTO_TRACE_DIR");
         if (!directory || !*directory) return;
         const std::string path = std::string(directory) + "/range-" +
             std::to_string(first) + "-" + std::to_string(end) + "-past-" +
@@ -39,7 +39,7 @@ public:
         file_ = std::fopen(path.c_str(), "wbx");
         if (!file_) throw std::runtime_error("qwen3_pto_trace_open_failed");
         try {
-            if (std::fwrite("QPTOTR1\0", 1, 8, file_) != 8)
+            if (std::fwrite("QPTOTR2\0", 1, 8, file_) != 8)
                 throw std::runtime_error("qwen3_pto_trace_header_failed");
             for (uint32_t v : {first, end, past, tokens, hidden, kv_width, vocab}) word(v);
         } catch (...) { std::fclose(file_); file_ = nullptr; throw; }
