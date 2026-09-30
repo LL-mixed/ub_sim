@@ -6,9 +6,12 @@ Status: Qwen callable 3 and DeepSeek callable 5 execute complete model
 ranges with managed `UB_GM` tensors. The stable W5 config entry selects
 `direct` for the validated Qwen3-0.6B and DeepSeek V4 Flash profiles.
 Both test-farm hosts passed the 2/3/8-node by 4/8-step functional matrix
-for both models, 24 combinations in total, with the current model source.
-The final guest regression passed 709/709 on 2026-09-29; the Rust workspace
-suite also passed. Individual run records below identify logging-only
+for both models, 24 combinations in total, with the model source recorded
+in the local checkpoint below. The subsequent PTO indexer change has its
+own operator and real-weight boundary evidence in section 6.
+The checkpoint guest regression passed 709/709 on 2026-09-29; the Rust
+workspace suite also passed. The indexer continuation passed 710/710 guest
+tests on 2026-09-30. Individual run records below identify logging-only
 source differences. DeepSeek full-logits precision alignment is deferred
 by user decision. Managed history beyond 512 compressed rows and a clean
 checkout reproduction remain open.
@@ -2247,12 +2250,39 @@ above or establish official-checkpoint numerical parity.
 
 ## 6. Next Functional Gates
 
+Execution order confirmed on 2026-09-30: first reproduce the local
+checkpoint from a clean checkout, then validate managed compressed history.
+The clean-checkout run must pin every required submodule and match the
+Memory Service lock. Use a separate target directory with fresh QEMU,
+guest and PTO build outputs; existing Git objects, model weights and the
+openEuler base image may be reused as explicitly recorded inputs.
+Run Qwen and DeepSeek 3-node/4-step through the normal config entry and
+check direct I/O, zero shared staging, cleanup and source cleanliness.
+Transfer unpublished commits by offline bundles; no push is authorized.
+
 1. The compressed-history and `top_k=512` limits are now separate. Validate
    a managed model range with at least 513 ratio-4 compressed rows so the
    score-and-select branch is exercised through the guest/service boundary;
    check state/lease budget and zero shared tensor staging there. The C/C++
    513-row goldens and the real-weight synthetic-state PTO range probe above
    do not prove a serving-produced history or the managed service path.
+   The 2026-09-30 continuation replaced the CPU score scan with two-level
+   PTO `TROWARGMAX`: first within each tile, then across tile winners.
+   Selected rows are masked through PTO stores; first-index tie ordering
+   is preserved. The five operator tests passed on `n4-910c`, including
+   stable-reference comparisons for 513 rows, tile boundaries, duplicate
+   scores and invalid inputs under both `-O2` and production math flags.
+   The real-weight, synthetic-history probe also passed with
+   `past=2051 candidates=513 topk_calls=1`, executing layers `[0,3)`.
+   Its complete hidden and serialized state outputs are byte-identical
+   to the previous CPU-selection probe. Logs:
+   `out/w6-indexer-pto-focused.log` and `out/w6-indexer-pto-run.log` in
+   the isolated `n4-910c` checkout. This closes the operator-selection
+   implementation gap; it does not close the managed-history gate.
+   The complete guest suite then passed 710/710 tests in 463.636 seconds;
+   its log is `out/w6-indexer-pto-guest-tests.log` in the same checkout.
+   `cargo test --workspace --offline` also completed with exit code 0;
+   its log is `out/w6-indexer-pto-cargo-tests.log` in that checkout.
 2. The two-host short-sequence functional matrix is complete. Preserve its
    per-range direct I/O, zero staging, lease and process cleanup evidence.
    The controlled 3-node DeepSeek/artifact-preparation overlap above passed;

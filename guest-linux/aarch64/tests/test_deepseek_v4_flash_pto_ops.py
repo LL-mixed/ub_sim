@@ -11,7 +11,7 @@ LIB = ROOT / "guest-linux" / "aarch64" / "libs" / "lingqu_shmem_pto"
 
 
 class DeepseekV4FlashPtoOpsTest(unittest.TestCase):
-    def _check_quantized_golden(self, kind):
+    def _check_pto_golden(self, kind):
         compiler = os.environ.get("CXX") or shutil.which("g++-15") or "c++"
         source = (
             ROOT / "guest-linux" / "aarch64" / "tests"
@@ -46,13 +46,16 @@ class DeepseekV4FlashPtoOpsTest(unittest.TestCase):
                     )
 
     def test_q8k_quantization_uses_pto_and_rejects_nonfinite_input(self):
-        self._check_quantized_golden("q8k")
+        self._check_pto_golden("q8k")
 
     def test_fp4_indexer_roundtrip_matches_scalar_boundaries(self):
-        self._check_quantized_golden("fp4")
+        self._check_pto_golden("fp4")
 
     def test_fp8_kv_roundtrip_matches_scalar_boundaries(self):
-        self._check_quantized_golden("fp8")
+        self._check_pto_golden("fp8")
+
+    def test_sparse_indexer_topk_matches_stable_reference_across_tiles(self):
+        self._check_pto_golden("indexer")
 
     def test_q8_projection_executes_with_pto_load_store_and_math(self):
         compiler = os.environ.get("CXX") or shutil.which("g++-15") or "c++"

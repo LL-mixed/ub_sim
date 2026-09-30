@@ -46,6 +46,7 @@ struct OperatorCounts {
     uint64_t indexer_qat = 0;
     uint64_t sparse_indexer = 0;
     uint64_t sparse_indexer_topk = 0;
+    uint64_t sparse_indexer_argmax = 0;
     uint64_t router = 0;
     uint64_t router_argmax = 0;
     uint64_t routed_experts = 0;
@@ -680,6 +681,87 @@ inline void indexer_qat(const F32View &values) {
     }
 }
 
+// Consume private score scratch; PTO performs all score comparisons.
+inline std::vector<uint32_t> sparse_topk_indices(const F32View &scores,
+                                                uint32_t top_k) {
+    scores.validate();
+    const uint32_t chunks = (scores.columns - 1) / kVectorCapacity + 1;
+    if (scores.rows != 1 || !top_k || top_k > scores.columns ||
+        chunks > kVectorCapacity) {
+        throw std::invalid_argument("deepseek_pto_sparse_topk_geometry");
+    }
+    std::vector<float> maxima(chunks);
+    std::vector<uint32_t> indices(chunks);
+    const F32View candidates {reinterpret_cast<uintptr_t>(maxima.data()),
+                              1, chunks, chunks, 1};
+    std::vector<uint32_t> selected;
+    selected.reserve(top_k);
+    F32Scalar masked;
+    pto::TEXPANDS(masked, -std::numeric_limits<float>::infinity());
+
+    for (uint32_t offset = 0; offset < scores.columns;
+         offset += kVectorCapacity) {
+        const uint32_t count =
+            std::min(kVectorCapacity, scores.columns - offset);
+        using Mask = pto::Tile<pto::TileType::Vec, uint8_t, 1,
+                              kVectorCapacity / 8, pto::BLayout::RowMajor,
+                              1, pto::DYNAMIC>;
+        Mask lower((count + 7) / 8), upper((count + 7) / 8);
+        Mask finite((count + 7) / 8);
+        F32Row values(count), zero(count), invalid(count), scratch(count);
+        F32Scalar any_invalid;
+        load(values, scores, 0, offset);
+        const float bound = std::numeric_limits<float>::max();
+        pto::TCMPS(lower, values, -bound, pto::CmpMode::GE);
+        pto::TCMPS(upper, values, bound, pto::CmpMode::LE);
+        pto::TAND(finite, lower, upper);
+        pto::TEXPANDS(zero, 0.0f);
+        pto::TSELS(invalid, finite, zero, scratch, 1.0f);
+        pto::TROWMAX(any_invalid, invalid, scratch);
+        if (any_invalid.GetValue(0) != 0.0f) {
+            throw std::invalid_argument("deepseek_pto_sparse_topk_non_finite");
+        }
+    }
+
+    for (uint32_t rank = 0; rank < top_k; ++rank) {
+        for (uint32_t chunk = 0; chunk < chunks; ++chunk) {
+            const uint32_t offset = chunk * kVectorCapacity;
+            const uint32_t count =
+                std::min(kVectorCapacity, scores.columns - offset);
+            F32Row values(count);
+            F32Row scratch(count);
+            F32Scalar maximum;
+            U32Scalar index;
+            load(values, scores, 0, offset);
+            pto::TROWARGMAX(maximum, index, values, scratch);
+            ++operator_counts.sparse_indexer_argmax;
+            store_scalar(candidates, 0, chunk, maximum);
+            auto destination = global_row<uint32_t>(
+                reinterpret_cast<uintptr_t>(&indices[chunk]), 1);
+            pto::TSTORE(destination, index);
+            ++operator_counts.tstore;
+        }
+        F32Row values(chunks);
+        F32Row scratch(chunks);
+        F32Scalar maximum;
+        U32Scalar winner;
+        load(values, candidates, 0);
+        pto::TROWARGMAX(maximum, winner, values, scratch);
+        ++operator_counts.sparse_indexer_argmax;
+        const uint32_t chunk = winner.GetValue(0);
+        if (chunk >= chunks || !std::isfinite(maximum.GetValue(0))) {
+            throw std::runtime_error("deepseek_pto_sparse_indexer_selection");
+        }
+        const uint32_t row = chunk * kVectorCapacity + indices[chunk];
+        if (indices[chunk] >= kVectorCapacity || row >= scores.columns) {
+            throw std::runtime_error("deepseek_pto_sparse_indexer_selection");
+        }
+        selected.push_back(row);
+        store_scalar(scores, 0, row, masked);
+    }
+    return selected;
+}
+
 inline std::vector<uint32_t>
 sparse_indexer(const F32View &q, const F32View &compressed_kv,
                const F32View &projected_head_weights, uint32_t top_k) {
@@ -735,25 +817,7 @@ sparse_indexer(const F32View &q, const F32View &compressed_kv,
         store_scalar(scores, 0, row, score);
     }
 
-    std::vector<uint32_t> selected;
-    selected.reserve(selection_count);
-    std::vector<bool> used(compressed_kv.rows, false);
-    for (uint32_t selection = 0; selection < selection_count; ++selection) {
-        uint32_t best_row = compressed_kv.rows;
-        float best_score = -std::numeric_limits<float>::infinity();
-        for (uint32_t row = 0; row < compressed_kv.rows; ++row) {
-            if (!used[row] && score_storage[row] > best_score) {
-                best_row = row;
-                best_score = score_storage[row];
-            }
-        }
-        if (best_row == compressed_kv.rows) {
-            throw std::runtime_error("deepseek_pto_sparse_indexer_selection");
-        }
-        used[best_row] = true;
-        selected.push_back(best_row);
-    }
-    return selected;
+    return sparse_topk_indices(scores, selection_count);
 }
 
 inline void sigmoid_affine(const F32View &mix, const F32View &base,
