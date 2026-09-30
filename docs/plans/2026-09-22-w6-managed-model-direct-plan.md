@@ -13,15 +13,20 @@ The checkpoint guest regression passed 709/709 on 2026-09-29; the Rust
 workspace suite also passed. The indexer continuation passed 710/710 guest
 tests on 2026-09-30. Individual run records below identify logging-only
 source differences. DeepSeek full-logits precision alignment is deferred
-by user decision. Managed history beyond 512 compressed rows and a clean
-checkout reproduction remain open.
+by user decision. Clean-checkout Qwen and DeepSeek 3-node/4-step
+reproduction passed on 2026-09-30. Managed history beyond 512 compressed
+rows remains open and must originate from real model execution. An unchanged
+DS4 CPU reference has now generated all 2051 preceding positions and saved
+the complete checkpoint; importing it and executing the managed continuation
+are still unverified.
 
 The 2026-09-30 checkpoint is local-only by user instruction. It pins
 `mem_service` at `546985e26bce60798fa3f88329c3fbed8350c798` and
 `kernel_ub` at `c2def7c931e6451d89727dec0c6f892abe28ba00`, matching the
 validated checkouts. Before publishing a root commit that contains these
 gitlinks, publish those commits to each submodule's `origin/ub_sim` and
-verify fetchability. This checkpoint does not claim remote reproducibility.
+verify fetchability. The offline-bundle reproduction below does not establish
+that a GitHub-only clone can fetch the unpublished commits.
 
 ## 1. Goal
 
@@ -2260,12 +2265,129 @@ Run Qwen and DeepSeek 3-node/4-step through the normal config entry and
 check direct I/O, zero shared staging, cleanup and source cleanliness.
 Transfer unpublished commits by offline bundles; no push is authorized.
 
+### Clean-Checkout Reproduction: Passed
+
+On `n4-910c1`, the separate checkout
+`/home/ll/w6-clean-20260930/ub_sim` pins root commit
+`32a0c7d97a5cf76620fc721ff46cd4f7daf4c0dd`. All eight top-level
+submodules and `mem_service/vendor/obmm` match their gitlinks; the Memory
+Service lock matches `546985e`. Existing Git objects, target-local model
+weights, the openEuler base image, toolchains and dependency caches were
+reused. Simulator, QEMU, kernel, guest/initramfs, BusyBox and PTO build
+outputs were generated in this fresh checkout. No old build outputs were
+copied. Unused optional nested submodules were not initialized.
+
+Both cases used `run_w5_cluster_config.sh --nodes 3 --steps 4` with the
+recorded config files in this checkout's ignored `out/` directory:
+
+| Model | Run ID | Range completions | Output token IDs |
+| --- | --- | ---: | --- |
+| Qwen3-0.6B | `2026-09-30_14-19-08_w5_qwen3_0_6b_decode_28390` | 12/12 | `[264,3644,7653,304]` |
+| DeepSeek V4 Flash IQ2 GGUF | `2026-09-30_14-28-03_w5_deepseek_v4_flash_decode_31756` | 12/12 | `[201,41,201,35]` |
+
+Every range reported its expected callable (Qwen 3, DeepSeek 5), positive
+managed reads and writes, `shared_payload_staging_bytes=0`, and
+`status=pass`. Each node recorded 24 `QEMU_UB_GM_GSVA_BIND` events per run.
+Each node's final cleanup reported zero live objects, backing/address bytes,
+export/import mappings, live references, in-flight operations and
+quarantined objects/bytes, with `status=ok`. Both launches exited 0. The
+root and initialized submodule sources remained clean after both runs;
+no run-owned QEMU remained. Other users' pre-existing processes were left
+untouched.
+
+Evidence is preserved in the target parent directory as `checkout.json`,
+`qwen-clean-run.log`, `deepseek-clean-run.log`, `qwen-evidence.json` and
+`deepseek-evidence.json`; per-node logs are under
+`guest-linux/aarch64/logs/<run-id>_headless8/`. The checkout and evidence
+checkers are task-local helpers outside production source. This verifies
+fresh-build reproduction of the local checkpoint using offline bundles;
+publishing the child pins and a GitHub-only clone remain separate work.
+
+### Real-Model History Input: Generated
+
+The test-only CLI `tests/deepseek_v4_flash_history_reference.c` links against
+the unchanged DS4 public CPU API. Its interface is:
+
+```text
+history-reference MODEL POSITIONS INITIAL_TOKEN PAYLOAD TRACE
+```
+
+Each position calls `ds4_session_eval`, checks the session position, reads
+the complete logits and selects the next token by argmax. The trace records
+every input/next-token pair. The public `ds4_session_save_payload` API writes
+the final complete native checkpoint. The helper rejects nonfinite logits,
+never overwrites an existing output, and removes the checkpoint on a
+reported evaluation or save failure. Its four model-free CLI unit tests use
+stubs solely to test error handling and token chaining; those stubs do not
+produce the integration checkpoint.
+
+On `n4-910c`, the real reference used the existing
+`DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf`
+asset, initial raw token `42`, a 2052-position context and 12 CPU threads.
+The DS4 source SHA-256 is
+`6be99cdae47b9bdf241cde9619f5674545a21e10e32540f03c68442fae7912cd`.
+The helper and all linked DS4 object digests are preserved in the build
+receipt beside the checkpoint. The DS4 CPU object identifies GCC 10.3.1.
+DS4 source and W6 production execution were not modified.
+
+The reference executed all 43 layers at each of 2051 positions, exiting 0
+after 1030.414 seconds. Its native payload is 52,184,472 bytes. Verification
+checked all 2051 trace records against the payload's token sequence, chained
+every next token to the following input, checked the final logits argmax,
+validated every layer's state geometry, and required exact end-of-file.
+All layers retain 128 live raw rows. The 21 ratio-4 layers each contain
+512 compressed rows and 512 indexer rows; the 20 ratio-128 layers each
+contain 16 compressed rows. Compressor buffers are included. The next
+input token is `201`.
+
+Payload SHA-256:
+`06fe1e0365b8b0447ad07dc3a66ae1a6fa95cb568e23eae7b6984804825b870a`.
+Trace SHA-256:
+`03c0a33b22b9ab4814b7808d175b7de3f6a670081ef7c5dc9b53f817cb07e84e`.
+Evidence lives under `n4-910c:/home/ll/sim-console/ub_sim/out/w6-range-parity/`:
+`real-history-2051.payload`, `.jsonl`, `.log`,
+`real-history-2051-evidence.json`, `real-history-2051-build.sha256` and
+`real-history-2051-compiler.txt`. The task-local checker is
+`w6_verify_real_history.py`. No weights or full checkpoint were transferred
+to the development machine.
+
+This completes authentic history generation only. The checkpoint is in DS4's
+native session format; it cannot be passed directly as W6 range-state bytes.
+Next, preserve and validate its complete state when converting to the
+existing range encoding, publish it through the real Memory Service, and
+run callable 5 at position 2051. That continuation must produce the 513th
+ratio-4 row, exercise the PTO top-k branch, report positive managed reads
+and writes with zero shared staging, and drain its objects and leases.
+These continuation checks remain open. The DS4 reference remains a test
+input producer; W6 continues to execute through its PTO model implementation.
+
+The full guest suite passed 714/714 tests in 513.194 seconds on the separate
+`n4-910c1` checkout after adding the four CLI tests. Its log is
+`out/real-history-guest-tests-configured.log`. The offline Rust workspace
+suite exited 0; its log is `out/real-history-cargo-tests.log`. An initial
+guest-suite invocation omitted the build environment and failed with
+missing Cargo, system-GCC PTO compilation and missing sanitizer libraries.
+The rerun loaded the existing GCC 15/Cargo paths and sanitizer runtime from
+`out/w6-history-tests.env`; no test was skipped or weakened. These are
+regression results, independent of the still-open managed-history gate.
+
+### Remaining Functional Work
+
 1. The compressed-history and `top_k=512` limits are now separate. Validate
    a managed model range with at least 513 ratio-4 compressed rows so the
    score-and-select branch is exercised through the guest/service boundary;
    check state/lease budget and zero shared tensor staging there. The C/C++
    513-row goldens and the real-weight synthetic-state PTO range probe above
    do not prove a serving-produced history or the managed service path.
+   The user explicitly rejected synthetic checkpoints on 2026-09-30:
+   every preceding history position must be evaluated by the real model.
+   Zero-filled history, repeated/copied KV rows, fabricated compressor
+   state and a reduced threshold cannot satisfy this gate. A checkpoint
+   produced by an existing real-model runtime is only useful after recording
+   its exact model asset, source/build identity, input token sequence,
+   positions and complete raw/compressed KV plus compressor state. Its
+   conversion and managed continuation must be checked independently;
+   generating that checkpoint alone does not close the service gate.
    The 2026-09-30 continuation replaced the CPU score scan with two-level
    PTO `TROWARGMAX`: first within each tile, then across tile winners.
    Selected rows are masked through PTO stores; first-index tie ordering
