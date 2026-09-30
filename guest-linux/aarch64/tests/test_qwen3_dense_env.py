@@ -1191,6 +1191,7 @@ class Qwen3DenseEnvTest(unittest.TestCase):
                 "SIM_W5_TEST_HEALTH_MAX_PRUNE_BYTES=0",
                 "# test-numerical",
                 "SIM_W5_TEST_NUMERICAL_TRACE=0",
+                "SIM_W6_TEST_DEEPSEEK_HISTORY_DIR=",
                 "SIM_W5_TEST_PTO_TRACE_DIR=",
                 "# vendor-context-test",
                 "SIM_ENGRAM_SIMT_ARTIFACT_DIR=/tmp/engram-simt",

@@ -46,6 +46,20 @@ logits。文件保存在 `out/w6-pto-numerical-trace/` 的独立运行目录。
 快照用于精度诊断，开启后不能用于性能结论。旧名称
 `SIM_QWEN3_PTO_TRACE_DIR` 和 `SIM_W5_TEST_QWEN3_PTO_TRACE_DIR` 已被入口拒绝。
 
+## Real-History Checkpoint
+
+`SIM_W6_TEST_DEEPSEEK_HISTORY_DIR` 指定测试用逐节点历史目录，默认未设置。
+仅接受 DeepSeek managed-direct 单请求；队列和多请求文件入口会拒绝此配置。
+使用 `prepare_deepseek_history_checkpoint.py convert --payload <native>
+--trace <jsonl> --output <directory> --nodes <N>` 转换已有的真实模型 checkpoint。
+CLI 校验完整 token 链、最终 logits argmax、全部层的 raw/compressed/indexer KV、
+压缩器状态和文件边界，按正常 PP 切分生成 `node<N>.bin` 与 `receipt.json`。
+`validate --directory <directory> --nodes <N>` 检查分区、格式及校验和。
+输入 token 必须匹配 receipt 中的 `next_token`；目录必须对应本轮节点数。
+Guest 通过 SDK writer 发布初始 KV，封存后用 SDK reader 获取，再调用 callable 5。
+首步完成并释放 reader 后回收初始对象。生成文件仅放 `out/`，不提交。
+单元测试中的合成字节只校验格式，真实历史验收必须使用有来源证据的模型运行结果。
+
 ## Runner / Health
 
 | 新变量 | 作用 |

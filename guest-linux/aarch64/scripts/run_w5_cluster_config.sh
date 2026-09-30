@@ -525,6 +525,20 @@ case "$SIM_W5_TEST_NUMERICAL_TRACE" in
   *) echo "SIM_W5_TEST_NUMERICAL_TRACE must be 0 or 1" >&2; exit 2 ;;
 esac
 
+if [[ -n "${SIM_W6_TEST_DEEPSEEK_HISTORY_DIR:-}" ]]; then
+  if [[ "${SIM_UAPI_W5_PROFILE:-}" != "deepseek_v4_flash_decode" ||
+        "$SIM_W5_MODEL_IO" != "direct" ||
+        -n "${SIM_W5_SERVING_REQUESTS_FILE:-}" ]] ||
+     bool_enabled "${SIM_W5_SERVING_QUEUE:-0}"; then
+    echo "SIM_W6_TEST_DEEPSEEK_HISTORY_DIR requires one DeepSeek managed-direct request" >&2
+    exit 2
+  fi
+  if [[ ! -d "$SIM_W6_TEST_DEEPSEEK_HISTORY_DIR" ]]; then
+    echo "DeepSeek history fixture directory is missing: $SIM_W6_TEST_DEEPSEEK_HISTORY_DIR" >&2
+    exit 2
+  fi
+fi
+
 case "${SIM_UAPI_W5_PROFILE:-qwen3_0_6b_decode}" in
   qwen3_0_6b_engram_decode|qwen3_14b_engram_decode)
     export SIM_QWEN3_GUEST_ENGRAM="${SIM_QWEN3_GUEST_ENGRAM:-1}"
@@ -774,6 +788,7 @@ print_w5_effective_env() {
 
   print_env_section "test-numerical"
   print_env_value SIM_W5_TEST_NUMERICAL_TRACE "${SIM_W5_TEST_NUMERICAL_TRACE:-0}"
+  print_env_value SIM_W6_TEST_DEEPSEEK_HISTORY_DIR "${SIM_W6_TEST_DEEPSEEK_HISTORY_DIR:-}"
   print_env_value SIM_W5_TEST_PTO_TRACE_DIR "${SIM_W5_TEST_PTO_TRACE_DIR:-}"
 
   print_env_section "vendor-context-test"

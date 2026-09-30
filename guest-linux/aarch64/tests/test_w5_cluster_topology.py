@@ -105,6 +105,35 @@ class W5ClusterTopologyTest(unittest.TestCase):
         )
         self.assertIn("SIM_W5_TEST_MEMORY_GSVA_KV=0\n", result.stdout)
 
+    def test_history_fixture_rejects_other_models_and_request_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "history.env"
+            for extra in ("SIM_UAPI_W5_PROFILE=qwen3_0_6b_decode\n",
+                          "SIM_W5_SERVING_QUEUE=1\n",
+                          "SIM_W5_SERVING_REQUESTS_FILE=requests.txt\n",
+                          "SIM_W5_MODEL_IO=bulk\n"):
+                with self.subTest(extra=extra):
+                    config.write_text(
+                        "SIM_UAPI_W5_PROFILE=deepseek_v4_flash_decode\n"
+                        f"SIM_W6_TEST_DEEPSEEK_HISTORY_DIR={directory}\n" + extra)
+                    result = subprocess.run(
+                        [str(self.config_runner), "--print-env", str(config)],
+                        cwd=self.repo, env=self.managed_env(), capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("requires one DeepSeek managed-direct request", result.stderr)
+
+    def test_history_fixture_missing_directory_rejected_before_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "history.env"
+            config.write_text(
+                "SIM_UAPI_W5_PROFILE=deepseek_v4_flash_decode\n"
+                f"SIM_W6_TEST_DEEPSEEK_HISTORY_DIR={directory}/missing\n")
+            result = subprocess.run(
+                [str(self.config_runner), "--print-env", str(config)],
+                cwd=self.repo, env=self.managed_env(), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("history fixture directory is missing", result.stderr)
+
     def test_direct_artifacts_remain_immutable_across_preparations(self):
         manifests = []
         for _ in range(2):

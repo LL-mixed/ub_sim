@@ -34,6 +34,7 @@
 #include "lingqu_shmem_pto.h"
 #include "lingqu_shmem_pto_endpoint.h"
 #include "deepseek_v4_flash_managed_serving_guest.h"
+#include "deepseek_v4_flash_history_guest.h"
 #include "qwen3_managed_serving_guest.h"
 #include "qwen3_pto_guest.h"
 #include "w5_managed_request_guest.h"
@@ -295,6 +296,8 @@ struct w6_managed_direct_config {
     } geometry;
     const uint32_t *token_ids;
     uint32_t token_count;
+    const char *history_path;
+    struct deepseek_v4_flash_history_header history;
 };
 
 struct w5_managed_round_state {
@@ -302,6 +305,9 @@ struct w5_managed_round_state {
     struct w5_managed_object_guest *token;
     struct w5_managed_object_guest *hidden;
     struct w5_managed_object_guest *kv;
+    struct w5_managed_object_guest *history_writer;
+    struct mem_service_mapping_lease *history_cpu;
+    bool history_live;
     struct w5_managed_serving_operation *operation;
     struct w5_managed_serving_result result;
     struct qwen3_managed_serving_operation *direct_operation;
@@ -2585,6 +2591,18 @@ static int w5_managed_round_close(struct w5_managed_round_state *state)
             W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
         if (rc) return rc;
     }
+    if (state->history_cpu) {
+        rc = mem_service_mapping_lease_release(state->history_cpu);
+        if (rc) return rc;
+        state->history_cpu = NULL;
+    }
+    if (state->history_writer) {
+        rc = w5_managed_object_close_bounded(&state->history_writer, &status,
+            W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
+        if (rc == -EBUSY)
+            rc = w5_managed_writer_abort(&state->history_writer, &status);
+        if (rc) return rc;
+    }
     if (state->token) {
         rc = w5_managed_object_close_bounded(&state->token, &status,
             W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
@@ -2683,6 +2701,127 @@ static int w5_managed_open_reader(
                " attempt=%u cleanup_retries=%u status=retrying\n",
                role, local_node + 1U, step, attempt + 1U,
                cleanup_retries);
+    }
+    return rc;
+}
+
+static int w6_managed_import_history(
+    struct w5_managed_runtime_guest *runtime,
+    struct w5_managed_round_state *state,
+    const struct w6_managed_direct_config *direct,
+    uint64_t run, uint64_t request, uint32_t node, uint64_t timeout_ms)
+{
+    struct deepseek_v4_flash_history_header header;
+    struct mem_service_mapping_access_view mapping;
+    struct mem_service_client_reference_view view = {0};
+    struct lingqu_object_ref_wire_v2 reference;
+    enum mem_service_wire_status status = MEM_SERVICE_WIRE_STATUS_INTERNAL;
+    struct w5_managed_writer_config config;
+    char key[65], reference_key[MEM_SERVICE_CLIENT_ALLOCATION_KEY_LEN];
+    char home[MEM_SERVICE_CLIENT_PROVIDER_NODE_ID_LEN];
+    char session[MEM_SERVICE_CLIENT_ALLOCATION_SESSION_ID_LEN];
+    char operation[48];
+    FILE *file;
+    int rc;
+
+    if (!direct || !direct->history_path || state->history_live)
+        return -EINVAL;
+    file = fopen(direct->history_path, "rb");
+    if (!file) return -errno;
+    rc = deepseek_v4_flash_history_read(file, &header);
+    if (!rc && (header.past != direct->history.past ||
+        header.token != direct->history.token ||
+        header.first != direct->history.first || header.end != direct->history.end ||
+        header.bytes != direct->history.bytes ||
+        header.checksum != direct->history.checksum))
+        rc = -ESTALE;
+    if (rc) goto close_file;
+    rc = llm_infer_managed_object_key(key, sizeof(key), run, request,
+                                      node, UINT64_MAX);
+    if (!rc) rc = w5_managed_reference_key(reference_key, sizeof(reference_key),
+        run, request, node, UINT64_MAX, "kv");
+    if (rc) goto close_file;
+    snprintf(home, sizeof(home), "guest-node-%u", node);
+    snprintf(session, sizeof(session), "history-%08" PRIx32 "-%016" PRIx64,
+             node, w5_managed_identity_hash(key));
+    snprintf(operation, sizeof(operation), "hi-%08" PRIx32 "-%016" PRIx64,
+             node, w5_managed_identity_hash(key));
+    config = (struct w5_managed_writer_config) {
+        .key = key, .home_node = home,
+        .holder_node_id = w5_managed_runtime_client_node_id(runtime),
+        .holder_provider_incarnation =
+            w5_managed_runtime_client_provider_incarnation(runtime),
+        .session_id = session, .operation_prefix = operation,
+        .size_bytes = header.bytes, .timeout_ms = timeout_ms, .pin_limit = 8,
+    };
+    rc = w5_managed_writer_open(w5_managed_runtime_client(runtime),
+        w5_managed_runtime_channel(runtime), w5_managed_runtime_domain(runtime),
+        &config, &state->history_writer, &status);
+    if (rc) goto close_file;
+    rc = w5_managed_object_acquire_cpu(state->history_writer, 0, header.bytes,
+        MEM_SERVICE_CLIENT_MAP_READ | MEM_SERVICE_CLIENT_MAP_WRITE,
+        &state->history_cpu, &mapping);
+    if (rc) goto close_file;
+    if (fread(mapping.base, 1, header.bytes, file) != header.bytes ||
+        fgetc(file) != EOF || ferror(file) ||
+        mem_service_provider_checksum64(mapping.base, header.bytes) != header.checksum ||
+        deepseek_history_u64(mapping.base) != UINT64_C(0x4453345253544154) ||
+        deepseek_history_u64((unsigned char *)mapping.base + 8) != 1 ||
+        deepseek_history_u64((unsigned char *)mapping.base + 16) != header.first ||
+        deepseek_history_u64((unsigned char *)mapping.base + 24) != header.end)
+        rc = -EPROTO;
+    if (!rc) rc = w5_managed_object_publish_range(state->history_writer, state->history_cpu,
+        0, header.bytes, header.checksum);
+    view.len = header.bytes;
+    view.object_kind = MEM_SERVICE_OBMM_KIND_MODEL_KV_STATE;
+    view.owner_entity = view.producer_entity = node;
+    if (!rc) rc = w5_managed_writer_stage(state->history_writer, state->history_cpu,
+        reference_key, &view, &reference, &status);
+    {
+        int release_rc = mem_service_mapping_lease_release(state->history_cpu);
+        if (!release_rc) state->history_cpu = NULL;
+        if (release_rc) {
+            fprintf(stderr, "[w6_history] CPU lease release failed rc=%d\n", release_rc);
+            rc = release_rc;
+        }
+    }
+    if (!rc) rc = w5_managed_writer_seal(state->history_writer, &status);
+    if (!rc) state->history_live = true;
+    if (!rc) rc = w5_managed_object_close_bounded(&state->history_writer,
+        &status, W5_MANAGED_CLEANUP_TIMEOUT_MS, NULL);
+    if (!rc) rc = w5_managed_open_reader(runtime, reference_key, node, 0,
+        'i', timeout_ms, &state->kv, &status);
+    if (!rc)
+        printf("[w6_history] node=%u layers=%u:%u past=%u token=%u"
+               " bytes=%" PRIu64 " checksum=0x%016" PRIx64
+               " allocation=%s generation=%" PRIu64
+               " published=sealed reader=managed status=ok\n",
+               node + 1U, header.first, header.end, header.past, header.token,
+               header.bytes, header.checksum, key, reference.allocation_generation);
+close_file:
+    fclose(file);
+    return rc;
+}
+
+static int w6_managed_retire_history(
+    struct w5_managed_runtime_guest *runtime,
+    struct w5_managed_round_state *state,
+    uint64_t run, uint64_t request, uint32_t node, uint64_t timeout_ms)
+{
+    struct mem_service_client_allocation allocation;
+    int rc;
+
+    if (!state->history_live) return 0;
+    if (state->history_cpu || state->history_writer || state->kv)
+        return -EBUSY;
+    rc = w5_managed_request_retire_local_step(
+        w5_managed_runtime_client(runtime), llm_infer_managed_object_key,
+        run, request, node, UINT64_MAX, timeout_ms, &allocation);
+    if (!rc) {
+        state->history_live = false;
+        printf("[w6_history] node=%u generation=%" PRIu64
+               " state=%s reader_released=1 status=retired\n",
+               node + 1U, allocation.generation, allocation.state);
     }
     return rc;
 }
@@ -3194,6 +3333,11 @@ static int w5_managed_run_model_range(
                                     &state->hidden, &status);
         if (rc)
             return rc;
+    }
+    if (decode_step == 0U && direct && direct->history_path) {
+        rc = w6_managed_import_history(runtime, state, direct,
+            run, serving_request, local_node, timeout_ms);
+        if (rc) return rc;
     }
     if (decode_step > 0U) {
         rc = w5_managed_reference_key(reference_key, sizeof(reference_key),
@@ -11156,7 +11300,8 @@ int main(int argc, char **argv)
     char cdma_path[128];
     const char *block_candidate = "missing";
     const char *dispatch_candidate = "missing";
-    struct mem_service db_service;
+    /* This single-process service state exceeds the guest's stack budget. */
+    static struct mem_service db_service;
     struct mem_service_record resolved_block_meta;
     struct mem_service_record resolved_block_meta_aux;
     struct mem_service_record resolved_prefix_meta;
@@ -11305,6 +11450,9 @@ int main(int argc, char **argv)
     uint64_t w5_managed_artifact_fingerprint = 0;
     uint64_t w5_managed_output_capacity = 0;
     uint64_t w5_managed_import_region_bytes = 0;
+    uint32_t w6_history_past = 0;
+    const char *w6_history_dir = getenv("SIM_W6_TEST_DEEPSEEK_HISTORY_DIR");
+    char w6_history_path[512] = {0};
     uint64_t w5_managed_allocation_granularity_bytes = 0;
     const char *w5_managed_connect = NULL;
     struct qwen3_pto_guest_operation *qwen3_pto_operation = NULL;
@@ -14705,17 +14853,50 @@ decode_round_start:
 
                 direct_config.model =
                     W6_MANAGED_DIRECT_DEEPSEEK_V4_FLASH;
+                if (w6_history_dir && w6_history_dir[0] && !guest_decode_step) {
+                    FILE *history_file;
+                    int length = snprintf(w6_history_path, sizeof(w6_history_path),
+                        "%s/node%u.bin", w6_history_dir, round_dispatch_node);
+
+                    if (length < 0 || (size_t)length >= sizeof(w6_history_path) ||
+                        qwen3_round_input_token_count != 1U) {
+                        fprintf(stderr, "[w6_history] invalid fixture path/token count\n");
+                        goto out;
+                    }
+                    history_file = fopen(w6_history_path, "rb");
+                    managed_rc = history_file ?
+                        deepseek_v4_flash_history_read(history_file, &direct_config.history) : -errno;
+                    if (history_file) fclose(history_file);
+                    if (managed_rc || direct_config.history.first != round_layer_start ||
+                        direct_config.history.end != round_layer_end ||
+                        direct_config.history.token != qwen3_round_input_tokens[0]) {
+                        fprintf(stderr, "[w6_history] fixture envelope rejected node=%u rc=%d\n",
+                            round_dispatch_node + 1U, managed_rc);
+                        goto out;
+                    }
+                    w6_history_past = direct_config.history.past;
+                    direct_config.history_path = w6_history_path;
+                }
+                if ((uint64_t)w6_history_past +
+                    (guest_decode_step ? qwen3_round_decode_position - 1U : 0) >= UINT32_MAX) {
+                    fprintf(stderr, "[w6_history] position overflow\n");
+                    goto out;
+                }
                 managed_rc =
                     deepseek_v4_flash_managed_direct_geometry_init(
                         round_layer_start, round_layer_end,
-                        guest_decode_step ?
-                            qwen3_round_decode_position - 1U : 0,
+                        w6_history_past + (guest_decode_step ?
+                            qwen3_round_decode_position - 1U : 0),
                         guest_decode_step ?
                             1U : (uint32_t)qwen3_round_input_token_count,
                         geometry);
                 if (!managed_rc)
                     managed_rc = deepseek_v4_flash_managed_direct_describe(
                         geometry, &description);
+                if (!managed_rc && direct_config.history_path &&
+                    direct_config.history.bytes != description.tensors[
+                        DEEPSEEK_V4_FLASH_MANAGED_DIRECT_PREVIOUS_KV].byte_length)
+                    managed_rc = -EPROTO;
                 if (managed_rc != 0) {
                     fprintf(stderr,
                             "[w4_guest] fail W6 DeepSeek direct tensor ABI"
@@ -14877,7 +15058,7 @@ decode_round_start:
                w6_model_direct ? w6_model_direct_callable_id() : 4U,
                w6_model_direct ? "direct" : "bulk",
                (round_layer_start > 0U || guest_decode_step > 0U) +
-                   (guest_decode_step > 0U),
+                   (guest_decode_step > 0U || w6_history_past > 0U),
                w6_model_direct ?
                    (is_deepseek_v4_flash_profile() ?
                         w5_managed_round.deepseek_result.reference_count :
@@ -14890,6 +15071,10 @@ decode_round_start:
                round_dispatch_node,
                w5_managed_terminal_ready ? 1U : 0U);
         managed_rc = w5_managed_round_close(&w5_managed_round);
+        if (!managed_rc)
+            managed_rc = w6_managed_retire_history(w5_managed_runtime,
+                &w5_managed_round, w5_managed_run, w5_managed_request,
+                round_dispatch_node, w5_managed_timeout_ms);
         if (managed_rc != 0) {
             fprintf(stderr,
                     "[w4_guest] fail managed model round close"
@@ -16275,6 +16460,7 @@ out:
     }
     if (w5_managed_round.writer || w5_managed_round.token ||
         w5_managed_round.hidden || w5_managed_round.kv ||
+        w5_managed_round.history_writer || w5_managed_round.history_cpu ||
         w5_managed_round.operation || w5_managed_round.direct_operation ||
         w5_managed_round.deepseek_operation ||
         w5_managed_round.metadata) {
@@ -16284,6 +16470,15 @@ out:
             fprintf(stderr,
                     "[w4_guest] managed serving cleanup retained rc=%d\n",
                     cleanup_rc);
+            rc = 1;
+        }
+    }
+    if (w5_managed_runtime && w5_managed_round.history_live) {
+        int cleanup_rc = w6_managed_retire_history(w5_managed_runtime,
+            &w5_managed_round, w5_managed_run, w5_managed_request,
+            round_dispatch_node, w5_managed_timeout_ms);
+        if (cleanup_rc) {
+            fprintf(stderr, "[w6_history] retirement retained rc=%d\n", cleanup_rc);
             rc = 1;
         }
     }

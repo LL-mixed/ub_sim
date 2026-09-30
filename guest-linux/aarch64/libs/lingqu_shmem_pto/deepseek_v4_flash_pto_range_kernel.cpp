@@ -100,6 +100,7 @@ kernel_entry(int64_t *args) {
     try {
         const ds::F32View *trace_output = nullptr;
 #ifdef __CPU_SIM
+        const auto counts_before = ds::operator_counts;
         ds::TerminalLogitsTrace trace(geometry);
         ds::F32View trace_view {};
         if (trace.enabled()) {
@@ -113,6 +114,18 @@ kernel_entry(int64_t *args) {
                           f32_view(logits), trace_output);
 #ifdef __CPU_SIM
         trace.finish();
+        std::fprintf(stderr,
+            "deepseek-pto-history: layers=%u:%u past=%u tokens=%u"
+            " ratio4_rows=%u topk_calls=%llu argmax_calls=%llu"
+            " previous_bytes=%llu next_bytes=%llu status=pass\n",
+            geometry.first, geometry.end, geometry.past, geometry.tokens,
+            (geometry.past + geometry.tokens) / 4,
+            static_cast<unsigned long long>(ds::operator_counts.sparse_indexer_topk -
+                                           counts_before.sparse_indexer_topk),
+            static_cast<unsigned long long>(ds::operator_counts.sparse_indexer_argmax -
+                                           counts_before.sparse_indexer_argmax),
+            static_cast<unsigned long long>(byte_view(previous_state).bytes),
+            static_cast<unsigned long long>(byte_view(next_state).bytes));
 #endif
     } catch (const std::exception &error) {
 #ifdef __CPU_SIM

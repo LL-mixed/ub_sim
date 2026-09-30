@@ -157,6 +157,7 @@ SIM_W5_PTO_UB_GM_PROBE="${SIM_W5_PTO_UB_GM_PROBE:-0}"
 SIM_W5_QWEN3_PTO="${SIM_W5_QWEN3_PTO:-0}"
 SIM_W5_MANAGED_SERVING="${SIM_W5_MANAGED_SERVING:-0}"
 SIM_W5_MODEL_IO="${SIM_W5_MODEL_IO:-bulk}"
+SIM_W6_TEST_DEEPSEEK_HISTORY_DIR="${SIM_W6_TEST_DEEPSEEK_HISTORY_DIR:-}"
 SIM_W5_MANAGED_CONNECT="${SIM_W5_MANAGED_CONNECT:-tcp:10.0.0.1:9700}"
 SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="${SIM_W5_MANAGED_ARTIFACT_FINGERPRINT:-}"
 SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES="${SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES:-33554432}"
@@ -1092,6 +1093,7 @@ export SIM_W5_PTO_UB_GM_PROBE="$SIM_W5_PTO_UB_GM_PROBE"
 export SIM_W5_QWEN3_PTO="$SIM_W5_QWEN3_PTO"
 export SIM_W5_MANAGED_SERVING="$SIM_W5_MANAGED_SERVING"
 export SIM_W5_MODEL_IO="$SIM_W5_MODEL_IO"
+export SIM_W6_TEST_DEEPSEEK_HISTORY_DIR="${SIM_W6_TEST_DEEPSEEK_HISTORY_DIR:+/opt/ub_sim/deepseek_history}"
 export SIM_W5_MANAGED_CONNECT="$SIM_W5_MANAGED_CONNECT"
 export SIM_W5_MANAGED_ARTIFACT_FINGERPRINT="$SIM_W5_MANAGED_ARTIFACT_FINGERPRINT"
 export SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES="$SIM_W5_MANAGED_OUTPUT_CAPACITY_BYTES"
@@ -1628,6 +1630,28 @@ EOF
   chmod +x "$runner"
 }
 
+stage_deepseek_history_checkpoint() {
+  if [[ -z "$SIM_W6_TEST_DEEPSEEK_HISTORY_DIR" ]]; then
+    return 0
+  fi
+  if [[ "$SIM_W5_MODEL_IO" != "direct" || "$SIM_W5_MANAGED_SERVING" != "1" ]] ||
+     ! is_deepseek_v4_flash_profile "$SIM_UAPI_W4_CHIPBACKEND_PROFILE" ||
+     [[ "${SIM_W5_SERVING_QUEUE:-0}" != "0" || -n "${SIM_W5_SERVING_REQUESTS_FILE:-}" ]]; then
+    trace "FAIL: history fixture requires a single DeepSeek managed-direct request"
+    return 1
+  fi
+  python3 "$ROOT_DIR/scripts/prepare_deepseek_history_checkpoint.py" validate \
+    --directory "$SIM_W6_TEST_DEEPSEEK_HISTORY_DIR" \
+    --nodes "$SIM_W5_CLUSTER_NODE_COUNT" || return 1
+  mkdir -p "$RUN_INITRAMFS_DIR/opt/ub_sim/deepseek_history" || return 1
+  for (( node = 0; node < SIM_W5_CLUSTER_NODE_COUNT; node++ )); do
+    cp "$SIM_W6_TEST_DEEPSEEK_HISTORY_DIR/node${node}.bin" \
+      "$RUN_INITRAMFS_DIR/opt/ub_sim/deepseek_history/" || return 1
+  done
+  cp "$SIM_W6_TEST_DEEPSEEK_HISTORY_DIR/receipt.json" \
+    "$RUN_INITRAMFS_DIR/opt/ub_sim/deepseek_history/" || return 1
+}
+
 stage_model_direct_token_table() {
   local cargo_bin repo_dir target_dir token_table_bin
 
@@ -1691,6 +1715,7 @@ build_w4_initramfs() {
   stage_w5_memory_prefix_cache_kv_stream || return 1
   stage_w5_serving_requests_file || return 1
   stage_model_direct_token_table || return 1
+  stage_deepseek_history_checkpoint || return 1
   write_w4_initramfs_runner || return 1
   (
     cd "$RUN_INITRAMFS_DIR"
@@ -1742,6 +1767,7 @@ build_w4_openEuler_initramfs() {
   stage_w5_memory_prefix_cache_kv_stream || return 1
   stage_w5_serving_requests_file || return 1
   stage_model_direct_token_table || return 1
+  stage_deepseek_history_checkpoint || return 1
   write_w4_initramfs_runner || return 1
   # openEuler boot half: /init becomes init_switch_root; add LVM2 userland and
   # the UB modules that ship as =m on top of the unpacked base tree.
@@ -1767,6 +1793,11 @@ build_w4_openEuler_initramfs() {
   done
   cp -a "$RUN_INITRAMFS_DIR/bin/run_app" "$overlay_dir/bin/run_app"
   cp -a "$RUN_INITRAMFS_DIR/tmp/." "$overlay_dir/tmp/" 2>/dev/null || true
+  if [[ -d "$RUN_INITRAMFS_DIR/opt/ub_sim/deepseek_history" ]]; then
+    mkdir -p "$overlay_dir/opt/ub_sim" || return 1
+    cp -a "$RUN_INITRAMFS_DIR/opt/ub_sim/deepseek_history" \
+      "$overlay_dir/opt/ub_sim/" || return 1
+  fi
   for token_table in qwen3_pto_token_table.bin deepseek_v4_flash_pto_token_table.bin; do
     if [[ -f "$RUN_INITRAMFS_DIR/tmp/$token_table" ]]; then
       mkdir -p "$overlay_dir/opt/ub_sim"

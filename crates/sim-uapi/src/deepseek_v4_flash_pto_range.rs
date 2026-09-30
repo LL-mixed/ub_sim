@@ -182,8 +182,7 @@ impl DeepseekV4FlashPtoRangeGeometry {
             if ratio == 0 {
                 continue;
             }
-            let compressed_rows =
-                (u64::from(positions) / u64::from(ratio)).min(u64::from(self.indexer_top_k));
+            let compressed_rows = u64::from(positions) / u64::from(ratio);
             let compressed_elements = compressed_rows
                 .checked_mul(u64::from(self.head_dim))
                 .ok_or("deepseek_v4_flash_pto_state_overflow")?;
@@ -461,5 +460,39 @@ mod tests {
             ratio4.range_state_bytes(128).unwrap(),
             ratio128.range_state_bytes(128).unwrap()
         );
+    }
+
+    #[test]
+    fn retained_history_exceeds_sparse_top_k_without_truncation() {
+        let geometry = DeepseekV4FlashPtoRangeGeometry::profile(0, 15, 2051, 1);
+        assert_eq!(geometry.range_state_bytes(2051).unwrap(), 17_024_048);
+        assert_eq!(geometry.range_state_bytes(2052).unwrap(), 17_041_968);
+        assert_eq!(validate(&request(&geometry)).unwrap(), geometry);
+        for (first, end, ratio, row_bytes) in [(2, 3, 4, 2560), (3, 4, 128, 2048)] {
+            let g = DeepseekV4FlashPtoRangeGeometry::profile(first, end, 0, 1);
+            for rows in [513, 1025] {
+                assert_eq!(
+                    g.range_state_bytes(rows * ratio).unwrap()
+                        - g.range_state_bytes((rows - 1) * ratio).unwrap(),
+                    row_bytes
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_capped_next_state_in_long_history_request() {
+        let g = DeepseekV4FlashPtoRangeGeometry::profile(0, 15, 2051, 1);
+        let mut req = request(&g);
+        if let SimplerRuntimeArg::UbGmMemref { binding, view, .. } = &mut req.args[4] {
+            let capped = g.range_state_bytes(2051).unwrap();
+            view.shape[0] = capped as u32;
+            view.byte_length = capped;
+            binding.aperture_length = capped;
+            binding.mapped_length = capped;
+        } else {
+            panic!("next state must be a managed memref");
+        }
+        assert!(validate(&req).is_err());
     }
 }
