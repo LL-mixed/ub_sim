@@ -291,6 +291,22 @@ bool_enabled() {
 
 export SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR="${SIMPLER_HOST_ARTIFACTS_SCRIPT_DIR:-$SCRIPT_DIR}"
 
+# The common demo CLI selects the OS after the config has been sourced, so
+# an openEuler config can also be explicitly run with initramfs.
+case "${SIM_GUEST_ENGINE:-}" in
+  initramfs|busybox)
+    export SIM_W5_GUEST_ENGINE=busybox
+    unset SIM_W5_OE_DISK_IMAGE
+    ;;
+  openEuler|open_euler|openeuler)
+    export SIM_W5_GUEST_ENGINE=openEuler
+    export SIM_W5_OE_DISK_IMAGE="$SIM_GUEST_DISK_IMAGE"
+    ;;
+  "") ;;
+  *) echo "unknown SIM_GUEST_ENGINE=$SIM_GUEST_ENGINE" >&2; exit 2 ;;
+esac
+unset SIM_GUEST_ENGINE SIM_GUEST_DISK_IMAGE
+
 if [[ -n "$OPEN_EULER_DISK_IMAGE_OVERRIDE" ]]; then
   if [[ "$OPEN_EULER_DISK_IMAGE_OVERRIDE" != /* ]]; then
     OPEN_EULER_DISK_IMAGE_OVERRIDE="$PWD/$OPEN_EULER_DISK_IMAGE_OVERRIDE"

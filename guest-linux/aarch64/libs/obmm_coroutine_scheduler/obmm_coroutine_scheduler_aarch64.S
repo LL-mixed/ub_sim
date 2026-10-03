@@ -84,6 +84,17 @@ obmm_coroutine_scheduler_context_finish:
     .type obmm_coroutine_scheduler_context_resume, %function
 obmm_coroutine_scheduler_context_resume:
     /* x0 = context image, x1 = one-shot replay token or zero. */
+    sub sp, sp, #96
+    stp d8, d9, [sp, #0]
+    stp d10, d11, [sp, #16]
+    stp d12, d13, [sp, #32]
+    stp d14, d15, [sp, #48]
+    mrs x10, fpcr
+    str x10, [sp, #64]
+    mrs x10, fpsr
+    str x10, [sp, #72]
+    mrs x10, tpidr_el0
+    str x10, [sp, #80]
     mov x9, x0
     ldp q0, q1, [x9, #288]
     ldp q2, q3, [x9, #320]
@@ -109,7 +120,19 @@ obmm_coroutine_scheduler_context_resume:
     msr tpidr_el0, x10
     mov x0, x9
     svc #0x5343
-    b .Lfatal
+    /* A rejected resume returns an errno; preserve the scheduler's ABI. */
+    ldr x10, [sp, #64]
+    msr fpcr, x10
+    ldr x10, [sp, #72]
+    msr fpsr, x10
+    ldr x10, [sp, #80]
+    msr tpidr_el0, x10
+    ldp d8, d9, [sp, #0]
+    ldp d10, d11, [sp, #16]
+    ldp d12, d13, [sp, #32]
+    ldp d14, d15, [sp, #48]
+    add sp, sp, #96
+    ret
     .size obmm_coroutine_scheduler_context_resume, .-obmm_coroutine_scheduler_context_resume
 
     .global obmm_coroutine_scheduler_wait_prepare

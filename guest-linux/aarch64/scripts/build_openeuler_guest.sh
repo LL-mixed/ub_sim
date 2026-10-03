@@ -191,12 +191,26 @@ build_openeuler_initramfs() {
     "net/9p/9pnet_virtio.ko"
     "fs/9p/9p.ko"
   )
-  local mod_path mod_name
+  local mod_path mod_name config_key
+  local -A required_9p_configs=(
+    netfs.ko CONFIG_NETFS_SUPPORT
+    fscache.ko CONFIG_FSCACHE
+    9pnet.ko CONFIG_NET_9P
+    9pnet_virtio.ko CONFIG_NET_9P_VIRTIO
+    9p.ko CONFIG_9P_FS
+  )
   for mod_path in "${wanted_modules[@]}"; do
     mod_name="$(basename "$mod_path")"
     if [[ -f "$kernel_build/$mod_path" ]]; then
       cp -a "$kernel_build/$mod_path" "$initramfs_root/lib/modules/$mod_name"
       log "  initramfs: $mod_name"
+    elif [[ -n "${required_9p_configs[$mod_name]:-}" ]]; then
+      config_key="${required_9p_configs[$mod_name]}"
+      if [[ -f "$kernel_build/.config" ]] && grep -q "^${config_key}=y$" "$kernel_build/.config"; then
+        log "  initramfs: $mod_name is built into the kernel"
+      else
+        die "required openEuler 9p module missing: $mod_path (run build_guest_artifacts.sh)"
+      fi
     else
       log "  initramfs: WARNING missing $mod_path"
     fi

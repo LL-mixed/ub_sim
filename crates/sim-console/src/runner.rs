@@ -354,6 +354,7 @@ impl RunManager {
             demo_title: demo.title.clone(),
             target_id: target.id.clone(),
             source_revision: source_revision.clone(),
+            guest_engine: Some(demo.guest_engine),
             status: RunStatus::Starting,
             created_at_ms: now_ms(),
             started_at_ms: None,
@@ -2303,9 +2304,18 @@ fn inject_target_guest_engine(
             target.id
         ))
     })?;
-    resolved
-        .args
-        .extend(["--open-euler-disk-image".to_string(), path.clone()]);
+    if demo.command.program.ends_with("/run_w5_cluster_config.sh") {
+        resolved
+            .args
+            .extend(["--open-euler-disk-image".to_string(), path.clone()]);
+    } else {
+        resolved
+            .environment
+            .insert("SIM_GUEST_ENGINE".to_string(), "openEuler".to_string());
+        resolved
+            .environment
+            .insert("SIM_GUEST_DISK_IMAGE".to_string(), path.clone());
+    }
     Ok(())
 }
 
@@ -3060,6 +3070,7 @@ mod tests {
         }
         let finished = manager.get(&record.id).await.unwrap();
         assert_eq!(finished.status, RunStatus::Passed);
+        assert_eq!(finished.guest_engine, Some(GuestEngine::Initramfs));
         let logs = manager.logs(&record.id, None, 0).await.unwrap();
         assert!(logs.lines.iter().any(|line| line.contains("fixture ready")));
         assert!(logs.lines.iter().any(|line| line.contains("fixture pass")));
@@ -3231,6 +3242,7 @@ mod tests {
                 demo_title: "Fixture".to_string(),
                 target_id: "local".to_string(),
                 source_revision: None,
+                guest_engine: None,
                 status: RunStatus::Passed,
                 created_at_ms: now_ms(),
                 started_at_ms: Some(now_ms()),
@@ -3339,6 +3351,7 @@ mod tests {
             demo_title: "Fixture".to_string(),
             target_id: "local".to_string(),
             source_revision: None,
+            guest_engine: None,
             status: RunStatus::Running,
             created_at_ms: now_ms(),
             started_at_ms: Some(now_ms()),
@@ -3377,6 +3390,7 @@ mod tests {
             demo_title: "Fixture".to_string(),
             target_id: "local".to_string(),
             source_revision: None,
+            guest_engine: None,
             status: RunStatus::Running,
             created_at_ms: now_ms(),
             started_at_ms: Some(now_ms()),
@@ -3757,6 +3771,50 @@ mod tests {
     }
 
     #[test]
+    fn generic_demo_uses_registered_guest_os_without_w5_arguments() {
+        let catalog = DemoCatalog::load_default().unwrap();
+        let targets = TargetRegistry::load_default().unwrap();
+        let target = targets.find("n4-910c").unwrap();
+        for demo in catalog.demos.iter().filter(|demo| demo.model.is_none()) {
+            let mut resolved = demo.resolve_command("os-check", &BTreeMap::new()).unwrap();
+            let original_args = resolved.args.clone();
+            inject_target_guest_engine(demo, target, &mut resolved).unwrap();
+            assert_eq!(resolved.args, original_args);
+            assert_eq!(resolved.environment["SIM_GUEST_ENGINE"], "openEuler");
+            assert_eq!(
+                resolved.environment["SIM_GUEST_DISK_IMAGE"],
+                target.open_euler_disk_image.as_deref().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn all_open_euler_demos_fail_preflight_without_a_registered_image() {
+        let catalog = DemoCatalog::load_default().unwrap();
+        let targets = TargetRegistry::load_default().unwrap();
+        let mut target = targets.find("n4-910c").unwrap().clone();
+        for demo in &catalog.demos {
+            assert_eq!(
+                guest_engine_readiness_issue(demo, &target, true)
+                    .unwrap()
+                    .code,
+                "open_euler_disk_image_missing"
+            );
+        }
+        target.open_euler_disk_image = None;
+        for demo in &catalog.demos {
+            let mut resolved = demo.resolve_command("os-check", &BTreeMap::new()).unwrap();
+            assert!(inject_target_guest_engine(demo, &target, &mut resolved).is_err());
+            assert_eq!(
+                guest_engine_readiness_issue(demo, &target, false)
+                    .unwrap()
+                    .code,
+                "open_euler_disk_image_unconfigured"
+            );
+        }
+    }
+
+    #[test]
     fn source_mirror_repairs_metadata_before_requesting_checkout_pack() {
         let source = TempDir::new().unwrap();
         run_checked(
@@ -4103,6 +4161,7 @@ mod tests {
             demo_title: "Fixture".to_string(),
             target_id: "local".to_string(),
             source_revision: None,
+            guest_engine: None,
             status: RunStatus::Failed,
             created_at_ms: 0,
             started_at_ms: None,
@@ -4203,6 +4262,7 @@ mod tests {
             demo_title: "Fixture".to_string(),
             target_id: "remote-fixture".to_string(),
             source_revision: None,
+            guest_engine: None,
             status: RunStatus::Passed,
             created_at_ms: 0,
             started_at_ms: Some(0),

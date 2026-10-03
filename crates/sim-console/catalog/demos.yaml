@@ -1,6 +1,7 @@
 version: 1
 demos:
   - id: obmm-pool-2
+    guest_engine: open_euler
     title: OBMM Pool / 2 Nodes
     category: OBMM
     summary: Export, import, and exercise a shared OBMM memory pool.
@@ -17,6 +18,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: obmm-pool-4
+    guest_engine: open_euler
     title: OBMM Pool / 4 Nodes
     category: OBMM
     summary: Validate full-mesh OBMM pool publication and remote access.
@@ -33,6 +35,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: obmm-pool-8
+    guest_engine: open_euler
     title: OBMM Pool / 8 Nodes
     category: OBMM
     summary: Exercise the eight-node OBMM pool and peer import matrix.
@@ -49,6 +52,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: urma-rpc-2
+    guest_engine: open_euler
     title: URMA RPC / 2 Nodes
     category: URMA and RPC
     summary: Run the dual-node UB RPC request and response flow.
@@ -70,6 +74,7 @@ demos:
     controls: [stop, node_logs, node_input]
 
   - id: urma-rpc-4
+    guest_engine: open_euler
     title: URMA RPC Matrix / 4 Nodes
     category: URMA and RPC
     summary: Run every directed RPC pair in a four-node full mesh.
@@ -86,6 +91,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: urma-rpc-8
+    guest_engine: open_euler
     title: URMA RPC Matrix / 8 Nodes
     category: URMA and RPC
     summary: Run every directed RPC pair in an eight-node full mesh.
@@ -102,6 +108,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: memory-service-smoke
+    guest_engine: open_euler
     title: Memory Service / Standalone Smoke
     category: Memory Service
     summary: Bootstrap the standalone service and validate its client contract.
@@ -120,6 +127,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: gsva-identity-2
+    guest_engine: open_euler
     title: GSVA Identity / 2 Nodes
     category: GVA and GSVA
     summary: Validate two-node GVA to GSVA identity and peer access.
@@ -136,6 +144,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: gsva-identity-4
+    guest_engine: open_euler
     title: GSVA Identity / 4 Nodes
     category: GVA and GSVA
     summary: Validate GSVA identity across four simulated nodes.
@@ -152,6 +161,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: gsva-identity-8
+    guest_engine: open_euler
     title: GSVA Identity / 8 Nodes
     category: GVA and GSVA
     summary: Validate GSVA identity across the eight-node topology.
@@ -168,6 +178,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: direct-el0-upcall-2
+    guest_engine: open_euler
     title: Direct EL0 Upcall / 2 Nodes
     category: Upcall
     summary: Run the OBMM async-load coroutine and direct EL0 upcall flow.
@@ -178,12 +189,21 @@ demos:
     estimated_duration_secs: 240
     command:
       program: guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh
-      args: [--app, obmm_async_coroutine, --run-id, "{run_id}"]
+      args:
+        - --app
+        - obmm_async_coroutine
+        - --run-id
+        - "{run_id}"
+        - --async-load-model
+        - "v3|enabled=1|contexts=64|pending=64|events=128|clock_mhz=2000"
+        - --obmm-async-args
+        - "--mode async-load --coroutines 8 --inflight 1 --lookahead 0 --access-bytes 8 --pattern sequential --compute-us 0 --iterations 128 --warmup 0 --deadline-us 1000000 --seed 1 --verify"
     requirements: [QEMU with async-load extension, guest kernel, initramfs]
     required_paths: [guest-linux/aarch64/scripts/run_ub_dual_node_apps.sh]
     controls: [stop, node_logs]
 
   - id: w5-qwen-2
+    guest_engine: open_euler
     title: W5 Qwen PP / 2 Nodes
     category: W5 Inference
     summary: Run Qwen streaming decode through a two-stage W5 pipeline.
@@ -213,6 +233,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: w5-qwen-3
+    guest_engine: open_euler
     title: W5 Qwen PP / 3 Nodes
     category: W5 Inference
     summary: Run Qwen streaming decode through a three-stage W5 pipeline.
@@ -236,6 +257,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: w5-qwen-4
+    guest_engine: open_euler
     title: W5 Qwen PP / 4 Nodes
     category: W5 Inference
     summary: Run Qwen streaming decode through a four-stage W5 pipeline.
@@ -259,6 +281,7 @@ demos:
     controls: [stop, node_logs]
 
   - id: w5-qwen-8
+    guest_engine: open_euler
     title: W5 Qwen PP / 8 Nodes
     category: W5 Inference
     summary: Run Qwen streaming decode through the eight-stage W5 pipeline.

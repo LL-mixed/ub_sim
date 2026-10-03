@@ -34,6 +34,11 @@ Simulator and guest logs remain under their existing `logs/` directories.
   stop escalation. A browser cannot address an arbitrary host PID.
 - Existing launcher scripts are adapters. New lifecycle behavior belongs in the
   control plane or a shared launcher library, not in another per-demo wrapper.
+- Every shipped demo declares `guest_engine: open_euler`. Resolve its image
+  from the registered target and inject the shared guest OS environment for
+  generic adapters, or W5's reviewed disk-image CLI option for model adapters.
+  Readiness must block a missing image before starting a run. Show the guest
+  OS separately from the execution target; selecting a host is not OS selection.
 - Node input must use a catalog-declared adapter and a run-owned endpoint. A
   request may select a known node and provide payload bytes, but it must never
   provide a socket path or remote command. Do not interpolate or log the input

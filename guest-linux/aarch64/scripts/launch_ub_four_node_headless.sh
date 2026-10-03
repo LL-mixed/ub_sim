@@ -114,6 +114,7 @@ start_node() {
     )
   fi
 
+  ub_guest_boot_args "$node_id" "console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}"
   (
     env \
       UB_FM_NODE_ID="$node_id" \
@@ -143,8 +144,7 @@ start_node() {
         -chardev socket,id=ser0,host=127.0.0.1,port="$serial_port",server=on,wait=off,telnet=off,logfile="$guest_log",logappend=off \
         -serial chardev:ser0 \
         -kernel "$KERNEL_IMAGE" \
-        -initrd "$INITRAMFS_IMAGE" \
-        -append "console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}" \
+        "${UB_GUEST_BOOT_ARGS[@]}" \
         >"$qemu_log" 2>&1 &
     qemu_pid=$!
     echo "$qemu_pid" > "$pid_file"
@@ -163,6 +163,13 @@ need_cmd python3
 
 QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+trap 'rc=$?; if (( rc != 0 )); then if [[ -x "$CLEANUP_SCRIPT" ]]; then "$CLEANUP_SCRIPT" >/dev/null 2>&1 || true; fi; ub_guest_boot_cleanup; fi' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+ub_guest_boot_prepare "$ROOT_DIR" "$INITRAMFS_IMAGE" "$RUN_ID" || {
+  ub_guest_boot_cleanup
+  exit 1
+}
 
 mkdir -p "$OUT_DIR" "$LOG_DIR/${RUN_ID}_headless4" "$QMP_DIR"
 
@@ -193,6 +200,7 @@ echo "cleaned run_id=__RUN_ID__"
 EOC
 perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
+ub_guest_boot_append_cleanup "$CLEANUP_SCRIPT"
 
 cat > "$ENV_FILE" <<EOF
 export RUN_ID='$RUN_ID'

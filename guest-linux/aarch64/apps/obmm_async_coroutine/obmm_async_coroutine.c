@@ -3918,6 +3918,7 @@ cleanup:
            " async_load_completion=%s replay_consumed=%" PRIu64
            " replay_mismatch=%" PRIu64
            " replay_ready_high_water=%" PRIu64
+           " el0_resume_retries=%" PRIu64
            "\n",
            OBMM_ASYNC_ABI_VERSION, async_mode_name(app.config.mode), status,
            app.config.coroutines,
@@ -3998,7 +3999,8 @@ cleanup:
            async_load_completion_name(app.config.async_load_completion),
            (uint64_t)app.async_load_metrics.replay.replay_consumed,
            (uint64_t)app.async_load_metrics.replay.replay_mismatch,
-           (uint64_t)app.async_load_metrics.replay.replay_ready_high_water);
+           (uint64_t)app.async_load_metrics.replay.replay_ready_high_water,
+           (uint64_t)app.async_load_metrics.el0_resume_retries);
     async_print_eval_summary(
         &app, &metrics, status,
         async_elapsed_ns(workload_start_ns, workload_end_ns),

@@ -56,8 +56,10 @@ cleanup() {
       rm -f "$pid_file"
     fi
   done
+  ub_guest_boot_cleanup
 }
 trap 'cleanup' EXIT INT TERM
+ub_guest_boot_prepare "$ROOT_DIR" "$INITRAMFS_IMAGE" "$RUN_ID"
 
 node_ip() {
   case "$1" in
@@ -82,6 +84,7 @@ start_node() {
   fi
 
   local_ip="$(node_ip "$node_name")"
+  ub_guest_boot_args "$node_name" "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_pool=1 obmm_pool_local_ip=${local_ip} obmm_pool_all_ips=${OBMM_POOL_ALL_IPS} obmm_pool_node_count=2 obmm_pool_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_pool_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} obmm_pool_stress_iters=${OBMM_POOL_STRESS_ITERS} linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} ${APPEND_EXTRA}"
 
   env \
     UB_FM_NODE_ID="$node_name" \
@@ -98,8 +101,7 @@ start_node() {
       -serial file:"$guest_log" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
-      -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_pool=1 obmm_pool_local_ip=${local_ip} obmm_pool_all_ips=${OBMM_POOL_ALL_IPS} obmm_pool_node_count=2 obmm_pool_export_size_mb=${OBMM_POOL_EXPORT_SIZE_MB} obmm_pool_import_cache_mode=${OBMM_IMPORT_CACHE_MODE} obmm_pool_stress_iters=${OBMM_POOL_STRESS_ITERS} linqu_urma_dp_role=${role} linqu_node_idx=${node_idx} ${APPEND_EXTRA}" \
+      "${UB_GUEST_BOOT_ARGS[@]}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }

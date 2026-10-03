@@ -12,6 +12,37 @@ This repository is a UB data system simulator meta repo. Rust simulator code liv
 
 ## Build, Test, and Development Commands
 
+### Guest OS Selection
+
+All Console demos use openEuler on the registered target's disk image. Generic
+demo launchers share the boot preparation and QEMU argument helpers in
+`guest-linux/aarch64/scripts/qemu_ub_common.sh`; do not add per-demo rootfs
+builders or bake the current demo into the base disk. Each run deploys its
+current initramfs applications and modules through `init_switch_root`, starts
+the existing `run_app` under systemd, and owns fresh per-node qcow2 overlays.
+Cleanup must remove those overlays and the generated boot image after stopping
+the run's guests. Legacy initramfs entrypoints remain supported.
+
+The Direct EL0 demo must execute ordinary async loads and report nonzero
+direct upcalls with zero hot-path ioctls. Its EL0 scheduler must consume queued
+completion events before selecting and resuming another context. If a
+completion races with SVC resume, QEMU must return retryable busy without
+fail-stop; the driver returns EAGAIN and EL0 drains the ring before retrying.
+Upcall dispatch must consume preceding completion events before the descriptor
+that identifies the interrupted instruction.
+
+Use `guest-linux/aarch64/scripts/run_ub_demo.sh --guest-engine openEuler
+--open-euler-disk-image <qcow2> -- <entrypoint> [args...]` to select openEuler
+from the CLI, or `--guest-engine initramfs` for the legacy userspace. Reviewed
+launchers consume `SIM_GUEST_ENGINE` and `SIM_GUEST_DISK_IMAGE`; W5 retains its
+existing engine variables and CLI. Standard native guest artifact builds must
+include all configured modular dependencies for virtio block, ext4 and 9p;
+an enabled but missing module is a build error, not a boot-time warning.
+The legacy interactive shell launcher must forward `QEMU_MEM`, `QEMU_SMP`
+and `APPEND_EXTRA` into its container as arguments, with the same 8 GiB and
+OBMM memory defaults as the formal demo harnesses. Host configuration must
+not be silently replaced by container defaults.
+
 - `cargo build --workspace`: build all Rust crates.
 - `cargo test --workspace`: run Rust unit tests across the workspace.
 - `cargo fmt --all`: format Rust code; run before submitting changes.
@@ -58,18 +89,8 @@ Git history uses short imperative subjects such as `Add TCP transport benchmark 
 
 ### Task Network Audit
 
-For this task, record every agent-initiated network operation before execution
-and append its outcome afterwards. Follow
-`docs/2026-09-13-codex-network-audit-policy.md`. Use
-`guest-linux/aarch64/scripts/codex_network_audit.py run` for network commands
-and `begin`/`finish`
-for browser, web, and connector calls. Include SSH/SCP, remote Git operations,
-downloads, dependency resolution, remote job networking, and retries. Never
-record credentials or payload contents. Logs belong in `out/` and must not be
-committed or uploaded wholesale. Review any recurring restriction against the
-recorded operations and report unsupported restrictions through the existing
-official issue with a redacted evidence summary. Unobservable client/backend
-traffic and incomplete historical coverage must remain explicitly unknown.
+Do not record network operations or enable the network audit wrapper unless
+the user explicitly requests auditing. The current task prohibits auditing.
 
 Do not commit model weights, kernel artifacts, SSH targets, secrets, or local absolute paths except documented examples. Use environment variables such as `AARCH64_LINUX_CC`, `BUSYBOX`, and `SIM_QWEN3_0_6B_WEIGHTS_PATH` for machine-specific configuration. Compiled guest apps and submodules are gitignored (e.g. `guest-linux/aarch64/apps/obmm_*/obmm_*`, `apps/llm_infer/linqu_llm_infer`); build them rather than expecting them in-tree. `vendor/qemu_8.2.0_ub`, `guest-linux/kernel_ub`, and the nested `mem_service/vendor/obmm` are git submodules — initialize with `git submodule update --init --recursive` on a fresh clone.
 

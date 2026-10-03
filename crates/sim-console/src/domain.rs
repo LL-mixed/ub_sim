@@ -186,6 +186,8 @@ pub struct RunRecord {
     pub target_id: String,
     #[serde(default)]
     pub source_revision: Option<String>,
+    #[serde(default)]
+    pub guest_engine: Option<GuestEngine>,
     pub status: RunStatus,
     pub created_at_ms: u64,
     #[serde(default)]
@@ -461,5 +463,21 @@ mod tests {
         let nodes = topology_nodes(4);
         assert_eq!(nodes[0].id, "nodeA");
         assert_eq!(nodes[3].id, "nodeD");
+    }
+
+    #[test]
+    fn old_run_metadata_keeps_guest_os_unknown() {
+        let record: RunRecord = serde_json::from_value(serde_json::json!({
+            "id": "old-run", "demo_id": "fixture", "demo_title": "Fixture",
+            "status": "passed", "created_at_ms": 1,
+            "parameters": {}, "nodes": [], "process_log_path": "process.log"
+        }))
+        .unwrap();
+        assert_eq!(record.guest_engine, None);
+        let mut current = record;
+        current.guest_engine = Some(GuestEngine::OpenEuler);
+        let decoded: RunRecord =
+            serde_json::from_str(&serde_json::to_string(&current).unwrap()).unwrap();
+        assert_eq!(decoded.guest_engine, Some(GuestEngine::OpenEuler));
     }
 }

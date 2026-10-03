@@ -461,7 +461,112 @@ ensure_qemu_ub_binary() {
 }
 
 # ---------------------------------------------------------------------------
-# openEuler guest helpers (shared by W5 openEuler engine)
+# Shared demo guest boot. W5 stages its own runner with the same openEuler
+# helpers below; generic demos deploy the current base initramfs unchanged.
+_ub_guest_boot_prepare() {
+  local root_dir="$1" base_initramfs="$2" run_id="$3"
+  local engine="${SIM_GUEST_ENGINE:-initramfs}" overlay_dir entry
+  UB_GUEST_BOOT_DIR=""
+  UB_GUEST_BOOT_IMAGE="$base_initramfs"
+  case "$engine" in
+    initramfs|busybox) UB_GUEST_ENGINE=initramfs; return 0 ;;
+    openEuler|open_euler|openeuler) UB_GUEST_ENGINE=openEuler ;;
+    *) echo "unknown SIM_GUEST_ENGINE=$engine (use initramfs|openEuler)" >&2; return 2 ;;
+  esac
+  UB_GUEST_DISK_IMAGE="${SIM_GUEST_DISK_IMAGE:-${SIM_W5_OE_DISK_IMAGE:-}}"
+  [[ -f "$UB_GUEST_DISK_IMAGE" ]] || {
+    echo "openEuler requires an existing SIM_GUEST_DISK_IMAGE" >&2; return 2;
+  }
+  [[ -n "$run_id" && "$run_id" != *[^a-zA-Z0-9._-]* ]] || {
+    echo "invalid guest boot run ID: $run_id" >&2; return 2;
+  }
+  UB_GUEST_DISK_IMAGE="$(cd "$(dirname "$UB_GUEST_DISK_IMAGE")" && pwd)/$(basename "$UB_GUEST_DISK_IMAGE")"
+  UB_GUEST_QEMU_IMG="${QEMU_IMG_BIN:-$(command -v qemu-img || true)}"
+  [[ -x "$UB_GUEST_QEMU_IMG" ]] || { echo "openEuler requires qemu-img" >&2; return 2; }
+  oe_ensure_lvm2_staging "$UB_GUEST_DISK_IMAGE" || return 1
+  UB_GUEST_BOOT_DIR="$(mktemp -d "$root_dir/out/guest_boot.${run_id}.XXXXXX")" || return 1
+  UB_GUEST_BOOT_IMAGE="$UB_GUEST_BOOT_DIR/boot.cpio.gz"
+  local tree="$UB_GUEST_BOOT_DIR/tree"
+  mkdir -p "$tree" "$UB_GUEST_BOOT_DIR/disks" || return 1
+  (cd "$tree" && gzip -dc "$base_initramfs" | cpio -id --quiet) || return 1
+  [[ -x "$tree/bin/run_app" && -x "$tree/bin/linqu_init" ]] || {
+    echo "openEuler demo boot requires current run_app and linqu_init" >&2; return 1;
+  }
+  overlay_dir="$tree/ub_root_overlay"
+  mkdir -p "$overlay_dir/etc/systemd/system/multi-user.target.wants" || return 1
+  for entry in bin sbin lib etc opt; do
+    [[ ! -d "$tree/$entry" ]] || cp -a "$tree/$entry" "$overlay_dir/" || return 1
+  done
+  # Base images may contain the legacy 9p W5 unit. Replace it so a stale
+  # runner/env in the image cannot override this run's deployed applications.
+  cat > "$overlay_dir/etc/systemd/system/linqu-w5-guest.service" <<'UNIT' || return 1
+[Unit]
+Description=UB simulator demo on openEuler
+After=local-fs.target
+
+[Service]
+Type=simple
+TimeoutStartSec=0
+ExecStartPre=-/usr/bin/systemctl stop firewalld
+ExecStart=/bin/busybox sh /bin/run_app
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyAMA0
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  ln -sf ../linqu-w5-guest.service \
+    "$overlay_dir/etc/systemd/system/multi-user.target.wants/linqu-w5-guest.service" || return 1
+  for entry in serial-getty@ttyAMA0.service console-getty.service getty@tty1.service; do
+    ln -sf /dev/null "$overlay_dir/etc/systemd/system/$entry" || return 1
+  done
+  oe_build_boot_skeleton "$root_dir" "$tree/bin/busybox" "$tree" || return 1
+  (cd "$tree" && find . -print | cpio -o -H newc --quiet | gzip -9 > "$UB_GUEST_BOOT_IMAGE") || return 1
+  rm -rf "$tree" || return 1
+  echo "[ub_common] guest_engine=openEuler boot_image=$UB_GUEST_BOOT_IMAGE disk=$UB_GUEST_DISK_IMAGE" >&2
+}
+
+ub_guest_boot_prepare() {
+  _ub_guest_boot_prepare "$@" || {
+    local preparation_rc=$?
+    ub_guest_boot_cleanup
+    return "$preparation_rc"
+  }
+}
+
+ub_guest_boot_args() {
+  local node_id="$1" append="$2" overlay
+  UB_GUEST_BOOT_ARGS=(-initrd "$UB_GUEST_BOOT_IMAGE" -append "$append")
+  [[ "$UB_GUEST_ENGINE" == "openEuler" ]] || return 0
+  [[ -n "$node_id" && "$node_id" != *[^a-zA-Z0-9._-]* ]] || return 2
+  overlay="$UB_GUEST_BOOT_DIR/disks/${node_id}.${RANDOM}.qcow2"
+  "$UB_GUEST_QEMU_IMG" create -f qcow2 -F qcow2 -b "$UB_GUEST_DISK_IMAGE" "$overlay" >/dev/null || return 1
+  # rdinit belongs to the initramfs path. /init must switch to the disk and
+  # systemd before running the demo; preserve all workload cmdline options.
+  local -a tokens=(${=append}) filtered=()
+  local token
+  for token in "${tokens[@]}"; do
+    case "$token" in rdinit=*|init=*|root=*|enforcing=*) ;; *) filtered+=("$token") ;; esac
+  done
+  UB_GUEST_BOOT_ARGS=(
+    -initrd "$UB_GUEST_BOOT_IMAGE"
+    -drive "file=$overlay,format=qcow2,if=virtio"
+    -append "${(j: :)filtered} root=/dev/vda rw init=/init enforcing=0"
+  )
+}
+
+ub_guest_boot_cleanup() {
+  [[ -z "${UB_GUEST_BOOT_DIR:-}" ]] || rm -rf -- "$UB_GUEST_BOOT_DIR"
+}
+
+ub_guest_boot_append_cleanup() {
+  [[ -z "${UB_GUEST_BOOT_DIR:-}" ]] || \
+    printf '\nrm -rf -- %q\n' "$UB_GUEST_BOOT_DIR" >> "$1"
+}
+
+# openEuler guest helpers (shared by all guest engines)
 # ---------------------------------------------------------------------------
 
 oe_privileged() {
@@ -594,7 +699,9 @@ oe_build_boot_skeleton() {
   local mod_src ko cmd
 
   mkdir -p "$tree/bin" "$tree/sbin" "$tree/lib" "$tree/lib/modules" "$tree/etc"
-  cp -L "$busybox" "$tree/bin/busybox"
+  if [[ ! "$busybox" -ef "$tree/bin/busybox" ]]; then
+    cp -L "$busybox" "$tree/bin/busybox"
+  fi
   chmod +x "$tree/bin/busybox"
   for cmd in sh echo cat mount umount mkdir sleep ls cp mv rm basename readlink insmod modprobe switch_root; do
     ln -sf busybox "$tree/bin/$cmd" 2>/dev/null || true
@@ -609,7 +716,7 @@ oe_build_boot_skeleton() {
         cp -L "$staging_dir/$cmd" "$tree/sbin/"
       fi
     done
-    for cmd in "$staging_dir"/*.so* "$staging_dir"/ld-linux*; do
+    for cmd in "$staging_dir"/*.so*(N) "$staging_dir"/ld-linux*(N); do
       [[ -f "$cmd" ]] || continue
       cp -L "$cmd" "$tree/lib/"
     done

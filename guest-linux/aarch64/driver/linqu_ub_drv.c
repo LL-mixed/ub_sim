@@ -73,6 +73,7 @@
 #define OBMM_ASYNC_LOAD_REG_VERSION_CAPS 0x000
 #define OBMM_ASYNC_LOAD_REG_STATUS 0x008
 #define OBMM_ASYNC_LOAD_REG_LAST_ERROR 0x010
+#define OBMM_ASYNC_LOAD_DEVICE_ERROR_BUSY 2
 #define OBMM_ASYNC_LOAD_REG_OWNER_GENERATION 0x018
 #define OBMM_ASYNC_LOAD_REG_MAP_GSVA_BASE 0x020
 #define OBMM_ASYNC_LOAD_REG_MAP_LOCAL_PA 0x028
@@ -1129,6 +1130,7 @@ static int linqu_async_load_resume_command(
 	u64 replay_token, u64 replay_pc)
 {
 	struct linqu_ub_drv *drv = ctx->drv;
+	u64 error;
 
 	dma_wmb();
 	writeq(context_id, drv->obmm_async_load_mmio +
@@ -1139,20 +1141,25 @@ static int linqu_async_load_resume_command(
 	       OBMM_ASYNC_LOAD_REG_REPLAY_PC);
 	writeq(1, drv->obmm_async_load_mmio +
 	       OBMM_ASYNC_LOAD_REG_REPLAY_COMMAND);
-	return readq(drv->obmm_async_load_mmio +
-		     OBMM_ASYNC_LOAD_REG_LAST_ERROR) ? -EPROTO : 0;
+	error = readq(drv->obmm_async_load_mmio +
+		      OBMM_ASYNC_LOAD_REG_LAST_ERROR);
+	return error == OBMM_ASYNC_LOAD_DEVICE_ERROR_BUSY ? -EAGAIN :
+		(error ? -EPROTO : 0);
 }
 
 static int linqu_async_load_scheduler_enter_command(
 	struct linqu_async_load_file *ctx)
 {
 	struct linqu_ub_drv *drv = ctx->drv;
+	u64 error;
 
 	dma_wmb();
 	writeq(2, drv->obmm_async_load_mmio +
 	       OBMM_ASYNC_LOAD_REG_REPLAY_COMMAND);
-	return readq(drv->obmm_async_load_mmio +
-		     OBMM_ASYNC_LOAD_REG_LAST_ERROR) ? -EPROTO : 0;
+	error = readq(drv->obmm_async_load_mmio +
+		      OBMM_ASYNC_LOAD_REG_LAST_ERROR);
+	return error == OBMM_ASYNC_LOAD_DEVICE_ERROR_BUSY ? -EAGAIN :
+		(error ? -EPROTO : 0);
 }
 
 static int linqu_remote_load_svc(unsigned int imm, struct pt_regs *regs)
@@ -1182,6 +1189,7 @@ static int linqu_remote_load_svc(unsigned int imm, struct pt_regs *regs)
 	mutex_lock(&ctx->lock);
 	if (imm == OBMM_ASYNC_LOAD_SCHEDULER_ENTER_SVC_IMM) {
 		ret = linqu_async_load_scheduler_enter_command(ctx);
+		regs->regs[0] = ret;
 		goto out_unlock;
 	}
 	if (!IS_ALIGNED(regs->regs[0], 16) ||

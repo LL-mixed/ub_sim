@@ -15,6 +15,14 @@ direct-upcall experiment.
   page read-write. From `START` through scheduler completion, event delivery,
   acknowledgement, all-blocked wait/wakeup, and context selection execute
   without an ioctl, poll, futex, or signal hot path.
+- Before selecting a ready context, the scheduler drains completion events
+  that arrived while the current upcall was being handled. A context must not
+  resume with an unacknowledged completion in the shared event ring.
+  If a completion arrives between that check and SVC resume, the device
+  returns Busy, the driver returns EAGAIN, and EL0 retries after draining.
+  Rejected resumes preserve the scheduler's SIMD, FP and TLS state.
+  Upcall dispatch also consumes any earlier completion descriptors before
+  interpreting the descriptor that carries the interrupted instruction PC.
 - QEMU provides direct EL0 PC redirection, descriptor-first event publication,
   vCPU wait/wakeup, and atomic installation of the context selected by this
   library. The coroutine context store and scheduling policy remain in EL0.

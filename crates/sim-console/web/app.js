@@ -46,6 +46,7 @@ const elements = {
   stopButton: document.querySelector("#stop-button"),
   factTopology: document.querySelector("#fact-topology"),
   factNodes: document.querySelector("#fact-nodes"),
+  factGuestOs: document.querySelector("#fact-guest-os"),
   factModel: document.querySelector("#fact-model"),
   factDuration: document.querySelector("#fact-duration"),
   executionTarget: document.querySelector("#execution-target"),
@@ -533,6 +534,7 @@ function renderSelection() {
   }
   elements.factTopology.textContent = titleCase(demo.topology);
   elements.factNodes.textContent = String(demo.node_count);
+  elements.factGuestOs.textContent = demo.guest_engine === "open_euler" ? "openEuler" : "initramfs";
   elements.factModel.textContent = demo.model || "Not model-specific";
   elements.factDuration.textContent = formatDuration(demo.estimated_duration_secs * 1000);
 
@@ -792,6 +794,8 @@ function renderRunFacts(run, demo) {
     facts.push(["Parameters", parameters.map(([key, value]) => `${key}=${value}`).join(" ")]);
   }
   if (demo?.model) facts.push(["Model", demo.model]);
+  facts.push(["Guest OS", run.guest_engine === "open_euler" ? "openEuler" :
+    run.guest_engine === "initramfs" ? "initramfs" : "unknown"]);
 
   elements.runFacts.replaceChildren();
   for (const [label, value] of facts) {

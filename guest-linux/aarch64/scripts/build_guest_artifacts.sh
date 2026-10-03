@@ -7,7 +7,7 @@ OUT_DIR="$ROOT_DIR/out"
 MODULES_DIR="${MODULES_DIR:-$OUT_DIR/modules}"
 KERNEL_STAMP_FILE="$OUT_DIR/.kernel_image.kernel_ub_head"
 KERNEL_UAPI_STAMP_FILE="$OUT_DIR/.kernel_uapi.kernel_ub_head"
-KERNEL_BUILD_POLICY_REV="4"
+KERNEL_BUILD_POLICY_REV="5"
 KERNEL_SRC_DIR="$(cd "$ROOT_DIR/../kernel_ub" && pwd)"
 KERNEL_BUILD_DIR="${KERNEL_BUILD_DIR:-$OUT_DIR/kernel_build}"
 KERNEL_UAPI_INSTALL_DIR="${KERNEL_UAPI_INSTALL_DIR:-$OUT_DIR/kernel_uapi}"
@@ -184,6 +184,10 @@ copy_kernel_module_if_enabled() {
   local dst_name="$3"
 
   if grep -q "^${config_key}=m$" "$KERNEL_BUILD_DIR/.config"; then
+    [[ -f "$src" ]] || {
+      echo "[build_guest_artifacts] error: enabled module missing: $src" >&2
+      return 1
+    }
     copy_module_if_present "$src" "$dst_name"
   else
     rm -f "$MODULES_DIR/$dst_name"
@@ -202,6 +206,11 @@ copy_native_modules() {
   copy_kernel_module_if_enabled "CONFIG_UB_URMA" "$KERNEL_BUILD_DIR/drivers/ub/urma/uburma/uburma.ko" "uburma.ko"
   copy_kernel_module_if_enabled "CONFIG_UB_UMMU_CORE_DRIVER" "$KERNEL_BUILD_DIR/drivers/iommu/hisilicon/ummu-core/ummu-core.ko" "ummu-core.ko"
   copy_kernel_module_if_enabled "CONFIG_UB_UMMU" "$KERNEL_BUILD_DIR/drivers/iommu/hisilicon/ummu.ko" "ummu.ko"
+  copy_kernel_module_if_enabled "CONFIG_NETFS_SUPPORT" "$KERNEL_BUILD_DIR/fs/netfs/netfs.ko" "netfs.ko"
+  copy_kernel_module_if_enabled "CONFIG_FSCACHE" "$KERNEL_BUILD_DIR/fs/fscache/fscache.ko" "fscache.ko"
+  copy_kernel_module_if_enabled "CONFIG_NET_9P" "$KERNEL_BUILD_DIR/net/9p/9pnet.ko" "9pnet.ko"
+  copy_kernel_module_if_enabled "CONFIG_NET_9P_VIRTIO" "$KERNEL_BUILD_DIR/net/9p/9pnet_virtio.ko" "9pnet_virtio.ko"
+  copy_kernel_module_if_enabled "CONFIG_9P_FS" "$KERNEL_BUILD_DIR/fs/9p/9p.ko" "9p.ko"
   copy_module_if_present "$ROOT_DIR/driver/linqu_ub_drv.ko" "linqu_ub_drv.ko"
 }
 
@@ -242,6 +251,27 @@ build_native_required_modules() {
     "drivers/iommu/hisilicon/ummu-core/ummu-core.ko" "$cross_prefix"
   build_native_module_if_enabled "CONFIG_UB_UMMU" \
     "drivers/iommu/hisilicon/ummu.ko" "$cross_prefix"
+  # A single modpost must see the complete dependency graph. Building these
+  # separately loses netfs/9pnet exports from Module.symvers.
+  local spec config_key module_target
+  local -a rootfs_modules=()
+  for spec in \
+    CONFIG_NETFS_SUPPORT:fs/netfs/netfs.ko \
+    CONFIG_FSCACHE:fs/fscache/fscache.ko \
+    CONFIG_NET_9P:net/9p/9pnet.ko \
+    CONFIG_NET_9P_VIRTIO:net/9p/9pnet_virtio.ko \
+    CONFIG_9P_FS:fs/9p/9p.ko; do
+    config_key="${spec%%:*}"
+    module_target="${spec#*:}"
+    if grep -q "^${config_key}=m$" "$KERNEL_BUILD_DIR/.config"; then
+      rootfs_modules+=("$module_target")
+    fi
+  done
+  if (( ${#rootfs_modules[@]} )); then
+    run_gnu_make -C "$KERNEL_SRC_DIR" O="$KERNEL_BUILD_DIR" \
+      ARCH="$KERNEL_ARCH" CROSS_COMPILE="$cross_prefix" \
+      -j"$KERNEL_JOBS" "${rootfs_modules[@]}"
+  fi
 }
 
 install_kernel_uapi_headers() {

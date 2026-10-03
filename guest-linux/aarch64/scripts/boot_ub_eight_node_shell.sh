@@ -41,6 +41,9 @@ CONSOLE_PY="$ROOT_DIR/out/ub_serial_console.py"
 IMAGE="${SIM_W5_SHELL_IMAGE:-openeuler-2403:v0.0.4}"
 CONTAINER="${SIM_W5_SHELL_CONTAINER:-ub-shell-8node}"
 SHARED_DIR="${UB_FM_SHARED_DIR:-/tmp/ub-qemu-links-eight}"
+QEMU_MEM="${QEMU_MEM:-8G}"
+QEMU_SMP="${QEMU_SMP:-4}"
+APPEND_EXTRA="${APPEND_EXTRA:-linqu_probe_skip=1 linqu_probe_load_helper=1 pmd_mapping=100% obmm.mempool_size=0}"
 
 SCRIPT_NAME="${${(%):-%x}:t}"
 NODE_IDS=(nodeA nodeB nodeC nodeD nodeE nodeF nodeG nodeH)
@@ -143,11 +146,19 @@ cmd_up() {
   write_console_helper
   write_guest_env
   mkdir -p "$SHARED_DIR"
+  local guest_dir_container="$OPENEULER_GUEST_DIR"
+  local -a guest_dir_mount=()
+  if [[ "$OPENEULER_GUEST_DIR" == "$REPO_ROOT/"* ]]; then
+    guest_dir_container="/work/${OPENEULER_GUEST_DIR#"$REPO_ROOT/"}"
+  else
+    guest_dir_mount=(-v "$OPENEULER_GUEST_DIR:$OPENEULER_GUEST_DIR")
+  fi
 
   echo "[shell-mode] starting container $CONTAINER ($IMAGE)..."
   docker run -d --name "$CONTAINER" --privileged --network host \
     -v "$REPO_ROOT:/work" -w /work \
     -v "$SHARED_DIR:$SHARED_DIR" \
+    "${guest_dir_mount[@]}" \
     "$IMAGE" tail -f /dev/null >/dev/null
   # Runtime libs the prebuilt QEMU links against (liburing/pixman, plus the
   # GTK stack because the current n4 build was configured with GTK enabled)
@@ -175,8 +186,13 @@ cmd_up() {
   # defaults to a per-launch unique dir that only exists inside the container,
   # leaving the host-side serial sockets (status/attach) dead.
   local env_file_container env_file
-  env_file_container=$(docker exec "$CONTAINER" zsh -c \
-    "cd /work && UB_USE_PREBUILT_QEMU=1 UB_SYNC_ARTIFACTS=0 UB_FM_SHARED_DIR='$SHARED_DIR' SIM_W5_GUEST_BACKEND=openeuler zsh $LAUNCHER" 2>&1 | tee /dev/stderr | tail -1)
+  env_file_container=$(docker exec \
+    -e UB_USE_PREBUILT_QEMU=1 -e UB_SYNC_ARTIFACTS=0 \
+    -e "UB_FM_SHARED_DIR=$SHARED_DIR" -e SIM_W5_GUEST_BACKEND=openeuler \
+    -e "SIM_W5_OPENEULER_GUEST_DIR=$guest_dir_container" \
+    -e "QEMU_MEM=$QEMU_MEM" -e "QEMU_SMP=$QEMU_SMP" \
+    -e "APPEND_EXTRA=$APPEND_EXTRA" \
+    -w /work "$CONTAINER" zsh "$LAUNCHER" 2>&1 | tee /dev/stderr | tail -1)
   env_file="${env_file_container/#\/work/$REPO_ROOT}"
   [[ -f "$env_file" ]] || die "launcher did not produce an env file (got: $env_file_container)"
   cp "$env_file" "$STATE_FILE"

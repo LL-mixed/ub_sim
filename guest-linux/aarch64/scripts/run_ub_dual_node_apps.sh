@@ -1378,7 +1378,7 @@ cleanup_serial_runtime() {
   rm -f "$SERIAL_ENV_FILE"
 }
 
-trap 'cleanup_watchdog; cleanup_all_app_pid_files; cleanup_serial_runtime' EXIT
+trap 'cleanup_watchdog; cleanup_all_app_pid_files; cleanup_serial_runtime; ub_guest_boot_cleanup' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -1399,7 +1399,7 @@ cleanup_pid() {
 
 cleanup_all_app_pid_files() {
   local pid_file=""
-  for pid_file in "$OUT_DIR"/ub_nodeA.apps.*.pid "$OUT_DIR"/ub_nodeB.apps.*.pid; do
+  for pid_file in "$OUT_DIR"/ub_nodeA.apps.${RUN_ID}.*.pid(N) "$OUT_DIR"/ub_nodeB.apps.${RUN_ID}.*.pid(N); do
     cleanup_pid "$pid_file"
   done
 }
@@ -1415,6 +1415,8 @@ write_serial_manifest() {
   } > "$temporary"
   mv "$temporary" "$SERIAL_ENV_FILE"
 }
+
+ub_guest_boot_prepare "$ROOT_DIR" "$INITRAMFS_IMAGE" "$RUN_ID"
 
 wait_for_log_pattern() {
   local file="$1"
@@ -1669,6 +1671,15 @@ validate_obmm_async_coroutine_log() {
   assert_log_absent "$log_file" \
     "OBMM_ASYNC_SUMMARY .*status=fail" \
     "${node_name} OBMM async failure" || return 1
+  if [[ "$OBMM_ASYNC_ARGS" == *"--mode async-load"* &&
+        "$OBMM_ASYNC_ARGS" != *"--kernel-task-replay"* ]]; then
+    assert_log_has "$log_file" \
+      "OBMM_ASYNC_SUMMARY .*direct_el0_upcalls=[1-9][0-9]*" \
+      "${node_name} direct EL0 upcalls" || return 1
+    assert_log_has "$log_file" \
+      "OBMM_ASYNC_SUMMARY .*kernel_hotpath_ioctls=0" \
+      "${node_name} EL0 hotpath avoids kernel ioctls" || return 1
+  fi
 }
 
 validate_obmm_import_stress_log() {
@@ -2672,6 +2683,7 @@ start_node() {
     serial_args=(-serial "file:$guest_log")
   fi
 
+  ub_guest_boot_args "$node_id" "console=ttyAMA0 rdinit=${RDINIT} linqu_urma_dp_role=${role} ${node_append_extra}"
   env \
     UB_FM_NODE_ID="$node_id" \
     UB_FM_TOPOLOGY_FILE="$TOPOLOGY_FILE" \
@@ -2698,8 +2710,7 @@ start_node() {
       "${serial_args[@]}" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
-      -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=${RDINIT} linqu_urma_dp_role=${role} ${node_append_extra}" \
+      "${UB_GUEST_BOOT_ARGS[@]}" \
       >"$qemu_log" 2>&1 &
   echo $! > "$pid_file"
 }
@@ -4297,6 +4308,7 @@ for ((i = 1; i <= ITERATIONS; i++)); do
     ITERATION_RESULTS[$i]=$ret
     ITERATION_ERRORS[$i]="iteration $i failed with exit code $ret"
   fi
+  cleanup_all_app_pid_files
 done
 
 echo "=== Test Results ===" >&2

@@ -335,7 +335,10 @@ start_node() {
     -serial chardev:ser0
   )
 
-  if [[ "$SIM_W5_GUEST_BACKEND" == "openeuler" ]]; then
+  if [[ "$UB_GUEST_ENGINE" == "openEuler" ]]; then
+    ub_guest_boot_args "$node_id" "console=ttyAMA0 rdinit=${RDINIT} ${node_append_extra}"
+    guest_qemu_args+=(-kernel "$KERNEL_IMAGE" "${UB_GUEST_BOOT_ARGS[@]}")
+  elif [[ "$SIM_W5_GUEST_BACKEND" == "openeuler" ]]; then
     # Per-node overlay qcow2 (lazy-create if missing). Uses qemu-img from the
     # same QEMU build the cluster uses; falls back to PATH lookup; if neither
     # is available, makes a per-node full copy of the base image so each QEMU
@@ -552,6 +555,17 @@ if ! QEMU_BIN="$(ensure_qemu_ub_binary "$WORKSPACE_ROOT")"; then
   exit 1
 fi
 ensure_ub_guest_artifacts "$ROOT_DIR" "$KERNEL_IMAGE" "$INITRAMFS_IMAGE"
+trap 'rc=$?; if (( rc != 0 )); then if [[ -x "$CLEANUP_SCRIPT" ]]; then "$CLEANUP_SCRIPT" >/dev/null 2>&1 || true; fi; ub_guest_boot_cleanup; fi' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+ub_guest_boot_prepare "$ROOT_DIR" "$INITRAMFS_IMAGE" "$RUN_ID" || {
+  ub_guest_boot_cleanup
+  exit 1
+}
+if [[ "$SIM_W5_GUEST_BACKEND" == "openeuler" ]]; then
+  mkdir -p "$OPENEULER_OVERLAY_DIR"
+  OPENEULER_OVERLAY_DIR="$(mktemp -d "$OPENEULER_OVERLAY_DIR/${RUN_ID}.XXXXXX")"
+fi
 
 if [[ ! -f "$TOPOLOGY_FILE" ]]; then
   echo "TOPOLOGY_FILE not found: $TOPOLOGY_FILE" >&2
@@ -587,6 +601,10 @@ echo "cleaned run_id=__RUN_ID__"
 EOC
 perl -0pi -e 's#__OUT_DIR__#'"$OUT_DIR"'#g; s#__RUN_ID__#'"$RUN_ID"'#g; s#__SOCKET_SUFFIX__#'"$SOCKET_SUFFIX"'#g; s#__QMP_DIR__#'"$QMP_DIR"'#g; s#__SERIAL_DIR__#'"$SERIAL_DIR"'#g; s#__MON_DIR__#'"$MON_DIR"'#g; s#__RUNTIME_DIR__#'"$UB_QEMU_RUNTIME_DIR"'#g; s#__SHARED_DIR_OWNED__#'"$SHARED_DIR_OWNED"'#g; s#__SHARED_DIR__#'"$SHARED_DIR"'#g; s#__NODE_IDS__#'"${(j: :)NODE_IDS}"'#g' "$CLEANUP_SCRIPT"
 chmod +x "$CLEANUP_SCRIPT"
+ub_guest_boot_append_cleanup "$CLEANUP_SCRIPT"
+if [[ "$SIM_W5_GUEST_BACKEND" == "openeuler" ]]; then
+  printf '\nrm -rf -- %q\n' "$OPENEULER_OVERLAY_DIR" >> "$CLEANUP_SCRIPT"
+fi
 
 rm -rf "$UB_QEMU_RUNTIME_DIR"
 mkdir -p "$UB_QEMU_RUNTIME_DIR"

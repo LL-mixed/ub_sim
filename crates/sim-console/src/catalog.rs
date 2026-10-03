@@ -195,6 +195,35 @@ mod tests {
     }
 
     #[test]
+    fn every_shipped_demo_runs_on_open_euler() {
+        let catalog = DemoCatalog::load_default().unwrap();
+        for demo in &catalog.demos {
+            assert_eq!(
+                demo.guest_engine,
+                crate::domain::GuestEngine::OpenEuler,
+                "{} has no openEuler guest selection",
+                demo.id
+            );
+        }
+    }
+
+    #[test]
+    fn direct_el0_demo_selects_hardware_upcalls() {
+        let catalog = DemoCatalog::load_default().unwrap();
+        let demo = catalog.find("direct-el0-upcall-2").unwrap();
+        let command = demo
+            .resolve_command("upcall-check", &Default::default())
+            .unwrap();
+        assert!(command
+            .args
+            .windows(2)
+            .any(|pair| { pair[0] == "--async-load-model" && pair[1].contains("|enabled=1|") }));
+        assert!(command.args.windows(2).any(|pair| {
+            pair[0] == "--obmm-async-args" && pair[1].contains("--mode async-load")
+        }));
+    }
+
+    #[test]
     fn default_catalog_does_not_expose_unvalidated_ub_ssd_demos() {
         let catalog = DemoCatalog::load_default().unwrap();
 

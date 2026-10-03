@@ -74,6 +74,7 @@ struct obmm_coroutine_scheduler_metrics {
     uint64_t el0_timeout_faults;
     uint64_t el0_context_saves;
     uint64_t el0_context_restores;
+    uint64_t el0_resume_retries;
     uint64_t el0_context_switches;
     uint64_t el0_context_bytes;
     uint64_t el0_no_ready_waits;

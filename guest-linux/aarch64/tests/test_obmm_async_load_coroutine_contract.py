@@ -848,6 +848,170 @@ def test_async_load_trace_off_compare_validates_pairs_and_campaign_artifacts():
 
 
 class ObmmAsyncLoadCoroutineContractTests(unittest.TestCase):
+    def test_completion_is_consumed_before_ready_context_resumes(self):
+        compiler = shutil.which("cc")
+        self.assertIsNotNone(compiler)
+        source = r"""
+#include "obmm_coroutine_scheduler.c"
+static struct obmm_coroutine_scheduler fixture;
+static struct obmm_async_load_event_consumer_v3 consumer;
+static int coalesced;
+int obmm_coroutine_scheduler_context_resume(
+    const struct obmm_async_load_context_v2 *context, uint64_t token)
+{
+    int passed = fixture.metrics.kernel_hotpath_ioctls == 0 &&
+        consumer.consumer_sequence == (coalesced ? 2 : 1);
+    if (coalesced) {
+        passed = passed && context == &fixture.contexts[0].context && token == 7 &&
+            fixture.contexts[1].state == OBMM_COROUTINE_SCHEDULER_CONTEXT_WAIT_REMOTE &&
+            fixture.contexts[1].waiting_token == 9 &&
+            fixture.contexts[1].context.pc == 0x2000;
+    } else {
+        passed = passed &&
+            fixture.contexts[0].state == OBMM_COROUTINE_SCHEDULER_CONTEXT_READY_REPLAY &&
+            fixture.contexts[0].replay_token == 7 &&
+            context == &fixture.contexts[1].context && token == 0;
+    }
+    _exit(passed ? 0 : 1);
+}
+void obmm_coroutine_scheduler_wait_prepare(void) { _exit(2); }
+void obmm_coroutine_scheduler_wait(void) { _exit(3); }
+int main(int argc, char **argv)
+{
+    (void)argv;
+    coalesced = argc > 1;
+    struct obmm_async_load_event_producer_v3 producer = { .producer_sequence = 1 };
+    struct obmm_async_load_event_v3 events[2] = {{
+        .sequence = 1, .owner_generation = 1,
+        .context_id = 1ULL << 32, .plt_token = 7, .fault_pc = 0x1000,
+        .map_id = 1, .map_generation = 1, .model_phase_generation = 1,
+        .kind = OBMM_ASYNC_LOAD_EVENT_COMPLETE, .access_bytes = 8,
+        .status = OBMM_ASYNC_LOAD_STATUS_SUCCESS,
+        .flags = OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY,
+    }, {
+        .sequence = 2, .owner_generation = 1,
+        .context_id = (1ULL << 32) | 1, .plt_token = 9,
+        .fault_pc = 0x2000, .interrupted_pc = 0x2000,
+        .map_id = 1, .map_generation = 1, .model_phase_generation = 1,
+        .kind = OBMM_ASYNC_LOAD_EVENT_PENDING, .access_bytes = 8,
+        .status = OBMM_ASYNC_LOAD_STATUS_SUCCESS,
+        .flags = OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY,
+    }};
+    if (coalesced) producer.producer_sequence = 2;
+    fixture.caps.owner_generation = 1;
+    fixture.caps.event_queue_depth = 2;
+    fixture.logical_contexts = 2;
+    fixture.event_producer = &producer;
+    fixture.event_slots = events;
+    fixture.event_consumer = &consumer;
+    fixture.contexts[0].context.context_id = 1ULL << 32;
+    fixture.contexts[0].context.pc = 0x1000;
+    fixture.contexts[0].waiting_token = 7;
+    fixture.contexts[0].state = OBMM_COROUTINE_SCHEDULER_CONTEXT_WAIT_REMOTE;
+    fixture.contexts[1].context.context_id = (1ULL << 32) | 1;
+    fixture.contexts[1].state = OBMM_COROUTINE_SCHEDULER_CONTEXT_READY;
+    if (sigsetjmp(fixture.return_environment, 1)) return 4;
+    if (coalesced) {
+        struct obmm_async_load_context_v2 frame = {0};
+        fixture.started = true;
+        active_runtime = &fixture;
+        fixture.current = &fixture.contexts[1];
+        fixture.contexts[1].state = OBMM_COROUTINE_SCHEDULER_CONTEXT_RUNNING;
+        obmm_coroutine_scheduler_upcall_dispatch(&frame);
+        return 5;
+    }
+    obmm_coroutine_scheduler_schedule(&fixture, obmm_coroutine_scheduler_now_ns());
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            source_path = directory / "completion_before_resume.c"
+            source_path.write_text(source)
+            binary = directory / "completion_before_resume"
+            subprocess.run(
+                [compiler, "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+                 "-I", str(LIB_DIR), "-idirafter", str(KERNEL_ROOT / "include/uapi"),
+                 str(source_path), "-o", str(binary)], check=True,
+            )
+            subprocess.run([str(binary)], check=True, timeout=5)
+            subprocess.run([str(binary), "coalesced"], check=True, timeout=5)
+
+    def test_busy_resume_preserves_context_and_retries_after_completion(self):
+        compiler = shutil.which("cc")
+        self.assertIsNotNone(compiler)
+        source = r"""
+#include "obmm_coroutine_scheduler.c"
+static struct obmm_coroutine_scheduler fixture;
+static struct obmm_async_load_event_producer_v3 producer;
+static struct obmm_async_load_event_consumer_v3 consumer;
+static int attempts;
+static int fatal;
+int obmm_coroutine_scheduler_context_resume(
+    const struct obmm_async_load_context_v2 *context, uint64_t token)
+{
+    if (!attempts++) {
+        if (context != &fixture.contexts[1].context || token) _exit(1);
+        if (fatal) return -EPROTO;
+        producer.producer_sequence = 1;
+        return -EAGAIN;
+    }
+    int passed = attempts == 2 && consumer.consumer_sequence == 1 &&
+        fixture.contexts[1].state == OBMM_COROUTINE_SCHEDULER_CONTEXT_READY &&
+        context == &fixture.contexts[0].context && token == 7 &&
+        fixture.metrics.el0_resume_retries == 1 &&
+        fixture.metrics.el0_context_restores == 1 &&
+        fixture.metrics.kernel_hotpath_ioctls == 0 && !fixture.first_error;
+    _exit(passed ? 0 : 2);
+}
+void obmm_coroutine_scheduler_wait_prepare(void) { _exit(3); }
+void obmm_coroutine_scheduler_wait(void) { _exit(4); }
+int main(int argc, char **argv)
+{
+    (void)argv;
+    fatal = argc > 1;
+    struct obmm_async_load_event_v3 events[2] = {{
+        .sequence = 1, .owner_generation = 1,
+        .context_id = 1ULL << 32, .plt_token = 7, .fault_pc = 0x1000,
+        .map_id = 1, .map_generation = 1, .model_phase_generation = 1,
+        .kind = OBMM_ASYNC_LOAD_EVENT_COMPLETE, .access_bytes = 8,
+        .status = OBMM_ASYNC_LOAD_STATUS_SUCCESS,
+        .flags = OBMM_ASYNC_LOAD_EVENT_RETIRE_REPLAY,
+    }};
+    fixture.caps.owner_generation = 1;
+    fixture.caps.event_queue_depth = 2;
+    fixture.logical_contexts = 2;
+    fixture.event_producer = &producer;
+    fixture.event_slots = events;
+    fixture.event_consumer = &consumer;
+    fixture.contexts[0].context.context_id = 1ULL << 32;
+    fixture.contexts[0].context.pc = 0x1000;
+    fixture.contexts[0].waiting_token = 7;
+    fixture.contexts[0].state = OBMM_COROUTINE_SCHEDULER_CONTEXT_WAIT_REMOTE;
+    fixture.contexts[1].context.context_id = (1ULL << 32) | 1;
+    fixture.contexts[1].state = OBMM_COROUTINE_SCHEDULER_CONTEXT_READY;
+    if (sigsetjmp(fixture.return_environment, 1)) {
+        return fatal && attempts == 1 && fixture.first_error == -EPROTO &&
+            fixture.metrics.el0_resume_retries == 0 &&
+            fixture.metrics.el0_context_restores == 0 ? 0 : 5;
+    }
+    obmm_coroutine_scheduler_schedule(&fixture, obmm_coroutine_scheduler_now_ns());
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            source_path = directory / "busy_resume.c"
+            source_path.write_text(source)
+            binary = directory / "busy_resume"
+            subprocess.run(
+                [compiler, "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-ffunction-sections", "-fdata-sections", "-Wl,--gc-sections",
+                 "-I", str(LIB_DIR), "-idirafter", str(KERNEL_ROOT / "include/uapi"),
+                 str(source_path), "-o", str(binary)], check=True,
+            )
+            subprocess.run([str(binary)], check=True, timeout=5)
+            subprocess.run([str(binary), "fatal"], check=True, timeout=5)
+
     def test_uapi_layout(self):
         test_async_load_control_v4_and_event_v3_layout_compile_for_aarch64()
 

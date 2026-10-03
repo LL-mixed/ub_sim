@@ -81,12 +81,12 @@ static struct obmm_coroutine_scheduler *active_runtime;
 extern void obmm_coroutine_scheduler_upcall_entry(void);
 extern void obmm_coroutine_scheduler_context_bootstrap(void);
 extern void obmm_coroutine_scheduler_context_finish(void) __attribute__((noreturn));
-extern void obmm_coroutine_scheduler_context_resume(
+extern int obmm_coroutine_scheduler_context_resume(
     const struct obmm_async_load_context_v2 *context,
-    uint64_t replay_token) __attribute__((noreturn));
+    uint64_t replay_token);
 extern void obmm_coroutine_scheduler_wait_prepare(void);
 extern void obmm_coroutine_scheduler_wait(void);
-extern void obmm_coroutine_scheduler_scheduler_enter(void);
+extern int obmm_coroutine_scheduler_scheduler_enter(void);
 
 _Static_assert(sizeof(struct obmm_async_load_context_v2) ==
                OBMM_ASYNC_LOAD_CONTEXT_STATE_BYTES,
@@ -942,6 +942,11 @@ static __attribute__((noreturn)) void obmm_coroutine_scheduler_schedule(
     struct obmm_coroutine_scheduler *runtime, uint64_t scheduler_started_ns)
 {
     for (;;) {
+        int drain_ret = obmm_coroutine_scheduler_event_ring_drain(runtime);
+
+        obmm_coroutine_scheduler_record_error(
+            runtime, drain_ret,
+            OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_RING_DRAIN);
         if (runtime->first_error) {
             obmm_coroutine_scheduler_log_context_states(runtime);
             break;
@@ -957,6 +962,9 @@ static __attribute__((noreturn)) void obmm_coroutine_scheduler_schedule(
             uint64_t now_ns = obmm_coroutine_scheduler_now_ns();
             uint64_t previous_context_id = runtime->last_resumed_id;
             uint64_t replay_token = next->replay_token;
+            struct obmm_coroutine_scheduler_context_local *previous_current =
+                runtime->current;
+            int resume_ret;
 
             if ((next->state ==
                  OBMM_COROUTINE_SCHEDULER_CONTEXT_READY_REPLAY) !=
@@ -985,8 +993,30 @@ static __attribute__((noreturn)) void obmm_coroutine_scheduler_schedule(
             obmm_coroutine_scheduler_trace(runtime, OBMM_COROUTINE_SCHEDULER_TRACE_CONTEXT_RESUME,
                            NULL, previous_context_id,
                            next->context.context_id);
-            obmm_coroutine_scheduler_context_resume(
+            resume_ret = obmm_coroutine_scheduler_context_resume(
                 &next->context, replay_token);
+            next->replay_token = replay_token;
+            next->state = replay_token ?
+                OBMM_COROUTINE_SCHEDULER_CONTEXT_READY_REPLAY :
+                OBMM_COROUTINE_SCHEDULER_CONTEXT_READY;
+            runtime->current = previous_current;
+            runtime->last_resumed_id = previous_context_id;
+            runtime->metrics.el0_context_restores--;
+            runtime->metrics.el0_context_bytes -=
+                OBMM_ASYNC_LOAD_CONTEXT_STATE_BYTES;
+            if (previous_context_id &&
+                previous_context_id != next->context.context_id) {
+                runtime->metrics.el0_context_switches--;
+            }
+            scheduler_started_ns = obmm_coroutine_scheduler_now_ns();
+            if (resume_ret == -EAGAIN) {
+                runtime->metrics.el0_resume_retries++;
+                continue;
+            }
+            obmm_coroutine_scheduler_record_error(
+                runtime, resume_ret ? resume_ret : -EPROTO,
+                OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_VALIDATE);
+            continue;
         }
         if (obmm_coroutine_scheduler_has_waiting(runtime)) {
             int ret;
@@ -1064,19 +1094,25 @@ void obmm_coroutine_scheduler_upcall_dispatch(struct obmm_async_load_context_v2 
         interrupted->context.flags = context_flags;
         interrupted->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_READY;
     }
-    ret = obmm_coroutine_scheduler_event_ring_next(runtime, &event);
-    if (ret != 1) {
+    for (;;) {
+        ret = obmm_coroutine_scheduler_event_ring_next(runtime, &event);
+        if (ret != 1) {
+            obmm_coroutine_scheduler_record_error(
+                runtime, ret < 0 ? ret : -EAGAIN,
+                OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_RING_DRAIN);
+            interrupted->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_FAULTED;
+            obmm_coroutine_scheduler_schedule(runtime, started_ns);
+        }
+        if (event.interrupted_pc) {
+            break;
+        }
+        ret = obmm_coroutine_scheduler_event_ring_handle(runtime, &event);
         obmm_coroutine_scheduler_record_error(
-            runtime, ret < 0 ? ret : -EAGAIN,
-            OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_RING_DRAIN);
-        interrupted->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_FAULTED;
-        obmm_coroutine_scheduler_schedule(runtime, started_ns);
-    }
-    if (!event.interrupted_pc) {
-        obmm_coroutine_scheduler_record_error(
-            runtime, -EPROTO, OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_VALIDATE);
-        interrupted->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_FAULTED;
-        obmm_coroutine_scheduler_schedule(runtime, started_ns);
+            runtime, ret, OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_HANDLE);
+        if (ret) {
+            interrupted->state = OBMM_COROUTINE_SCHEDULER_CONTEXT_FAULTED;
+            obmm_coroutine_scheduler_schedule(runtime, started_ns);
+        }
     }
     if (interrupted_was_running) {
         interrupted->context.pc = event.interrupted_pc;
@@ -1117,7 +1153,19 @@ void obmm_coroutine_scheduler_schedule_after_exit(void)
     runtime->metrics.el0_scheduler_enter_assists++;
     __atomic_add_fetch(&runtime->event_consumer->scheduler_enter_count, 1,
                        __ATOMIC_RELEASE);
-    obmm_coroutine_scheduler_scheduler_enter();
+    do {
+        ret = obmm_coroutine_scheduler_scheduler_enter();
+        if (ret != -EAGAIN) {
+            break;
+        }
+        ret = obmm_coroutine_scheduler_event_ring_drain(runtime);
+        obmm_coroutine_scheduler_record_error(
+            runtime, ret,
+            OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_EVENT_RING_DRAIN);
+    } while (!ret);
+    obmm_coroutine_scheduler_record_error(
+        runtime, ret,
+        OBMM_COROUTINE_SCHEDULER_ERROR_STAGE_SCHEDULER_ENTER_ASSIST);
     ret = obmm_coroutine_scheduler_event_ring_drain(runtime);
     obmm_coroutine_scheduler_record_error(
         runtime, ret,

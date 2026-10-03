@@ -164,8 +164,10 @@ cleanup() {
       rm -f "$pid_file"
     fi
   done
+  ub_guest_boot_cleanup
 }
 trap 'cleanup' EXIT INT TERM
+ub_guest_boot_prepare "$ROOT_DIR" "$INITRAMFS_IMAGE" "$RUN_ID"
 
 start_node() {
   local node_name="$1"
@@ -177,6 +179,7 @@ start_node() {
   if [[ "$QEMU_KEEP_ALIVE_ON_POWEROFF" == "1" ]]; then
     qemu_extra=(-no-shutdown)
   fi
+  ub_guest_boot_args "$node_name" "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_gsva=1 linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} linqu_cna=${node_cna} obmm_gsva_mode=matrix obmm_gsva_base=${OBMM_GSVA_MATRIX_BASE} obmm_gsva_size=${OBMM_GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${OBMM_GSVA_MATRIX_NODE_COUNT} obmm_gsva_matrix_iterations=${OBMM_GSVA_MATRIX_ITERATIONS} ${APPEND_EXTRA}"
 
   env \
     GSVA_MODE="$GSVA_MODE" \
@@ -197,8 +200,7 @@ start_node() {
       -serial file:"$(guest_log_for "$node_name")" \
       "${qemu_extra[@]}" \
       -kernel "$KERNEL_IMAGE" \
-      -initrd "$INITRAMFS_IMAGE" \
-      -append "console=ttyAMA0 rdinit=/bin/run_app linqu_obmm_gsva=1 linqu_urma_dp_role=${node_name} linqu_node_idx=${node_idx} linqu_cna=${node_cna} obmm_gsva_mode=matrix obmm_gsva_base=${OBMM_GSVA_MATRIX_BASE} obmm_gsva_size=${OBMM_GSVA_MATRIX_SLICE_SIZE} obmm_gsva_node_count=${OBMM_GSVA_MATRIX_NODE_COUNT} obmm_gsva_matrix_iterations=${OBMM_GSVA_MATRIX_ITERATIONS} ${APPEND_EXTRA}" \
+      "${UB_GUEST_BOOT_ARGS[@]}" \
       >"$(qemu_log_for "$node_name")" 2>&1 &
   echo $! > "$(pid_file_for "$node_name")"
 }

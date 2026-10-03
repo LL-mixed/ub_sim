@@ -4,10 +4,11 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(import.meta.dirname, "../../..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const webRoot = path.join(repoRoot, "crates/sim-console/web");
-const chrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const chrome = process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const fixturePage = "/tmp/sim-console-visual-fixture.html";
 const desktop = "/tmp/sim-console-desktop.png";
 const mobile = "/tmp/sim-console-mobile.png";
@@ -20,6 +21,7 @@ const demo = {
   topology: "pair",
   lifecycle: "interactive_shell",
   node_count: 2,
+  guest_engine: "open_euler",
   model: null,
   estimated_duration_secs: 180,
   tags: ["rpc", "interactive-shell"],
@@ -46,6 +48,7 @@ const demo2 = {
   topology: "pipeline",
   lifecycle: "finite",
   node_count: 8,
+  guest_engine: "open_euler",
   model: "Qwen3-0.6B",
   estimated_duration_secs: 1800,
   tags: ["w5", "pipeline", "qwen3"],
@@ -67,6 +70,7 @@ const run = {
   demo_id: demo.id,
   demo_title: demo.title,
   target_id: "n4-910c1",
+  guest_engine: "open_euler",
   source_revision: "15951308ea8fa1fbce600d434a5b8cf72e132f14",
   status: "running",
   created_at_ms: Date.now() - 94_000,
@@ -367,7 +371,7 @@ async function assertLaunchView(protocol, sessionId) {
     "Runtime.evaluate",
     {
       expression:
-        "({barText: document.querySelector('#launch-readiness-text').textContent, barClass: document.querySelector('#launch-readiness').className, readyDots: document.querySelectorAll('.catalog-item .readiness-dot.ready').length, stats: document.querySelectorAll('.catalog-item .item-stat').length, tags: document.querySelectorAll('#selection-tags .token').length, historyLive: document.querySelectorAll('#demo-history .demo-history-item.live').length, bannerHidden: document.querySelector('#demo-readiness').hidden, startDisabled: document.querySelector('#start-button').disabled, factTiles: document.querySelectorAll('.demo-facts > div').length})",
+        "({barText: document.querySelector('#launch-readiness-text').textContent, barClass: document.querySelector('#launch-readiness').className, readyDots: document.querySelectorAll('.catalog-item .readiness-dot.ready').length, stats: document.querySelectorAll('.catalog-item .item-stat').length, tags: document.querySelectorAll('#selection-tags .token').length, historyLive: document.querySelectorAll('#demo-history .demo-history-item.live').length, bannerHidden: document.querySelector('#demo-readiness').hidden, startDisabled: document.querySelector('#start-button').disabled, factTiles: document.querySelectorAll('.demo-facts > div').length, guestOs: document.querySelector('#fact-guest-os').textContent})",
       returnByValue: true,
     },
     sessionId,
@@ -382,7 +386,8 @@ async function assertLaunchView(protocol, sessionId) {
     state.historyLive !== 1 ||
     !state.bannerHidden ||
     !state.startDisabled ||
-    state.factTiles !== 4
+    state.factTiles !== 5 ||
+    state.guestOs !== "openEuler"
   ) {
     throw new Error(`launch view rendering failed: ${JSON.stringify(state)}`);
   }

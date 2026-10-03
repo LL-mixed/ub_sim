@@ -1,5 +1,6 @@
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -55,12 +56,57 @@ class DualNodeLauncherContractTest(unittest.TestCase):
     def test_signals_exit_and_leave_cleanup_to_the_exit_trap(self):
         self.assertIn(
             "trap 'cleanup_watchdog; cleanup_all_app_pid_files; "
-            "cleanup_serial_runtime' EXIT",
+            "cleanup_serial_runtime; ub_guest_boot_cleanup' EXIT",
             self.launcher,
         )
         self.assertIn("trap 'exit 130' INT", self.launcher)
         self.assertIn("trap 'exit 143' TERM", self.launcher)
         self.assertNotIn("cleanup_serial_runtime' EXIT INT TERM", self.launcher)
+
+    def test_cleanup_keeps_other_runs_and_is_idempotent(self):
+        function = "cleanup_all_app_pid_files() {" + self.launcher.split(
+            "cleanup_all_app_pid_files() {", 1
+        )[1].split("\nwrite_serial_manifest()", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            owned = [out / f"ub_{node}.apps.owned.1.pid" for node in ("nodeA", "nodeB")]
+            foreign = [out / f"ub_{node}.apps.foreign.1.pid" for node in ("nodeA", "nodeB")]
+            for file in owned + foreign:
+                file.write_text("fixture\n")
+            subprocess.run(
+                ["zsh", "-c", function + '\nOUT_DIR="$1"; RUN_ID=owned; '
+                 'cleanup_pid() { rm -f -- "$1"; }; '
+                 'cleanup_all_app_pid_files; cleanup_all_app_pid_files',
+                 "cleanup-test", str(out)], check=True,
+            )
+            self.assertTrue(all(not file.exists() for file in owned))
+            self.assertTrue(all(file.exists() for file in foreign))
+
+    def test_direct_el0_gate_preserves_the_kernel_task_replay_mode(self):
+        function = "validate_obmm_async_coroutine_log() {" + self.launcher.split(
+            "validate_obmm_async_coroutine_log() {", 1
+        )[1].split("\nvalidate_obmm_import_stress_log()", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "guest.log"
+            for args, upcalls, ioctls, passed in (
+                ("--mode async-load", 1, 0, True),
+                ("--mode async-load", 0, 0, False),
+                ("--mode async-load", 1, 1, False),
+                ("--mode async-load --kernel-task-replay", 0, 0, True),
+            ):
+                log.write_text(
+                    "OBMM_ASYNC_SUMMARY abi=1 mode=async-load status=pass "
+                    f"failures=0 stale=0 direct_el0_upcalls={upcalls} "
+                    f"kernel_hotpath_ioctls={ioctls}\n"
+                )
+                result = subprocess.run(
+                    ["zsh", "-c", function + '\nOBMM_ASYNC_ARGS="$2"; '
+                     'assert_log_has() { grep -qE "$2" "$1"; }; '
+                     'assert_log_absent() { ! grep -qE "$2" "$1"; }; '
+                     'validate_obmm_async_coroutine_log nodeA "$1"',
+                     "el0-gate-test", str(log), args], check=False,
+                )
+                self.assertEqual(result.returncode == 0, passed, args)
 
     def test_managed_interactive_waits_for_both_actual_guest_shells(self):
         self.assertIn('mem_service.object_share_interactive=${INTERACTIVE_AFTER_PASS}',
